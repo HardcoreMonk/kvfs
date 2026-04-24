@@ -37,9 +37,11 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 |---|---|
 | `cmd/` | 3개 바이너리 엔트리포인트 (edge, dn, cli) |
 | `internal/` | 패키지 경계. **외부 import 금지** (Go 표준 `internal/` 규칙) |
-| `internal/coordinator/` | Season 2에 별도 daemon으로 뽑힐 경계 (설계 의도) |
+| `internal/placement/` | Rendezvous Hashing (ADR-009, Season 2 Ep.1). chunk→DN 선택 |
+| `internal/coordinator/` | fanout + quorum. `placement.Placer` 사용. Season 2+ 에 별도 daemon 분리 예정 |
 | `scripts/` | 클러스터 lifecycle + 데모 (bash, curl, docker, python3만) |
 | `docs/adr/` | 아키텍처 의사결정 기록 (불변) |
+| `docs/FOLLOWUP.md` | 우선순위별 pending 작업 단일 소스 |
 | `blog/` | 공개 블로그 시리즈 초안 — episode별 1파일 |
 
 ## 개발·테스트
