@@ -62,11 +62,10 @@ func main() {
 	defer ms.Close()
 
 	dns := splitTrim(*flagDNs)
-	coord, err := coordinator.New(coordinator.Config{
-		DNs:         dns,
-		QuorumWrite: *flagQuorum,
-		Timeout:     10 * time.Second,
-	})
+	// ReplicationFactor = 3 by default for 3-way replication MVP.
+	// Placement is now Rendezvous-hashed (see internal/placement). When
+	// N > ReplicationFactor, each chunk is placed on the R highest-score nodes.
+	coord, err := coordinator.NewWithAddrs(dns, 3, *flagQuorum, 10*time.Second)
 	if err != nil {
 		fatal(err.Error())
 	}

@@ -41,12 +41,18 @@ Accepted · YYYY-MM-DD
 | [006](ADR-006-mvp-single-chunk.md) | MVP: 1 object = 1 chunk | Accepted | chunking Season 2 |
 | [007](ADR-007-urlkey-hmac-sha256.md) | UrlKey = HMAC-SHA256 | Accepted | `internal/urlkey/` |
 
+## Season 2
+
+| # | 제목 | 상태 | 연결 |
+|---|---|---|---|
+| [009](ADR-009-consistent-hashing.md) | Consistent Hashing (Rendezvous/HRW) | Accepted · 2026-04-25 | `internal/placement/` |
+
 ## Season 2+ 예상 ADR (pending)
 
 - ADR-008: Reed-Solomon erasure coding 도입
-- ADR-009: Consistent hashing (Rendezvous)
-- ADR-010: Coordinator daemon 분리 + Raft HA
+- ADR-010: Rebalance worker (기존 청크 자동 재배치)
 - ADR-011: chunking (>64MB 객체 지원)
-- ADR-012: gRPC 마이그레이션 (or 유지 결정)
+- ADR-012: Coordinator daemon 분리 + Raft HA
+- ADR-013: gRPC 마이그레이션 (or 유지 결정)
 
 작성 시점: 해당 기능 설계 직전.
