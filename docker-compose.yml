@@ -1,0 +1,69 @@
+# kvfs demo cluster: 1 edge + 3 data nodes.
+# Quickstart:
+#   docker compose up -d --build
+#   ./scripts/demo-alpha.sh
+#   ./scripts/demo-epsilon.sh
+
+services:
+  dn1:
+    build:
+      context: .
+      target: kvfs-dn
+    environment:
+      DN_ID: dn1
+      DN_ADDR: ":8080"
+      DN_DATA_DIR: /var/lib/kvfs-dn
+    volumes:
+      - dn1-data:/var/lib/kvfs-dn
+    networks: [kvfs]
+
+  dn2:
+    build:
+      context: .
+      target: kvfs-dn
+    environment:
+      DN_ID: dn2
+      DN_ADDR: ":8080"
+      DN_DATA_DIR: /var/lib/kvfs-dn
+    volumes:
+      - dn2-data:/var/lib/kvfs-dn
+    networks: [kvfs]
+
+  dn3:
+    build:
+      context: .
+      target: kvfs-dn
+    environment:
+      DN_ID: dn3
+      DN_ADDR: ":8080"
+      DN_DATA_DIR: /var/lib/kvfs-dn
+    volumes:
+      - dn3-data:/var/lib/kvfs-dn
+    networks: [kvfs]
+
+  edge:
+    build:
+      context: .
+      target: kvfs-edge
+    depends_on: [dn1, dn2, dn3]
+    environment:
+      EDGE_ADDR: ":8000"
+      EDGE_DNS: "dn1:8080,dn2:8080,dn3:8080"
+      EDGE_DATA_DIR: /var/lib/kvfs-edge
+      EDGE_URLKEY_SECRET: "demo-secret-change-me-in-production"
+      EDGE_QUORUM_WRITE: "2"
+    ports:
+      - "8000:8000"
+    volumes:
+      - edge-data:/var/lib/kvfs-edge
+    networks: [kvfs]
+
+networks:
+  kvfs:
+    driver: bridge
+
+volumes:
+  dn1-data:
+  dn2-data:
+  dn3-data:
+  edge-data:

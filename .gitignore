@@ -1,0 +1,21 @@
+# build artifacts
+bin/
+/kvfs-edge
+/kvfs-dn
+/kvfs-cli
+
+# bbolt / local state
+edge-data/
+*.db
+dn-data*/
+
+# Go
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
