@@ -205,20 +205,28 @@ func Run(ctx context.Context, coord Coordinator, plan Plan, concurrency int) Run
 // buildClaimedSet returns map[chunkID]map[addr]bool of every (chunk, addr)
 // pair that any object's metadata claims.
 //
-// Same chunk_id may appear under multiple objects (dedup) and across multiple
-// chunks of the same object (rare but possible if data repeats); their
-// replica addrs union into one set.
+// Iterates both replication-mode chunks and EC-mode stripe shards. Same
+// chunk_id may appear across multiple objects (dedup); their replica addrs
+// union into one set.
 func buildClaimedSet(objs []*store.ObjectMeta) map[string]map[string]bool {
 	out := make(map[string]map[string]bool)
+	add := func(c store.ChunkRef) {
+		set, ok := out[c.ChunkID]
+		if !ok {
+			set = make(map[string]bool, len(c.Replicas))
+			out[c.ChunkID] = set
+		}
+		for _, addr := range c.Replicas {
+			set[addr] = true
+		}
+	}
 	for _, o := range objs {
 		for _, c := range o.Chunks {
-			set, ok := out[c.ChunkID]
-			if !ok {
-				set = make(map[string]bool, len(c.Replicas))
-				out[c.ChunkID] = set
-			}
-			for _, addr := range c.Replicas {
-				set[addr] = true
+			add(c)
+		}
+		for _, st := range o.Stripes {
+			for _, sh := range st.Shards {
+				add(sh)
 			}
 		}
 	}

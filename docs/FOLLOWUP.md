@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-26** · Season 2 Ep.4 (ADR-011 Chunking) 완료 시점 기준.
+문서 현행화 일자: **2026-04-26** · Season 2 Ep.5 (ADR-008 Reed-Solomon EC) 완료 시점 기준 — Season 2 closed.
 
 ## 우선순위 맵
 
@@ -131,18 +131,20 @@
 | 2026-04-26 | Season 2 Ep.2 — ADR-010 Rebalance worker 구현 완료 | `internal/rebalance/` (8 tests PASS) + edge admin 엔드포인트 + `kvfs-cli rebalance` + `scripts/demo-eta.sh` (라이브 PASS) + `blog/03-rebalance.md` |
 | 2026-04-26 | Season 2 Ep.3 — ADR-012 Surplus chunk GC 구현 완료 | `internal/gc/` (9 tests PASS) + DN `/chunks` list + edge admin + `kvfs-cli gc` + `scripts/demo-theta.sh` (라이브: 15→12 disk chunks, 메타↔디스크 정확 일치) + `blog/04-gc.md`. Rebalance trim-on-full-success 보정 동반 |
 | 2026-04-26 | Season 2 Ep.4 — ADR-011 Chunking 구현 완료 (ADR-006 supersede) | `internal/chunker/` (13 tests PASS) + ObjectMeta 스키마 변경 (Chunks []ChunkRef + legacy adapter) + edge PUT/GET/DELETE 청크화 + rebalance/gc 청크 단위 갱신 + `EDGE_CHUNK_SIZE` env + `scripts/demo-iota.sh` (256 KiB → 4 청크 라이브 PASS) + `blog/05-chunking.md`. demo-eta/theta/alpha 회귀 fix 동반 |
+| 2026-04-26 | Season 2 Ep.5 — ADR-008 Reed-Solomon EC 구현 완료 (Season 2 closed) | `internal/reedsolomon/` from-scratch (24 tests PASS): GF(2^8) + Vandermonde + Gauss-Jordan. ObjectMeta 에 ECParams + Stripes 추가, `Coordinator.PlaceN(stripeID, K+M)`, `X-KVFS-EC: K+M` 헤더로 per-object 모드, `internal/edge` 에 `handlePutEC` / `handleGetEC`. `scripts/demo-kappa.sh` (6 DN, 128 KiB / 4+2, dn5+dn6 kill 후 GET 복원 PASS) + `blog/06-erasure-coding.md`. GC `buildClaimedSet` 가 Stripes iterate |
 
 ---
 
 ## 현재 상태 요약 (2026-04-25)
 
-- **Git**: main branch, 7 commits, no remote
-- **클러스터**: `localhost:8000` running · edge(chunk_size=64KiB) + dn × 4 (demo-iota 가 down→up→4DN 까지 끝낸 상태)
-- **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc + 13 chunker = **42 unit tests PASS**
-- **데모**: α, ε, dedup, ζ, η, θ, ι 전부 라이브 통과
-- **ADR**: 11건 (001~005 + 007 + 009~012, 006 superseded) Accepted
-- **Blog**: Ep.1~Ep.5 완성 (Ep.5 = Chunking 라이브 데모)
-- **LOC**: Go ~3,800 + 문서 ~4,000 + scripts ~700
+- **Git**: main branch, 8 commits, no remote
+- **클러스터**: `localhost:8000` running · edge(chunk_size=16KiB) + dn × 6 (demo-kappa 가 down→up→6DN 까지 끝낸 상태)
+- **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc + 13 chunker + 24 reedsolomon = **66 unit tests PASS**
+- **데모**: α, ε, dedup, ζ, η, θ, ι, κ 전부 라이브 통과
+- **ADR**: 12건 (001~005 + 007 + 008~012, 006 superseded by 011) Accepted
+- **Blog**: Ep.1~Ep.6 완성 (Ep.6 = Reed-Solomon EC 라이브 데모)
+- **LOC**: Go ~5,000 + 문서 ~5,000 + scripts ~900
+- **Season 2 closed** — placement → rebalance → GC → chunking → EC 5 episode 완성
 
 ## 업데이트 규칙
 

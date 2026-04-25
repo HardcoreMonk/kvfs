@@ -246,8 +246,8 @@ ADR-011은 "큰 객체를 작은 청크로 자르고 dedup·placement·rebalance
 
 ## 다음 편 예고
 
-- **Ep.6**: ADR-013 Auto-trigger policy — DN 변경 감지 + rebalance + GC 자동화. 운영자 개입 없이 클러스터가 스스로 정렬
-- **Ep.7**: ADR-008 Reed-Solomon EC — placement가 (K+M)개 노드 선택. R-way replication 의 디스크 비효율 문제. Season 2 의 보스전
+- **Ep.6** *(완료)*: ADR-008 Reed-Solomon EC — K+M shard 중 어느 K 개로도 복원, 디스크 75% 절감, from-scratch GF(2^8). → [`blog/06-erasure-coding.md`](06-erasure-coding.md)
+- **Ep.7**: ADR-013 Auto-trigger policy — DN 변경 감지 + rebalance + GC 자동화. 운영자 개입 없이 클러스터가 스스로 정렬
 - **Ep.8 후보**: ADR-017 Streaming PUT/GET — io.Reader 기반 chunker, 진짜 메모리 상한
 - **Ep.9 후보**: ADR-018 Content-defined chunking — 비정렬 데이터 dedup 효율
 

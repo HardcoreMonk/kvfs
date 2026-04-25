@@ -42,6 +42,7 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `internal/rebalance/` | Rebalance worker (ADR-010, Season 2 Ep.2). copy-then-update, full-success 시 trim |
 | `internal/gc/` | Surplus chunk GC (ADR-012, Season 2 Ep.3). claimed-set + min-age 두 안전망 |
 | `internal/chunker/` | Chunking (ADR-011, Season 2 Ep.4, ADR-006 supersede). Split/Join 고정 크기 |
+| `internal/reedsolomon/` | Reed-Solomon EC (ADR-008, Season 2 Ep.5). GF(2^8) + 행렬 + Encode/Reconstruct, from-scratch |
 | `scripts/` | 클러스터 lifecycle + 데모 (bash, curl, docker, python3만) |
 | `docs/adr/` | 아키텍처 의사결정 기록 (불변) |
 | `docs/FOLLOWUP.md` | 우선순위별 pending 작업 단일 소스 |
@@ -63,7 +64,8 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `./scripts/demo-eta.sh` | Rebalance worker 라이브 데모 (Season 2 Ep.2) |
 | `./scripts/demo-theta.sh` | Surplus chunk GC 라이브 데모 (Season 2 Ep.3) |
 | `./scripts/demo-iota.sh` | Chunking 라이브 데모 (Season 2 Ep.4) |
-| `./scripts/down.sh` | 정리 (dn4 포함) |
+| `./scripts/demo-kappa.sh` | Reed-Solomon EC 라이브 데모 (Season 2 Ep.5) |
+| `./scripts/down.sh` | 정리 (dn1~dn6 + edge 포함) |
 
 Docker로 빌드 검증 (로컬 Go 없어도):
 

@@ -48,11 +48,11 @@ Accepted · YYYY-MM-DD
 | [009](ADR-009-consistent-hashing.md) | Consistent Hashing (Rendezvous/HRW) | Accepted · 2026-04-25 | `internal/placement/` |
 | [010](ADR-010-rebalance-worker.md) | Rebalance worker (copy-then-update, no-delete MVP) | Accepted · 2026-04-25 | `internal/rebalance/` |
 | [012](ADR-012-surplus-gc.md) | Surplus chunk GC (claimed-set + min-age 안전망) | Accepted · 2026-04-26 | `internal/gc/` |
-| [011](ADR-011-chunking.md) | Chunking (고정 크기, ADR-006 supersede) | Accepted · 2026-04-26 | `internal/chunker/` (후속) |
+| [011](ADR-011-chunking.md) | Chunking (고정 크기, ADR-006 supersede) | Accepted · 2026-04-26 | `internal/chunker/` |
+| [008](ADR-008-reed-solomon-ec.md) | Reed-Solomon EC (from-scratch GF(2^8)) | Accepted · 2026-04-26 | `internal/reedsolomon/` (후속) |
 
 ## Season 2+ 예상 ADR (pending)
 
-- ADR-008: Reed-Solomon erasure coding 도입
 - ADR-013: Auto-trigger policy (rebalance + GC 자동화)
 - ADR-014: Meta backup/HA (bbolt 메타 손실 시 복구)
 - ADR-015: Coordinator daemon 분리 + Raft HA

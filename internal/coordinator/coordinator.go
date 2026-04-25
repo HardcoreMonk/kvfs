@@ -142,6 +142,20 @@ func (c *Coordinator) PlaceChunk(chunkID string) []string {
 	return out
 }
 
+// PlaceN returns the top-n addresses for the given placement key, regardless
+// of ReplicationFactor. Used by EC mode (ADR-008) to pick K+M distinct DNs
+// per stripe.
+//
+// Returns up to min(n, len(nodes)) addresses, deterministic for a given key.
+func (c *Coordinator) PlaceN(key string, n int) []string {
+	picked := c.placer.Pick(key, n)
+	out := make([]string, len(picked))
+	for i, p := range picked {
+		out[i] = p.Addr
+	}
+	return out
+}
+
 // WriteChunk picks ReplicationFactor nodes via placement, fans out PUT in parallel,
 // and returns the addresses that acked successfully. Error if fewer than
 // QuorumWrite acks arrive.

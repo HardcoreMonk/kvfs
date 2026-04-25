@@ -43,10 +43,19 @@ type ObjectMeta struct {
 	Bucket      string     `json:"bucket"`
 	Key         string     `json:"key"`
 	Size        int64      `json:"size"`
-	Chunks      []ChunkRef `json:"chunks,omitempty"`
-	Version     int64      `json:"version"`
-	CreatedAt   time.Time  `json:"created_at"`
 	ContentType string     `json:"content_type,omitempty"`
+
+	// Replication mode (mutually exclusive with EC).
+	// Set when the object was stored as N replicated chunks.
+	Chunks []ChunkRef `json:"chunks,omitempty"`
+
+	// Erasure-coded mode (ADR-008, mutually exclusive with Chunks).
+	// EC nil → replication mode.
+	EC      *ECParams `json:"ec,omitempty"`
+	Stripes []Stripe  `json:"stripes,omitempty"`
+
+	Version   int64     `json:"version"`
+	CreatedAt time.Time `json:"created_at"`
 
 	// Legacy single-chunk fields. Read-only; never written by current code.
 	// Present so that old bbolt records still decode without error.
@@ -54,12 +63,37 @@ type ObjectMeta struct {
 	LegacyReplicas []string `json:"replicas,omitempty"`
 }
 
-// ChunkRef points to one chunk that, together with its peers in
-// ObjectMeta.Chunks, reconstructs an object.
+// IsEC reports whether this object is stored in erasure-coded mode.
+func (o *ObjectMeta) IsEC() bool { return o.EC != nil && len(o.Stripes) > 0 }
+
+// ChunkRef points to one chunk that, together with its peers (in
+// ObjectMeta.Chunks for replication mode, or as a Shard inside a Stripe for
+// EC mode), reconstructs an object.
+//
+// In replication mode: Replicas is the list of DN addresses holding copies.
+// In EC mode: Replicas has length 1 (a single addr per shard).
 type ChunkRef struct {
-	ChunkID  string   `json:"chunk_id"` // hex(sha256(chunk_data))
+	ChunkID  string   `json:"chunk_id"` // hex(sha256(chunk_data or shard_data))
 	Size     int64    `json:"size"`
-	Replicas []string `json:"replicas"` // DN addresses that acked
+	Replicas []string `json:"replicas"`
+}
+
+// ECParams describes the erasure-coding configuration for a stored object.
+type ECParams struct {
+	K         int   `json:"k"`          // data shards per stripe
+	M         int   `json:"m"`          // parity shards per stripe
+	ShardSize int   `json:"shard_size"` // bytes per shard (uniform within an object)
+	DataSize  int64 `json:"data_size"`  // total bytes of meaningful data (last stripe padded)
+}
+
+// Stripe is one (K data + M parity) group inside an EC-stored object.
+//
+// Shards length = K + M. Shards[0..K) are data, Shards[K..K+M) are parity.
+// StripeID is sha256 of the K data shards concatenated; used as the placement
+// key (Pick(StripeID, K+M) → K+M distinct DNs).
+type Stripe struct {
+	StripeID string     `json:"stripe_id"`
+	Shards   []ChunkRef `json:"shards"`
 }
 
 // DNInfo records a known DataNode (registry, heartbeats).
@@ -183,16 +217,55 @@ func (m *MetaStore) UpdateChunkReplicas(bucket, key string, chunkIndex int, repl
 // normalizeLegacy converts an old single-chunk record (LegacyChunkID set,
 // Chunks empty) into the new Chunks-shape in-memory. Idempotent.
 func normalizeLegacy(o *ObjectMeta) {
-	if len(o.Chunks) == 0 && o.LegacyChunkID != "" {
+	if len(o.Chunks) == 0 && len(o.Stripes) == 0 && o.LegacyChunkID != "" {
 		o.Chunks = []ChunkRef{{
 			ChunkID:  o.LegacyChunkID,
 			Size:     o.Size,
 			Replicas: o.LegacyReplicas,
 		}}
 	}
-	// Always clear legacy fields after normalization so callers see only Chunks.
+	// Always clear legacy fields after normalization so callers see only Chunks/Stripes.
 	o.LegacyChunkID = ""
 	o.LegacyReplicas = nil
+}
+
+// UpdateShardReplicas updates the Replicas of a single shard inside an
+// EC-stored object's stripe. Used by rebalance for EC objects.
+//
+// Returns ErrNotFound if the object doesn't exist; an error if the indices
+// are out of range or the object isn't EC-mode.
+func (m *MetaStore) UpdateShardReplicas(bucket, key string, stripeIndex, shardIndex int, replicas []string) error {
+	k := objKey(bucket, key)
+	return m.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketObjects)
+		raw := b.Get(k)
+		if raw == nil {
+			return ErrNotFound
+		}
+		var obj ObjectMeta
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return err
+		}
+		normalizeLegacy(&obj)
+		if !obj.IsEC() {
+			return fmt.Errorf("store: %s/%s is not EC-mode", bucket, key)
+		}
+		if stripeIndex < 0 || stripeIndex >= len(obj.Stripes) {
+			return fmt.Errorf("store: stripe index %d out of range [0,%d)", stripeIndex, len(obj.Stripes))
+		}
+		stripe := &obj.Stripes[stripeIndex]
+		if shardIndex < 0 || shardIndex >= len(stripe.Shards) {
+			return fmt.Errorf("store: shard index %d out of range [0,%d)", shardIndex, len(stripe.Shards))
+		}
+		stripe.Shards[shardIndex].Replicas = replicas
+		obj.LegacyChunkID = ""
+		obj.LegacyReplicas = nil
+		buf, err := json.Marshal(&obj)
+		if err != nil {
+			return err
+		}
+		return b.Put(k, buf)
+	})
 }
 
 // DeleteObject removes an object's metadata. Returns ErrNotFound if absent.
