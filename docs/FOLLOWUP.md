@@ -7,7 +7,7 @@
 ## 우선순위 맵
 
 - **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
-- **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **3건**
+- **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **2건**
 - **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **9건**
 - **P3**: 별도 스펙·사용자 결정 필요 — 현재 **6건**
 
@@ -30,15 +30,6 @@
 - **배경**: `./scripts/up.sh` 는 plain `docker run` 으로 대체 구현됨 (compose 미설치 환경 대응). `docker-compose.yml` 은 있으나 `docker compose` 명령 사용 불가
 - **해결**: `sudo apt install docker-compose-plugin` — 사용자 직접
 - **효과**: README 의 `docker compose up -d` 표준 명령이 동작. 현재는 `./scripts/up.sh` 권장
-
-### [P1-04] 4-DN 라이브 데모 스크립트
-- **스펙**: `scripts/demo-zeta.sh` 또는 `scripts/demo-consistent.sh`
-- **동작**:
-  1. 4번째 DN 추가 (`docker run`)
-  2. edge 의 EDGE_DNS 업데이트 (현재 구조에선 재시작 필요)
-  3. 새 쓰기는 placement 에 따라 상위 3 DN 에 분산됨을 확인
-  4. 기존 청크는 제자리 (ADR-010 모티브 생성)
-- **제약**: edge 는 현재 static DN 목록을 env var 로 받음. dynamic registration 이 아직 없음. Phase 1 은 edge 재시작으로 진행
 
 ---
 
@@ -141,18 +132,19 @@
 | 2026-04-25 | Season 2 Ep.1 — Rendezvous Hashing | `32d880a feat(placement)` · ADR-009 · 7 tests PASS |
 | 2026-04-25 | placement-sim CLI 도구 | ASCII bar chart, 이동률 실측 표시 |
 | 2026-04-25 | Blog Ep.2 작성 — Consistent Hashing | `blog/02-consistent-hashing.md` · placement-sim 3 케이스 실측 embed |
+| 2026-04-25 | 4-DN 라이브 데모 스크립트 | `scripts/demo-zeta.sh` · seed 4 + add dn4 + new 8 쓰기, dn4 4/24 slots 실측, 기존 청크 정지 확인 |
 
 ---
 
 ## 현재 상태 요약 (2026-04-25)
 
-- **Git**: main branch, 3 commits, no remote
-- **클러스터**: `localhost:8000` running · edge + dn × 3
+- **Git**: main branch, 4 commits, no remote
+- **클러스터**: `localhost:8000` running · edge + dn × 3 (demo-zeta 실행 시 dn4 일시 추가)
 - **테스트**: 7 placement + 5 urlkey = **12 unit tests PASS**
-- **데모**: α, ε, dedup 전부 라이브 통과
+- **데모**: α, ε, dedup, ζ 전부 라이브 통과
 - **ADR**: 8건 (001~007 + 009) Accepted
 - **Blog**: Ep.1·Ep.2 완성 (Ep.2 = Rendezvous Hashing 실측 데모)
-- **LOC**: Go 2,044 + 문서 ~1,800
+- **LOC**: Go 2,044 + 문서 ~1,800 + scripts ~250
 
 ## 업데이트 규칙
 

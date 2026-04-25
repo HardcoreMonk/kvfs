@@ -56,7 +56,8 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `./scripts/up.sh` | Docker 클러스터 기동 (compose 플러그인 불필요) |
 | `./scripts/demo-alpha.sh` | 3-way replication 데모 |
 | `./scripts/demo-epsilon.sh` | UrlKey 데모 |
-| `./scripts/down.sh` | 정리 |
+| `./scripts/demo-zeta.sh` | 4-DN 추가 후 placement 분산 데모 (Season 2) |
+| `./scripts/down.sh` | 정리 (dn4 포함) |
 
 Docker로 빌드 검증 (로컬 Go 없어도):
 

@@ -44,6 +44,12 @@ cd kvfs
 docker run --rm -v "$PWD:/src" -w /src golang:1.26-alpine \
   go run ./cmd/kvfs-cli placement-sim --nodes 10 --chunks 10000 --remove 1
 #    → 노드 1개 제거 시 약 30% 만 이동 (이론 R/N 일치) 출력
+
+# 5. ζ 데모: 4번째 DN 추가 — 신규 쓰기는 분산, 기존 청크는 정지 (Season 2)
+./scripts/demo-zeta.sh
+#    → seed 4 객체 (3-DN 시점) → dn4 추가 + edge 재시작 → new 8 객체
+#    → dn4 가 새 쓰기에 참여하지만 기존 청크는 dn1/2/3 에 그대로
+#    → ADR-010 (Rebalance worker) 의 동기 부여
 ```
 
 ## 아키텍처 (2 daemon)
