@@ -38,13 +38,22 @@ type AutoConfig struct {
 	Concurrency       int           // default 4
 }
 
-// AutoRun records the outcome of a single auto-trigger cycle, kept in a
-// ring buffer for /v1/admin/auto/status.
+// AutoJob is a typed enum of the two auto-trigger jobs.
+type AutoJob string
+
+const (
+	JobRebalance AutoJob = "rebalance"
+	JobGC        AutoJob = "gc"
+)
+
+// AutoRun records one auto-trigger cycle that did work or errored.
+// Empty (no-op) cycles are NOT recorded — they would evict meaningful history
+// on long-running idle clusters. Use the lastCheck timestamps for liveness.
 type AutoRun struct {
-	Job        string         `json:"job"` // "rebalance" | "gc"
+	Job        AutoJob        `json:"job"`
 	StartedAt  time.Time      `json:"started_at"`
 	DurationMS int64          `json:"duration_ms"`
-	PlanSize   int            `json:"plan_size"` // migrations / sweeps planned
+	PlanSize   int            `json:"plan_size"`
 	Stats      map[string]any `json:"stats,omitempty"`
 	Error      string         `json:"error,omitempty"`
 }
@@ -76,13 +85,13 @@ type Server struct {
 	// gcMu serializes /v1/admin/gc/apply for the same reason.
 	gcMu sync.Mutex
 
-	// autoMu protects autoRuns ring buffer and last-run timestamps.
-	autoMu             sync.Mutex
-	autoRuns           []AutoRun
-	autoLastRebalance  time.Time
-	autoLastGC         time.Time
-	autoNextRebalance  time.Time
-	autoNextGC         time.Time
+	// autoMu protects autoRuns + lastCheck timestamps.
+	// Empty cycles update lastCheck only (not autoRuns) so the ring buffer
+	// keeps actionable history; lastCheck still proves the loop is alive.
+	autoMu                  sync.Mutex
+	autoRuns                []AutoRun
+	autoLastCheckRebalance  time.Time
+	autoLastCheckGC         time.Time
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -319,41 +328,63 @@ func (s *Server) handleRebalancePlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
-// handleRebalanceApply computes a fresh plan and runs it.
-// Serialized via s.rebalanceMu — second concurrent call waits.
-//
-// Query: ?concurrency=N (default 4)
-func (s *Server) handleRebalanceApply(w http.ResponseWriter, r *http.Request) {
-	concurrency := 4
-	if q := r.URL.Query().Get("concurrency"); q != "" {
-		if n, err := strconv.Atoi(q); err == nil && n > 0 {
-			concurrency = n
-		}
-	}
+// rebalanceOutcome bundles a rebalance cycle's result. Shared by handler +
+// auto-runner so they can't drift on field shapes.
+type rebalanceOutcome struct {
+	Scanned     int
+	PlanSize    int
+	Migrated    int
+	Failed      int
+	BytesCopied int64
+	Errors      []string
+}
 
+func (o rebalanceOutcome) toMap() map[string]any {
+	return map[string]any{
+		"scanned":      o.Scanned,
+		"plan_size":    o.PlanSize,
+		"migrated":     o.Migrated,
+		"failed":       o.Failed,
+		"bytes_copied": o.BytesCopied,
+		"errors":       o.Errors,
+	}
+}
+
+// executeRebalance computes a fresh plan and (if non-empty) runs it under
+// s.rebalanceMu. Used by handleRebalanceApply and the auto-rebalance loop.
+func (s *Server) executeRebalance(ctx context.Context, concurrency int) (rebalanceOutcome, error) {
 	s.rebalanceMu.Lock()
 	defer s.rebalanceMu.Unlock()
 
 	plan, err := rebalance.ComputePlan(s.Coord, s.Store)
 	if err != nil {
+		return rebalanceOutcome{}, fmt.Errorf("ComputePlan: %w", err)
+	}
+	out := rebalanceOutcome{Scanned: plan.Scanned, PlanSize: len(plan.Migrations)}
+	if out.PlanSize == 0 {
+		return out, nil
+	}
+	stats := rebalance.Run(ctx, s.Coord, s.Store, plan, concurrency)
+	out.Migrated = stats.Migrated
+	out.Failed = stats.Failed
+	out.BytesCopied = stats.BytesCopied
+	out.Errors = stats.Errors
+	return out, nil
+}
+
+// handleRebalanceApply: POST /v1/admin/rebalance/apply?concurrency=N
+func (s *Server) handleRebalanceApply(w http.ResponseWriter, r *http.Request) {
+	concurrency := intQuery(r, "concurrency", 4)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	out, err := s.executeRebalance(ctx, concurrency)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	planSize := len(plan.Migrations)
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	stats := rebalance.Run(ctx, s.Coord, s.Store, plan, concurrency)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"scanned":      plan.Scanned,
-		"plan_size":    planSize,
-		"concurrency":  concurrency,
-		"migrated":     stats.Migrated,
-		"failed":       stats.Failed,
-		"bytes_copied": stats.BytesCopied,
-		"errors":       stats.Errors,
-	})
+	resp := out.toMap()
+	resp["concurrency"] = concurrency
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleGCPlan computes the surplus chunk plan (read-only).
@@ -371,46 +402,79 @@ func (s *Server) handleGCPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
-// handleGCApply runs the GC plan with the given concurrency.
-// Serialized via s.gcMu.
-//
-// Query:
-//
-//	?min_age_seconds=N   (default 60s)
-//	?concurrency=N       (default 4)
-func (s *Server) handleGCApply(w http.ResponseWriter, r *http.Request) {
-	minAge := parseMinAge(r)
-	concurrency := 4
-	if q := r.URL.Query().Get("concurrency"); q != "" {
-		if n, err := strconv.Atoi(q); err == nil && n > 0 {
-			concurrency = n
-		}
-	}
+type gcOutcome struct {
+	Scanned     int
+	ClaimedKeys int
+	PlanSize    int
+	MinAgeSec   int
+	Deleted     int
+	Failed      int
+	BytesFreed  int64
+	Errors      []string
+}
 
+func (o gcOutcome) toMap() map[string]any {
+	return map[string]any{
+		"scanned":      o.Scanned,
+		"claimed_keys": o.ClaimedKeys,
+		"plan_size":    o.PlanSize,
+		"min_age_sec":  o.MinAgeSec,
+		"deleted":      o.Deleted,
+		"failed":       o.Failed,
+		"bytes_freed":  o.BytesFreed,
+		"errors":       o.Errors,
+	}
+}
+
+// executeGC computes + (if non-empty) runs a GC plan under s.gcMu.
+// Used by handleGCApply and the auto-GC loop.
+func (s *Server) executeGC(ctx context.Context, minAge time.Duration, concurrency int) (gcOutcome, error) {
 	s.gcMu.Lock()
 	defer s.gcMu.Unlock()
 
+	plan, err := gc.ComputePlan(ctx, s.Coord, s.Store, minAge)
+	if err != nil {
+		return gcOutcome{}, fmt.Errorf("ComputePlan: %w", err)
+	}
+	out := gcOutcome{
+		Scanned: plan.Scanned, ClaimedKeys: plan.ClaimedKeys,
+		PlanSize: len(plan.Sweeps), MinAgeSec: int(minAge.Seconds()),
+	}
+	if out.PlanSize == 0 {
+		return out, nil
+	}
+	stats := gc.Run(ctx, s.Coord, plan, concurrency)
+	out.Deleted = stats.Deleted
+	out.Failed = stats.Failed
+	out.BytesFreed = stats.BytesFreed
+	out.Errors = stats.Errors
+	return out, nil
+}
+
+// handleGCApply: POST /v1/admin/gc/apply?min_age_seconds=N&concurrency=N
+func (s *Server) handleGCApply(w http.ResponseWriter, r *http.Request) {
+	minAge := parseMinAge(r)
+	concurrency := intQuery(r, "concurrency", 4)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
-	plan, err := gc.ComputePlan(ctx, s.Coord, s.Store, minAge)
+	out, err := s.executeGC(ctx, minAge, concurrency)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	planSize := len(plan.Sweeps)
-	stats := gc.Run(ctx, s.Coord, plan, concurrency)
+	resp := out.toMap()
+	resp["concurrency"] = concurrency
+	writeJSON(w, http.StatusOK, resp)
+}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"scanned":      plan.Scanned,
-		"claimed_keys": plan.ClaimedKeys,
-		"plan_size":    planSize,
-		"concurrency":  concurrency,
-		"min_age_sec":  int(minAge.Seconds()),
-		"deleted":      stats.Deleted,
-		"failed":       stats.Failed,
-		"bytes_freed":  stats.BytesFreed,
-		"errors":       stats.Errors,
-	})
+// intQuery reads ?name=N from the request, returning def on missing/invalid.
+func intQuery(r *http.Request, name string, def int) int {
+	if q := r.URL.Query().Get(name); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
 
 func parseMinAge(r *http.Request) time.Duration {
@@ -492,172 +556,119 @@ func (s *Server) StartAuto(ctx context.Context) {
 		"rebalance_interval", rb, "gc_interval", gci,
 		"gc_min_age", minAge, "concurrency", conc)
 
-	s.autoMu.Lock()
-	s.autoNextRebalance = time.Now().Add(rb)
-	s.autoNextGC = time.Now().Add(gci)
-	s.autoMu.Unlock()
-
-	go s.autoRebalanceLoop(ctx, rb, conc)
-	go s.autoGCLoop(ctx, gci, minAge, conc)
+	go s.autoLoop(ctx, JobRebalance, rb, func() { s.runAutoRebalance(ctx, conc) })
+	go s.autoLoop(ctx, JobGC, gci, func() { s.runAutoGC(ctx, minAge, conc) })
 }
 
-func (s *Server) autoRebalanceLoop(ctx context.Context, interval time.Duration, conc int) {
+// autoLoop is the shared ticker driver for both jobs. exec runs one cycle.
+func (s *Server) autoLoop(ctx context.Context, job AutoJob, interval time.Duration, exec func()) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			s.logger().Info("auto-rebalance loop stopping")
+			s.logger().Info("auto loop stopping", "job", job)
 			return
 		case <-t.C:
-			s.runAutoRebalance(ctx, conc)
-			s.autoMu.Lock()
-			s.autoNextRebalance = time.Now().Add(interval)
-			s.autoMu.Unlock()
-		}
-	}
-}
-
-func (s *Server) autoGCLoop(ctx context.Context, interval, minAge time.Duration, conc int) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			s.logger().Info("auto-gc loop stopping")
-			return
-		case <-t.C:
-			s.runAutoGC(ctx, minAge, conc)
-			s.autoMu.Lock()
-			s.autoNextGC = time.Now().Add(interval)
-			s.autoMu.Unlock()
+			exec()
 		}
 	}
 }
 
 func (s *Server) runAutoRebalance(ctx context.Context, conc int) {
-	s.rebalanceMu.Lock()
-	defer s.rebalanceMu.Unlock()
-
 	start := time.Now()
-	plan, err := rebalance.ComputePlan(s.Coord, s.Store)
-	if err != nil {
-		s.recordAuto(AutoRun{
-			Job: "rebalance", StartedAt: start,
-			DurationMS: time.Since(start).Milliseconds(),
-			Error:      "ComputePlan: " + err.Error(),
-		})
-		s.logger().Warn("auto-rebalance ComputePlan failed", "err", err)
-		return
-	}
-	planSize := len(plan.Migrations)
-	if planSize == 0 {
-		s.recordAuto(AutoRun{
-			Job: "rebalance", StartedAt: start,
-			DurationMS: time.Since(start).Milliseconds(),
-		})
-		s.autoMu.Lock()
-		s.autoLastRebalance = start
-		s.autoMu.Unlock()
-		return
-	}
-
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	stats := rebalance.Run(rctx, s.Coord, s.Store, plan, conc)
+	out, err := s.executeRebalance(rctx, conc)
+	dur := time.Since(start).Milliseconds()
 
-	s.recordAuto(AutoRun{
-		Job: "rebalance", StartedAt: start,
-		DurationMS: time.Since(start).Milliseconds(),
-		PlanSize:   planSize,
-		Stats: map[string]any{
-			"scanned":      plan.Scanned,
-			"migrated":     stats.Migrated,
-			"failed":       stats.Failed,
-			"bytes_copied": stats.BytesCopied,
-		},
+	if err != nil {
+		s.recordAuto(JobRebalance, AutoRun{
+			Job: JobRebalance, StartedAt: start, DurationMS: dur,
+			Error: err.Error(),
+		})
+		s.logger().Warn("auto-rebalance failed", "err", err)
+		return
+	}
+	if out.PlanSize == 0 {
+		s.markCheck(JobRebalance, start)
+		return
+	}
+	s.recordAuto(JobRebalance, AutoRun{
+		Job: JobRebalance, StartedAt: start, DurationMS: dur,
+		PlanSize: out.PlanSize, Stats: out.toMap(),
 	})
-	s.autoMu.Lock()
-	s.autoLastRebalance = start
-	s.autoMu.Unlock()
 	s.logger().Info("auto-rebalance cycle",
-		"plan_size", planSize, "migrated", stats.Migrated,
-		"failed", stats.Failed, "bytes", stats.BytesCopied,
-		"duration_ms", time.Since(start).Milliseconds())
+		"plan_size", out.PlanSize, "migrated", out.Migrated,
+		"failed", out.Failed, "bytes", out.BytesCopied, "duration_ms", dur)
 }
 
 func (s *Server) runAutoGC(ctx context.Context, minAge time.Duration, conc int) {
-	s.gcMu.Lock()
-	defer s.gcMu.Unlock()
-
 	start := time.Now()
 	gctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	plan, err := gc.ComputePlan(gctx, s.Coord, s.Store, minAge)
+	out, err := s.executeGC(gctx, minAge, conc)
+	dur := time.Since(start).Milliseconds()
+
 	if err != nil {
-		s.recordAuto(AutoRun{
-			Job: "gc", StartedAt: start,
-			DurationMS: time.Since(start).Milliseconds(),
-			Error:      "ComputePlan: " + err.Error(),
+		s.recordAuto(JobGC, AutoRun{
+			Job: JobGC, StartedAt: start, DurationMS: dur,
+			Error: err.Error(),
 		})
-		s.logger().Warn("auto-gc ComputePlan failed", "err", err)
+		s.logger().Warn("auto-gc failed", "err", err)
 		return
 	}
-	planSize := len(plan.Sweeps)
-	if planSize == 0 {
-		s.recordAuto(AutoRun{
-			Job: "gc", StartedAt: start,
-			DurationMS: time.Since(start).Milliseconds(),
-		})
-		s.autoMu.Lock()
-		s.autoLastGC = start
-		s.autoMu.Unlock()
+	if out.PlanSize == 0 {
+		s.markCheck(JobGC, start)
 		return
 	}
-
-	stats := gc.Run(gctx, s.Coord, plan, conc)
-
-	s.recordAuto(AutoRun{
-		Job: "gc", StartedAt: start,
-		DurationMS: time.Since(start).Milliseconds(),
-		PlanSize:   planSize,
-		Stats: map[string]any{
-			"scanned":      plan.Scanned,
-			"claimed_keys": plan.ClaimedKeys,
-			"deleted":      stats.Deleted,
-			"failed":       stats.Failed,
-			"bytes_freed":  stats.BytesFreed,
-			"min_age_sec":  int(minAge.Seconds()),
-		},
+	s.recordAuto(JobGC, AutoRun{
+		Job: JobGC, StartedAt: start, DurationMS: dur,
+		PlanSize: out.PlanSize, Stats: out.toMap(),
 	})
-	s.autoMu.Lock()
-	s.autoLastGC = start
-	s.autoMu.Unlock()
 	s.logger().Info("auto-gc cycle",
-		"plan_size", planSize, "deleted", stats.Deleted,
-		"failed", stats.Failed, "bytes", stats.BytesFreed,
-		"duration_ms", time.Since(start).Milliseconds())
+		"plan_size", out.PlanSize, "deleted", out.Deleted,
+		"failed", out.Failed, "bytes", out.BytesFreed, "duration_ms", dur)
 }
 
-func (s *Server) recordAuto(r AutoRun) {
+// recordAuto appends to the ring buffer and updates lastCheck atomically.
+func (s *Server) recordAuto(job AutoJob, r AutoRun) {
 	s.autoMu.Lock()
 	defer s.autoMu.Unlock()
 	s.autoRuns = append(s.autoRuns, r)
 	if len(s.autoRuns) > autoRunHistory {
 		s.autoRuns = s.autoRuns[len(s.autoRuns)-autoRunHistory:]
 	}
+	s.setLastCheckLocked(job, r.StartedAt)
 }
 
-// handleAutoStatus returns the auto-trigger configuration plus the ring
-// buffer of recent runs. Read-only.
+// markCheck updates only lastCheck — used for empty cycles to keep
+// liveness visible without polluting the ring buffer.
+func (s *Server) markCheck(job AutoJob, t time.Time) {
+	s.autoMu.Lock()
+	defer s.autoMu.Unlock()
+	s.setLastCheckLocked(job, t)
+}
+
+func (s *Server) setLastCheckLocked(job AutoJob, t time.Time) {
+	switch job {
+	case JobRebalance:
+		s.autoLastCheckRebalance = t
+	case JobGC:
+		s.autoLastCheckGC = t
+	}
+}
+
 func (s *Server) handleAutoStatus(w http.ResponseWriter, r *http.Request) {
 	s.autoMu.Lock()
 	runs := append([]AutoRun(nil), s.autoRuns...)
-	lastRb := s.autoLastRebalance
-	lastGC := s.autoLastGC
-	nextRb := s.autoNextRebalance
-	nextGC := s.autoNextGC
+	lastCheckRb := s.autoLastCheckRebalance
+	lastCheckGC := s.autoLastCheckGC
 	s.autoMu.Unlock()
+
+	// Derive next-fire from lastCheck + interval (ticker fires at fixed cadence).
+	nextRb := zeroOr(lastCheckRb, s.AutoCfg.RebalanceInterval)
+	nextGC := zeroOr(lastCheckGC, s.AutoCfg.GCInterval)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"config": map[string]any{
@@ -667,14 +678,21 @@ func (s *Server) handleAutoStatus(w http.ResponseWriter, r *http.Request) {
 			"gc_min_age":         s.AutoCfg.GCMinAge.String(),
 			"concurrency":        s.AutoCfg.Concurrency,
 		},
-		"last_rebalance":     lastRb,
-		"last_gc":            lastGC,
-		"next_rebalance":     nextRb,
-		"next_gc":            nextGC,
-		"history_size":       len(runs),
-		"history_capacity":   autoRunHistory,
-		"runs":               runs,
+		"last_check_rebalance": lastCheckRb,
+		"last_check_gc":        lastCheckGC,
+		"next_rebalance":       nextRb,
+		"next_gc":              nextGC,
+		"history_size":         len(runs),
+		"history_capacity":     autoRunHistory,
+		"runs":                 runs,
 	})
+}
+
+func zeroOr(t time.Time, d time.Duration) time.Time {
+	if t.IsZero() {
+		return time.Time{}
+	}
+	return t.Add(d)
 }
 
 // ─── EC mode handlers (ADR-008) ───

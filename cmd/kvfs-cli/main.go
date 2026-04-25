@@ -460,15 +460,18 @@ func runRebalanceApply(edge string, concurrency int, verbose bool) {
 	}
 }
 
-func mustPost(url string) []byte {
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+func mustPost(url string) []byte { return mustHTTP(http.MethodPost, url) }
+func mustGet(url string) []byte  { return mustHTTP(http.MethodGet, url) }
+
+func mustHTTP(method, url string) []byte {
+	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		fail(err)
 	}
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		fail(fmt.Errorf("POST %s: %w", url, err))
+		fail(fmt.Errorf("%s %s: %w", method, url, err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -476,7 +479,7 @@ func mustPost(url string) []byte {
 		fail(err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		fail(fmt.Errorf("POST %s: HTTP %d: %s", url, resp.StatusCode, string(body)))
+		fail(fmt.Errorf("%s %s: HTTP %d: %s", method, url, resp.StatusCode, string(body)))
 	}
 	return body
 }
@@ -614,9 +617,6 @@ func idShort(id string) string {
 	return id
 }
 
-// ---- auto ----
-//
-// Queries GET /v1/admin/auto/status and pretty-prints config + history.
 func cmdAuto(args []string) {
 	fs := flag.NewFlagSet("auto", flag.ExitOnError)
 	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
@@ -630,20 +630,7 @@ func cmdAuto(args []string) {
 	}
 
 	url := strings.TrimRight(*edge, "/") + "/v1/admin/auto/status"
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		fail(err)
-	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fail(fmt.Errorf("GET %s: %w", url, err))
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		fail(fmt.Errorf("GET %s: HTTP %d: %s", url, resp.StatusCode, string(body)))
-	}
+	body := mustGet(url)
 
 	var status struct {
 		Config struct {
@@ -653,12 +640,12 @@ func cmdAuto(args []string) {
 			GCMinAge          string `json:"gc_min_age"`
 			Concurrency       int    `json:"concurrency"`
 		} `json:"config"`
-		LastRebalance time.Time `json:"last_rebalance"`
-		LastGC        time.Time `json:"last_gc"`
-		NextRebalance time.Time `json:"next_rebalance"`
-		NextGC        time.Time `json:"next_gc"`
-		HistorySize   int       `json:"history_size"`
-		Runs          []struct {
+		LastCheckRebalance time.Time `json:"last_check_rebalance"`
+		LastCheckGC        time.Time `json:"last_check_gc"`
+		NextRebalance      time.Time `json:"next_rebalance"`
+		NextGC             time.Time `json:"next_gc"`
+		HistorySize        int       `json:"history_size"`
+		Runs               []struct {
 			Job        string                 `json:"job"`
 			StartedAt  time.Time              `json:"started_at"`
 			DurationMS int64                  `json:"duration_ms"`
@@ -677,27 +664,19 @@ func cmdAuto(args []string) {
 	}
 	fmt.Printf("⏱  Auto-trigger: %s\n", state)
 	if status.Config.Enabled {
-		fmt.Printf("   rebalance_interval: %s\n", status.Config.RebalanceInterval)
-		fmt.Printf("   gc_interval:        %s\n", status.Config.GCInterval)
-		fmt.Printf("   gc_min_age:         %s\n", status.Config.GCMinAge)
-		fmt.Printf("   concurrency:        %d\n", status.Config.Concurrency)
-		if !status.LastRebalance.IsZero() {
-			fmt.Printf("   last_rebalance:     %s\n", status.LastRebalance.Format(time.RFC3339))
-		}
-		if !status.LastGC.IsZero() {
-			fmt.Printf("   last_gc:            %s\n", status.LastGC.Format(time.RFC3339))
-		}
-		if !status.NextRebalance.IsZero() {
-			fmt.Printf("   next_rebalance:     %s\n", status.NextRebalance.Format(time.RFC3339))
-		}
-		if !status.NextGC.IsZero() {
-			fmt.Printf("   next_gc:            %s\n", status.NextGC.Format(time.RFC3339))
-		}
+		fmt.Printf("   rebalance_interval:    %s\n", status.Config.RebalanceInterval)
+		fmt.Printf("   gc_interval:           %s\n", status.Config.GCInterval)
+		fmt.Printf("   gc_min_age:            %s\n", status.Config.GCMinAge)
+		fmt.Printf("   concurrency:           %d\n", status.Config.Concurrency)
+		printTime("last_check_rebalance", status.LastCheckRebalance)
+		printTime("last_check_gc       ", status.LastCheckGC)
+		printTime("next_rebalance      ", status.NextRebalance)
+		printTime("next_gc             ", status.NextGC)
 	}
 
 	if status.HistorySize == 0 {
 		fmt.Println()
-		fmt.Println("No runs yet.")
+		fmt.Println("No work or errors recorded yet (empty cycles are not stored — see last_check_* above).")
 		return
 	}
 
@@ -707,19 +686,20 @@ func cmdAuto(args []string) {
 	}
 	fmt.Println()
 	fmt.Printf("Recent %d runs (most recent last):\n", show)
-	startIdx := len(status.Runs) - show
-	for i := startIdx; i < len(status.Runs); i++ {
-		r := status.Runs[i]
+	for _, r := range status.Runs[len(status.Runs)-show:] {
 		ts := r.StartedAt.Format("15:04:05")
 		if r.Error != "" {
 			fmt.Printf("  %s  %-9s  ERROR: %s\n", ts, r.Job, r.Error)
 			continue
 		}
-		if r.PlanSize == 0 {
-			fmt.Printf("  %s  %-9s  no work  (%dms)\n", ts, r.Job, r.DurationMS)
-			continue
-		}
 		fmt.Printf("  %s  %-9s  plan=%d  stats=%v  (%dms)\n",
 			ts, r.Job, r.PlanSize, r.Stats, r.DurationMS)
 	}
+}
+
+func printTime(label string, t time.Time) {
+	if t.IsZero() {
+		return
+	}
+	fmt.Printf("   %s:    %s\n", label, t.Format(time.RFC3339))
 }

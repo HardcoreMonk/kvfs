@@ -97,21 +97,19 @@ func main() {
 	}
 
 	autoCfg := edge.AutoConfig{Enabled: *flagAuto, Concurrency: *flagAutoCnc}
-	if d, err := time.ParseDuration(*flagAutoRb); err == nil {
-		autoCfg.RebalanceInterval = d
-	} else if *flagAuto {
-		fatal("invalid EDGE_AUTO_REBALANCE_INTERVAL: " + err.Error())
+	parseAutoDur := func(name, raw string, dst *time.Duration) {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			if *flagAuto {
+				fatal("invalid " + name + ": " + err.Error())
+			}
+			return
+		}
+		*dst = d
 	}
-	if d, err := time.ParseDuration(*flagAutoGC); err == nil {
-		autoCfg.GCInterval = d
-	} else if *flagAuto {
-		fatal("invalid EDGE_AUTO_GC_INTERVAL: " + err.Error())
-	}
-	if d, err := time.ParseDuration(*flagAutoMin); err == nil {
-		autoCfg.GCMinAge = d
-	} else if *flagAuto {
-		fatal("invalid EDGE_AUTO_GC_MIN_AGE: " + err.Error())
-	}
+	parseAutoDur("EDGE_AUTO_REBALANCE_INTERVAL", *flagAutoRb, &autoCfg.RebalanceInterval)
+	parseAutoDur("EDGE_AUTO_GC_INTERVAL", *flagAutoGC, &autoCfg.GCInterval)
+	parseAutoDur("EDGE_AUTO_GC_MIN_AGE", *flagAutoMin, &autoCfg.GCMinAge)
 
 	srv := &edge.Server{
 		Store:     ms,
