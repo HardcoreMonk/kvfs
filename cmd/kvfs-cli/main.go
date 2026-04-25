@@ -152,6 +152,15 @@ func fail(err error) {
 //     → 10 DN 에 10000 chunks 배치, DN 1개 추가 시 이동률 출력
 //   kvfs-cli placement-sim --nodes 10 --chunks 10000 --replicas 3 --remove 1
 //     → 10 DN 에서 DN 1개 제거 시 이동률 출력
+//
+// Bar chart 해석 주의:
+//   bar 의 % 값 = "그 DN 이 포함된 청크 비율". 한 청크가 R 개 DN 에 배치되므로
+//   모든 DN 의 % 합 = R × 100% (R=3 이면 평균 300%).
+//
+//   특수 케이스 R=N (예: 3 DN + R=3): 모든 청크가 모든 DN 에 배치되므로
+//   각 DN bar = **항상 100%**. 이는 분산 알고리즘이 무의미한 (선택지 1) 환경
+//   에서 정상 동작 — 시각적으로 "DN 들이 다 꽉 찼다" 는 의미 아님. 효과는
+//   N > R (예: 5 DN + R=3) 부터 관찰 가능하며, 평균은 R/N = 60% 근처로 수렴.
 func cmdPlacementSim(args []string) {
 	fs := flag.NewFlagSet("placement-sim", flag.ExitOnError)
 	nodeCount := fs.Int("nodes", 5, "initial DN count")
@@ -169,6 +178,11 @@ func cmdPlacementSim(args []string) {
 	}
 	if *add > 0 && *remove > 0 {
 		fail(fmt.Errorf("specify either --add or --remove, not both"))
+	}
+	if *replicas == *nodeCount {
+		fmt.Println("ℹ️  R = N: every chunk lands on every DN. Bars below show 100% per DN — that is")
+		fmt.Println("    expected (no placement choice). Re-run with N > R to see the actual effect.")
+		fmt.Println()
 	}
 
 	// 초기 노드 집합
@@ -274,8 +288,12 @@ func printDistribution(d map[string]int, chunks int) {
 	}
 }
 
+// barChart renders pct (0~100) as a fixed-width bar.
+//
+// 100% (R=N 케이스 등) 는 width 가 꽉 찬 정상 결과 — clamp 는 방어 코드일 뿐
+// 알고리즘 버그 indicator 가 아님. 자세한 해석은 cmdPlacementSim 의 패키지
+// 주석 참조.
 func barChart(pct float64, width int) string {
-	// pct는 0~100 범위. width 칸에 비례해 채운다.
 	filled := int(pct / 100 * float64(width))
 	if filled > width {
 		filled = width

@@ -8,7 +8,7 @@
 
 - **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
 - **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **2건**
-- **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **6건** (P2-01/02/03/06 완료)
+- **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **4건** (P2-01/02/03/04/06/07 완료)
 - **P3**: 별도 스펙·사용자 결정 필요 — 현재 **3건** (P3-05/06 obsolete · 취소선; P3-07 ADR-024 완료 → P3-09 신규)
 
 ---
@@ -44,9 +44,8 @@
 ### ~~[P2-03] GitHub Actions CI~~
 - **DONE 2026-04-26** (`6c18c51`): `.github/workflows/ci.yml` 3 jobs (build/vet/test on Go 1.26 + staticcheck + govulncheck). /simplify 가 잡은 1.25 vs go.mod 불일치 fix 동반
 
-### [P2-04] placement-sim bar chart edge case
-- 현재: 100% 초과 시 clamp. 이론적으로 없으나 방어 코드만 있음
-- 작은 N (2~3 DN + R=3) 에서 일부 DN 100% 표시되는 것은 정상인데 시각적 오해 가능성. 주석 보강
+### ~~[P2-04] placement-sim bar chart edge case~~
+- **DONE 2026-04-26**: cmdPlacementSim 패키지 주석 + R=N 케이스 런타임 ℹ️  notice + barChart 함수 주석 추가
 
 ### [P2-05] edge 동작 중 EDGE_DNS 변경 지원
 - 현재: 시작 시 env var 1회 읽음. 변경하려면 재시작
@@ -61,9 +60,8 @@
   - chunker: Split ~2350 MB/s (sha256 한계)
 - ADR-008 / blog Ep.6 의 "~50 MB/s" 추정치를 실측 기준으로 갱신 (실제 ~10배 빠름, log/exp 테이블 L1 cache-friendly 덕)
 
-### [P2-07] Chaos test — random DN kill
-- `scripts/chaos-dn-killer.sh` — 주기적으로 random DN 중단·재시작
-- 장시간 돌려 복구 경로 · 메타 일관성 검증
+### ~~[P2-07] Chaos test — random DN kill~~
+- **DONE 2026-04-26**: `scripts/chaos-dn-killer.sh` (--duration/--interval/--downtime/--get-rate/--dns flags). quorum (R/2+1) 보장 위해 alive > 2 일 때만 kill, 죽은 DN 자동 restore. 라이브 검증: 30s/3 kill cycle, 69 GETs 0 fail PASS
 
 ### [P2-08] Secret rotation (UrlKey `kid`)
 - 현재: 단일 secret env var. 만료·누출 대응 어려움

@@ -69,6 +69,7 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `./scripts/demo-kappa.sh` | Reed-Solomon EC 라이브 데모 (Season 2 Ep.5) |
 | `./scripts/demo-lambda.sh` | Auto-trigger 라이브 데모 (Season 3 Ep.1) |
 | `./scripts/demo-mu.sh` | EC stripe rebalance 라이브 데모 (Season 3 Ep.2) |
+| `./scripts/chaos-dn-killer.sh` | 주기적 random DN kill + GET 검증 (회귀 catch) |
 | `./scripts/down.sh` | 정리 (dn1~dn8 + edge 포함) |
 
 Docker로 빌드 검증 (로컬 Go 없어도):
