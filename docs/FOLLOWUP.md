@@ -9,7 +9,7 @@
 - **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
 - **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **2건**
 - **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **9건**
-- **P3**: 별도 스펙·사용자 결정 필요 — 현재 **6건**
+- **P3**: 별도 스펙·사용자 결정 필요 — 현재 **5건**
 
 ---
 
@@ -80,12 +80,6 @@
 
 ## P3 — 사용자 결정·별도 스펙 필요
 
-### [P3-01] Season 2 Ep.2 주제 선택
-- **후보**: ADR-010 (Rebalance worker), ADR-011 (Chunking), ADR-008 (Reed-Solomon EC)
-- **의존 관계**: 010 은 009 결과 재활용. 011 은 단독. 008 은 N≥K+M DN 환경 필요 (009+011 선행 추천)
-- **추천 순서**: 010 → 011 → 008 (점진 복잡도)
-- **현재 상태**: 대기
-
 ### [P3-02] 관찰성 스택 선택
 - **옵션 A**: stdlib `slog` + `/metrics` 엔드포인트 (Prometheus-exposition 포맷 직접 작성)
 - **옵션 B**: OpenTelemetry SDK 풀 통합 (traces · metrics · logs)
@@ -133,18 +127,20 @@
 | 2026-04-25 | placement-sim CLI 도구 | ASCII bar chart, 이동률 실측 표시 |
 | 2026-04-25 | Blog Ep.2 작성 — Consistent Hashing | `blog/02-consistent-hashing.md` · placement-sim 3 케이스 실측 embed |
 | 2026-04-25 | 4-DN 라이브 데모 스크립트 | `scripts/demo-zeta.sh` · seed 4 + add dn4 + new 8 쓰기, dn4 4/24 slots 실측, 기존 청크 정지 확인 |
+| 2026-04-25 | Season 2 Ep.2 주제 결정 (P3-01 → P1-05) | ADR-010 Rebalance worker 채택, 010 → 011 → 008 로드맵 확정 |
+| 2026-04-26 | Season 2 Ep.2 — ADR-010 Rebalance worker 구현 완료 | `internal/rebalance/` (8 tests PASS) + edge admin 엔드포인트 + `kvfs-cli rebalance` + `scripts/demo-eta.sh` (라이브 PASS) + `blog/03-rebalance.md` |
 
 ---
 
 ## 현재 상태 요약 (2026-04-25)
 
-- **Git**: main branch, 4 commits, no remote
-- **클러스터**: `localhost:8000` running · edge + dn × 3 (demo-zeta 실행 시 dn4 일시 추가)
-- **테스트**: 7 placement + 5 urlkey = **12 unit tests PASS**
-- **데모**: α, ε, dedup, ζ 전부 라이브 통과
-- **ADR**: 8건 (001~007 + 009) Accepted
-- **Blog**: Ep.1·Ep.2 완성 (Ep.2 = Rendezvous Hashing 실측 데모)
-- **LOC**: Go 2,044 + 문서 ~1,800 + scripts ~250
+- **Git**: main branch, 5 commits, no remote
+- **클러스터**: `localhost:8000` running · edge + dn × 4 (demo-eta 가 down→up→dn4 까지 끝낸 상태)
+- **테스트**: 7 placement + 5 urlkey + 8 rebalance = **20 unit tests PASS**
+- **데모**: α, ε, dedup, ζ, η 전부 라이브 통과
+- **ADR**: 9건 (001~007 + 009 + 010) Accepted
+- **Blog**: Ep.1·Ep.2·Ep.3 완성 (Ep.3 = Rebalance worker 라이브 데모)
+- **LOC**: Go ~2,500 + 문서 ~2,500 + scripts ~400
 
 ## 업데이트 규칙
 

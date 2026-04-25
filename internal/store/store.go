@@ -119,6 +119,32 @@ func (m *MetaStore) GetObject(bucket, key string) (*ObjectMeta, error) {
 	return &out, nil
 }
 
+// UpdateReplicas updates only the Replicas field of an existing object,
+// without bumping Version (data unchanged — only placement metadata moved).
+//
+// Returns ErrNotFound if the object doesn't exist. Used by the rebalance worker
+// after copying a chunk to additional DNs.
+func (m *MetaStore) UpdateReplicas(bucket, key string, replicas []string) error {
+	k := objKey(bucket, key)
+	return m.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketObjects)
+		raw := b.Get(k)
+		if raw == nil {
+			return ErrNotFound
+		}
+		var obj ObjectMeta
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return err
+		}
+		obj.Replicas = replicas
+		buf, err := json.Marshal(&obj)
+		if err != nil {
+			return err
+		}
+		return b.Put(k, buf)
+	})
+}
+
 // DeleteObject removes an object's metadata. Returns ErrNotFound if absent.
 func (m *MetaStore) DeleteObject(bucket, key string) error {
 	return m.db.Update(func(tx *bbolt.Tx) error {

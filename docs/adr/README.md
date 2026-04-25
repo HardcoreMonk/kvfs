@@ -46,13 +46,14 @@ Accepted · YYYY-MM-DD
 | # | 제목 | 상태 | 연결 |
 |---|---|---|---|
 | [009](ADR-009-consistent-hashing.md) | Consistent Hashing (Rendezvous/HRW) | Accepted · 2026-04-25 | `internal/placement/` |
+| [010](ADR-010-rebalance-worker.md) | Rebalance worker (copy-then-update, no-delete MVP) | Accepted · 2026-04-25 | `internal/rebalance/` (후속) |
 
 ## Season 2+ 예상 ADR (pending)
 
 - ADR-008: Reed-Solomon erasure coding 도입
-- ADR-010: Rebalance worker (기존 청크 자동 재배치)
 - ADR-011: chunking (>64MB 객체 지원)
-- ADR-012: Coordinator daemon 분리 + Raft HA
-- ADR-013: gRPC 마이그레이션 (or 유지 결정)
+- ADR-012: Surplus 청크 GC (rebalance 후 over-replicated 정리)
+- ADR-013: Coordinator daemon 분리 + Raft HA
+- ADR-014: gRPC 마이그레이션 (or 유지 결정)
 
 작성 시점: 해당 기능 설계 직전.

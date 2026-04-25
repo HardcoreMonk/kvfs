@@ -299,7 +299,7 @@ HRW가 끝이 아닙니다. ADR-009의 "부정" 절에 적힌 그대로:
 
 ## 다음 편 예고
 
-- **Ep.3**: ADR-010 Rebalance worker — "기존 청크를 어떻게 새 자리로 옮기는가". trickle migration · double-write window · 진행률 메타
+- **Ep.3** *(완료)*: ADR-010 Rebalance worker — "정지된 청크를 어떻게 옮기는가" + never-delete 안전 규칙. → [`blog/03-rebalance.md`](03-rebalance.md)
 - **Ep.4**: ADR-011 Chunking — 1 GiB 객체를 어떻게 작은 청크로 쪼개고, placement가 chunk 단위로 자연스럽게 확장되는가
 - **Ep.5**: ADR-008 Reed-Solomon EC — placement가 (K+M)개 노드를 고르도록 확장. N ≥ K+M 필요 — Season 2의 보스전
 

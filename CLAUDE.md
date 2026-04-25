@@ -39,6 +39,7 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `internal/` | 패키지 경계. **외부 import 금지** (Go 표준 `internal/` 규칙) |
 | `internal/placement/` | Rendezvous Hashing (ADR-009, Season 2 Ep.1). chunk→DN 선택 |
 | `internal/coordinator/` | fanout + quorum. `placement.Placer` 사용. Season 2+ 에 별도 daemon 분리 예정 |
+| `internal/rebalance/` | Rebalance worker (ADR-010, Season 2 Ep.2). copy-then-update, never-delete |
 | `scripts/` | 클러스터 lifecycle + 데모 (bash, curl, docker, python3만) |
 | `docs/adr/` | 아키텍처 의사결정 기록 (불변) |
 | `docs/FOLLOWUP.md` | 우선순위별 pending 작업 단일 소스 |
@@ -56,7 +57,8 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `./scripts/up.sh` | Docker 클러스터 기동 (compose 플러그인 불필요) |
 | `./scripts/demo-alpha.sh` | 3-way replication 데모 |
 | `./scripts/demo-epsilon.sh` | UrlKey 데모 |
-| `./scripts/demo-zeta.sh` | 4-DN 추가 후 placement 분산 데모 (Season 2) |
+| `./scripts/demo-zeta.sh` | 4-DN 추가 후 placement 분산 데모 (Season 2 Ep.1) |
+| `./scripts/demo-eta.sh` | Rebalance worker 라이브 데모 (Season 2 Ep.2) |
 | `./scripts/down.sh` | 정리 (dn4 포함) |
 
 Docker로 빌드 검증 (로컬 Go 없어도):

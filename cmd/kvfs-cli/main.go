@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -31,6 +33,8 @@ func main() {
 		cmdInspect(os.Args[2:])
 	case "placement-sim":
 		cmdPlacementSim(os.Args[2:])
+	case "rebalance":
+		cmdRebalance(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -47,6 +51,7 @@ Subcommands:
   sign            Generate an HMAC-signed presigned URL
   inspect         Dump bbolt metadata store contents
   placement-sim   Simulate Rendezvous Hashing: chunk distribution + rebalance
+  rebalance       Migrate misplaced chunks to their HRW-desired DNs (ADR-010)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -321,4 +326,151 @@ func sameSetKeys(a, b map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// ---- rebalance ----
+//
+// Talks to a running edge over HTTP:
+//   POST /v1/admin/rebalance/plan        — read-only, returns Plan JSON
+//   POST /v1/admin/rebalance/apply?...   — runs migration, returns RunStats JSON
+//
+// Use --plan first to preview. --apply executes (idempotent: safe to re-run).
+func cmdRebalance(args []string) {
+	fs := flag.NewFlagSet("rebalance", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	doPlan := fs.Bool("plan", false, "show migration plan only (no changes)")
+	doApply := fs.Bool("apply", false, "execute the plan")
+	concurrency := fs.Int("concurrency", 4, "parallel chunk copies during apply")
+	verbose := fs.Bool("v", false, "print every migration entry (otherwise just summary)")
+	fs.Parse(args)
+
+	if !*doPlan && !*doApply {
+		fmt.Fprintln(os.Stderr, "rebalance: specify --plan or --apply")
+		os.Exit(2)
+	}
+	if *doPlan && *doApply {
+		fmt.Fprintln(os.Stderr, "rebalance: --plan and --apply are mutually exclusive")
+		os.Exit(2)
+	}
+
+	if *doPlan {
+		runRebalancePlan(*edge, *verbose)
+	} else {
+		runRebalanceApply(*edge, *concurrency, *verbose)
+	}
+}
+
+func runRebalancePlan(edge string, verbose bool) {
+	url := strings.TrimRight(edge, "/") + "/v1/admin/rebalance/plan"
+	body := mustPost(url)
+	var plan struct {
+		Scanned    int `json:"scanned"`
+		Migrations []struct {
+			Bucket  string   `json:"bucket"`
+			Key     string   `json:"key"`
+			ChunkID string   `json:"chunk_id"`
+			Size    int64    `json:"size"`
+			Actual  []string `json:"actual"`
+			Desired []string `json:"desired"`
+			Missing []string `json:"missing"`
+			Surplus []string `json:"surplus"`
+		} `json:"migrations"`
+	}
+	if err := json.Unmarshal(body, &plan); err != nil {
+		fail(fmt.Errorf("decode plan: %w", err))
+	}
+
+	fmt.Printf("📋 Rebalance plan — scanned %d objects, %d need migration\n",
+		plan.Scanned, len(plan.Migrations))
+	if len(plan.Migrations) == 0 {
+		fmt.Println("   ✅ Cluster is in HRW-desired state. No work to do.")
+		return
+	}
+
+	if verbose {
+		fmt.Println()
+		for _, m := range plan.Migrations {
+			fmt.Printf("  %s/%s  size=%d  chunk=%s..\n", m.Bucket, m.Key, m.Size, m.ChunkID[:16])
+			fmt.Printf("    actual:  %s\n", strings.Join(m.Actual, ", "))
+			fmt.Printf("    desired: %s\n", strings.Join(m.Desired, ", "))
+			fmt.Printf("    missing: %s\n", strings.Join(m.Missing, ", "))
+			if len(m.Surplus) > 0 {
+				fmt.Printf("    surplus: %s  (kept — never delete in MVP)\n", strings.Join(m.Surplus, ", "))
+			}
+		}
+	} else {
+		// brief: show first 5
+		shown := 5
+		if shown > len(plan.Migrations) {
+			shown = len(plan.Migrations)
+		}
+		fmt.Println()
+		fmt.Printf("First %d migrations:\n", shown)
+		for i := 0; i < shown; i++ {
+			m := plan.Migrations[i]
+			fmt.Printf("  %s/%s  missing=%v  (currently on %v)\n",
+				m.Bucket, m.Key, m.Missing, m.Actual)
+		}
+		if len(plan.Migrations) > shown {
+			fmt.Printf("  ... and %d more (use -v to list all)\n", len(plan.Migrations)-shown)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("Next:  kvfs-cli rebalance --apply")
+}
+
+func runRebalanceApply(edge string, concurrency int, verbose bool) {
+	url := fmt.Sprintf("%s/v1/admin/rebalance/apply?concurrency=%d",
+		strings.TrimRight(edge, "/"), concurrency)
+	body := mustPost(url)
+	var stats struct {
+		Scanned     int      `json:"scanned"`
+		PlanSize    int      `json:"plan_size"`
+		Concurrency int      `json:"concurrency"`
+		Migrated    int      `json:"migrated"`
+		Failed      int      `json:"failed"`
+		BytesCopied int64    `json:"bytes_copied"`
+		Errors      []string `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &stats); err != nil {
+		fail(fmt.Errorf("decode apply result: %w", err))
+	}
+
+	fmt.Printf("⚙️  Rebalance applied (concurrency=%d)\n", stats.Concurrency)
+	fmt.Printf("   scanned:      %d\n", stats.Scanned)
+	fmt.Printf("   planned:      %d\n", stats.PlanSize)
+	fmt.Printf("   migrated:     %d\n", stats.Migrated)
+	fmt.Printf("   failed:       %d\n", stats.Failed)
+	fmt.Printf("   bytes_copied: %d\n", stats.BytesCopied)
+	if verbose && len(stats.Errors) > 0 {
+		fmt.Println("   errors:")
+		for _, e := range stats.Errors {
+			fmt.Printf("     - %s\n", e)
+		}
+	}
+	if stats.Failed > 0 {
+		os.Exit(1)
+	}
+}
+
+func mustPost(url string) []byte {
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		fail(err)
+	}
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		fail(fmt.Errorf("POST %s: %w", url, err))
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fail(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		fail(fmt.Errorf("POST %s: HTTP %d: %s", url, resp.StatusCode, string(body)))
+	}
+	return body
 }

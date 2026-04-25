@@ -209,6 +209,15 @@ func (c *Coordinator) ReadChunk(ctx context.Context, chunkID string, candidates 
 	return nil, "", fmt.Errorf("all replicas failed: %w", lastErr)
 }
 
+// PutChunkTo writes a chunk to a single DN address (no fanout, no quorum).
+// Used by rebalance to copy an existing chunk to a specific target DN.
+//
+// Idempotent: DN's PUT /chunk/{id} overwrites if same chunk_id (content-addressable).
+// Same body → same chunk_id → safe to re-run.
+func (c *Coordinator) PutChunkTo(ctx context.Context, addr, chunkID string, data []byte) error {
+	return c.putChunk(ctx, addr, chunkID, data)
+}
+
 // DeleteChunk fires a DELETE to each replica (best-effort).
 func (c *Coordinator) DeleteChunk(ctx context.Context, chunkID string, replicas []string) error {
 	var errs []error
