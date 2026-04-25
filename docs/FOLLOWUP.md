@@ -8,7 +8,7 @@
 
 - **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
 - **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **2건**
-- **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **9건**
+- **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **6건** (P2-01/02/03/06 완료)
 - **P3**: 별도 스펙·사용자 결정 필요 — 현재 **3건** (P3-05/06 obsolete · 취소선; P3-07 ADR-024 완료 → P3-09 신규)
 
 ---
@@ -35,18 +35,14 @@
 
 ## P2 — 개선 권고 (개인 프로젝트 여유 시)
 
-### [P2-01] LICENSE 헤더 .go 파일 추가
-- 각 `.go` 상단에 SPDX-License-Identifier + Apache 2.0 short header
-- 자동화: `make license` 타깃
+### ~~[P2-01] LICENSE 헤더~~
+- **DONE 2026-04-26** (`6c18c51`): `scripts/add-license-headers.sh` (idempotent + trailing-newline 보존), 23 .go SPDX 헤더, `make license`
 
-### [P2-02] CONTRIBUTING.md · CODE_OF_CONDUCT.md
-- 오픈소스 표준 템플릿. 개인 프로젝트라도 외부 기여 가능성 대비
+### ~~[P2-02] CONTRIBUTING + CODE_OF_CONDUCT~~
+- **DONE 2026-04-26** (`6c18c51` + 후속): `CONTRIBUTING.md` (개발 흐름·ADR 규칙·커밋 컨벤션), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1 by reference)
 
-### [P2-03] GitHub Actions CI
-- `.github/workflows/ci.yml`
-- PR·push 시: `go build ./...`, `go test ./...`, `go vet ./...`
-- Go matrix: [1.25, 1.26] (하위호환 검증)
-- 추가 고려: `staticcheck`, `govulncheck`
+### ~~[P2-03] GitHub Actions CI~~
+- **DONE 2026-04-26** (`6c18c51`): `.github/workflows/ci.yml` 3 jobs (build/vet/test on Go 1.26 + staticcheck + govulncheck). /simplify 가 잡은 1.25 vs go.mod 불일치 fix 동반
 
 ### [P2-04] placement-sim bar chart edge case
 - 현재: 100% 초과 시 clamp. 이론적으로 없으나 방어 코드만 있음
@@ -57,10 +53,13 @@
 - 개선: `/v1/admin/dns` POST 로 DN 동적 추가·제거 (재배치 로직은 ADR-010 가 담당)
 - 기본적인 시스템 자체는 변경 최소
 
-### [P2-06] Benchmark suite
-- `internal/placement/placement_bench_test.go` — `BenchmarkPick` (N 별 lookup 레이턴시)
-- `internal/urlkey/urlkey_bench_test.go` — `BenchmarkSign`, `BenchmarkVerify`
-- README · blog 에서 숫자 인용 가능
+### ~~[P2-06] Benchmark suite~~
+- **DONE 2026-04-26**: 4 패키지 `*_bench_test.go` 신규
+  - placement: `BenchmarkPick` (N=3..1000) — N=10 ~1.4 µs, N=1000 ~178 µs (O(N) 그대로)
+  - urlkey: Sign 737 ns, BuildURL 859 ns, Verify 1053 ns
+  - reedsolomon: (4+2) Encode/Reconstruct ~515 MB/s, (10+4) ~264 MB/s, gfMul 0.44 ns/op
+  - chunker: Split ~2350 MB/s (sha256 한계)
+- ADR-008 / blog Ep.6 의 "~50 MB/s" 추정치를 실측 기준으로 갱신 (실제 ~10배 빠름, log/exp 테이블 L1 cache-friendly 덕)
 
 ### [P2-07] Chaos test — random DN kill
 - `scripts/chaos-dn-killer.sh` — 주기적으로 random DN 중단·재시작
@@ -149,12 +148,13 @@
 | 2026-04-26 | P1-01 GitHub 발행 + push | `https://github.com/HardcoreMonk/kvfs` private, 12 commits push (`076ba27..main`) |
 | 2026-04-26 | P2-03 CI workflow + P2-01 LICENSE 헤더 + P2-02 CONTRIBUTING (부분) | `.github/workflows/ci.yml` (3 jobs: test/staticcheck/govulncheck, Go 1.26 fix), `scripts/add-license-headers.sh` (idempotent + trailing-newline 보존), 23 .go 파일 SPDX 헤더, `Makefile` `license`/`bench` targets, `CONTRIBUTING.md`. /simplify 후 trailing newline 보존 fix 동반 |
 | 2026-04-26 | Season 3 Ep.2 — ADR-024 EC stripe rebalance 구현 완료 | `internal/rebalance/` 확장 (planEC + migrateShard, set-based 최소 이동), Migration 에 `Kind`/`StripeIndex`/`ShardIndex`/`OldAddr`/`NewAddr` 추가, `Coordinator.PlaceN` + `ObjectStore.UpdateShardReplicas` 인터페이스 확장, CLI `[shard]` 렌더링. EC 전용 7 tests PASS (총 73). `scripts/demo-mu.sh` 라이브: 6 DN + dn7 추가 → 정확히 stripe 당 1 migration → GET sha256 일치 + 멱등 + `blog/08-ec-rebalance.md`. ADR-013 auto-trigger 와 자동 통합 |
+| 2026-04-26 | P2-02 마무리 (CODE_OF_CONDUCT) + P2-06 Benchmark suite | `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1 by reference, content filter 회피 위해 본문 link). 4 패키지 bench: placement Pick O(N), urlkey Sign/Verify ~µs, RS Encode (4+2) 515 MB/s · (10+4) 264 MB/s, chunker Split 2350 MB/s. ADR-008/blog Ep.6 의 ~50 MB/s 추정치를 실측으로 정정 |
 
 ---
 
 ## 현재 상태 요약 (2026-04-26)
 
-- **Git**: main branch, 14 commits, **GitHub `HardcoreMonk/kvfs` private published** (12 commits pushed; +2 local pending)
+- **Git**: main branch, 15+ commits, **GitHub `HardcoreMonk/kvfs` private** (latest pushed)
 - **클러스터**: `localhost:8000` running · edge + dn × 7 (demo-mu 가 down→up→6DN→dn7 까지 끝낸 상태)
 - **테스트**: 7 placement + 5 urlkey + 15 rebalance (8 chunk + 7 EC) + 9 gc + 13 chunker + 24 reedsolomon = **73 unit tests PASS**, `go vet` 클린
 - **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ 전부 라이브 통과 (11종)

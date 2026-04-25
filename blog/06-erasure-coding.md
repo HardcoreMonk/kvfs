@@ -97,7 +97,7 @@ for p := 0; p < e.m; p++ {                            // each parity shard
 }
 ```
 
-shardSize 가 16 KiB 면 16384 번의 GF mul + add. SIMD 없는 pure Go 라 느리지만 (~50 MB/s), 정확합니다.
+shardSize 가 16 KiB 면 16384 번의 GF mul + add. SIMD 없는 pure Go 인데도 **~515 MB/s** ((4+2) 기준, 실측 i9-12900H). log/exp 테이블이 L1 에 들어가 cache-friendly한 덕분.
 
 ## 디코딩 = 행렬 역산
 
@@ -294,7 +294,7 @@ dn5, dn6 모두 죽인 상태에서 GET → 각 stripe 에서 6 shard 중 4 개 
 
 ## 솔직한 한계 — 다음 episode 가 풀어야 할 것들
 
-1. **CPU 비용** — pure Go GF mul (no SIMD): ~50 MB/s 단일 코어. 프로덕션은 klauspost/reedsolomon (SIMD AVX2/NEON) 1+ GB/s
+1. **CPU 비용** — pure Go GF mul (no SIMD): (4+2) ~515 MB/s · (6+3) ~353 MB/s · (10+4) ~264 MB/s 단일 코어 (실측 i9-12900H). 프로덕션 SIMD (klauspost/reedsolomon AVX2/NEON) 는 GB/s+
 2. **읽기 amplification** — 단일 shard miss 라도 K shard fetch + invert + 곱셈 필요. R-way 는 1 shard fetch 만. EC 의 평균 read latency 가 더 큼
 3. **메타 폭증** — 1 GiB / 16 KiB shard / (K=4 M=2) → 16384 shards 메타. ChunkRef per shard 라 byte 수 큼
 4. **EC rebalance 미구현** — 이번 episode 범위 밖. shard 의 desired DN 이 변할 때 (DN 추가) 마이그레이션 필요. ADR-013 후보

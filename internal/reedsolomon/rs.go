@@ -31,10 +31,12 @@
 // Reconstruct 의 입력: shards 배열 (길이 K+M, 각 entry 는 nil 또는 shardSize byte).
 // nil 인 위치가 잃어버린 shard. 살아있는 게 K 개 미만이면 복원 불가 (ErrTooFewShards).
 //
-// from-scratch 의 한계
-// ──────────────────────
-// 이 구현은 byte-by-byte GF 곱. SIMD 안 씀. 경험적으로 ~50 MB/s 수준.
-// 프로덕션은 klauspost/reedsolomon 같은 SIMD 라이브러리가 GB/s+. ADR-008 참조.
+// from-scratch 의 성능 (실측, BenchmarkEncode/Reconstruct, i9-12900H)
+// ──────────────────────────────────────────────────────────────────
+//   (4+2)  ~515 MB/s   (6+3)  ~353 MB/s   (10+4) ~264 MB/s
+//   gfMul: 0.44 ns/op (단일 GF 곱셈)
+// log/exp 테이블이 L1 에 들어가 cache-friendly. 데모/교육 용도 충분.
+// 프로덕션 SIMD (klauspost/reedsolomon 등) 는 GB/s+. ADR-008 참조.
 package reedsolomon
 
 import (

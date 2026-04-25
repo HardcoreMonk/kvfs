@@ -163,7 +163,7 @@ CLI / 헤더로 per-object 선택:
 
 ### 부정
 
-- **encode CPU 비용** — RS(4+2) 는 byte 당 ~6 GF mul. SIMD 없이 ~50 MB/s 수준. SIMD 사용 production 라이브러리는 1 GB/s+
+- **encode CPU 비용** — RS(4+2) 는 byte 당 ~6 GF mul. SIMD 없이 ~515 MB/s 수준 (실측 i9-12900H, BenchmarkEncode). 프로덕션 SIMD 라이브러리는 GB/s+
 - **decode 시 K shard fetch + matrix invert** — 단일 shard miss 도 K shard fetch 필요 (replication 은 1 shard fetch). 읽기 latency 증가
 - **메타 폭증** — replication 은 chunk N 개, EC 는 stripe M=ceil(N/K) × (K+M) shard. 1 GiB / 16 KiB chunk / K=4 M=2 → 16384 shards 메타 (replication 이라면 65536 chunk × 3 replicas = 196608 entries 나 stripe 단위는 더 적음. 케이스마다 다름)
 - **partial-stripe 손실 시 전체 데이터 손실** — K 미만 survive 면 복원 불가. 메타 backup 별도 필요
