@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
+
 // Package chunker splits objects into fixed-size content-addressable chunks
 // and joins chunks back into objects.
 //

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
+
 // Package reedsolomon implements Reed-Solomon erasure coding over GF(2^8).
 //
 // ──────────────────────────────────────────────────────────────────

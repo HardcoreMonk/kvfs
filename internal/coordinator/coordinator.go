@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
+
 // Package coordinator implements chunk placement, fanout writes, and quorum reads.
 //
 // This is the "inline library" in kvfs-edge. Carved as a dedicated package so

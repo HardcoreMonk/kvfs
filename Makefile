@@ -1,11 +1,14 @@
-.PHONY: help build test clean compose-up compose-down demo-alpha demo-epsilon fmt lint
+.PHONY: help build test test-race bench clean compose-up compose-down demo-alpha demo-epsilon fmt lint license
 
 help:
 	@echo 'Targets:'
 	@echo '  build         Build all three binaries to ./bin'
 	@echo '  test          Run unit tests'
+	@echo '  test-race     Run unit tests with race detector (requires CGO)'
+	@echo '  bench         Run all Go benchmarks'
 	@echo '  fmt           gofmt -w .'
 	@echo '  lint          go vet ./...'
+	@echo '  license       Add SPDX + Apache 2.0 short header to every .go (idempotent)'
 	@echo '  compose-up    docker compose up -d --build'
 	@echo '  compose-down  docker compose down -v'
 	@echo '  demo-alpha    Run α (3-way replication) demo'
@@ -22,6 +25,12 @@ test:
 
 test-race:
 	go test -race ./...
+
+bench:
+	go test -bench=. -run='^$$' -benchmem ./...
+
+license:
+	./scripts/add-license-headers.sh
 
 fmt:
 	gofmt -w .

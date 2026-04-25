@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
+
 // placement_test는 3가지를 증명한다:
 //
 //   1. 결정적 — 같은 입력에 항상 같은 출력 (replication·read 일관성)

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
+
 // Package placement picks N storage nodes for a given chunk using
 // Rendezvous Hashing (a.k.a. HRW — Highest Random Weight).
 //

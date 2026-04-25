@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
+
 // Command kvfs-cli is the developer CLI:
 //
 //	kvfs-cli sign --method PUT --path /v1/o/bucket/key --ttl 1h

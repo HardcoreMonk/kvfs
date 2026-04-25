@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
+
 // Command kvfs-edge is the gateway + inline coordinator.
 //
 // Config (env vars, with flag fallback):
