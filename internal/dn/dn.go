@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync/atomic"
 	"time"
 )
@@ -59,6 +60,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /chunk/{id}", s.handleGet)
 	mux.HandleFunc("PUT /chunk/{id}", s.handlePut)
 	mux.HandleFunc("DELETE /chunk/{id}", s.handleDelete)
+	mux.HandleFunc("GET /chunks", s.handleListChunks)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }
@@ -150,6 +152,56 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	s.chunkCount.Add(-1)
 	s.bytesTotal.Add(-info.Size())
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ChunkInfo describes a single on-disk chunk for /chunks listings.
+//
+// MTime 은 Unix seconds. GC 의 min-age 안전망이 사용 (ADR-012).
+type ChunkInfo struct {
+	ID    string `json:"id"`
+	Size  int64  `json:"size"`
+	MTime int64  `json:"mtime"`
+}
+
+// handleListChunks returns all chunk IDs on disk, sorted by ID.
+//
+// 사용처: GC (ADR-012) 가 메타와 비교해 surplus 청크 식별.
+// MVP: 페이지네이션 없음. 청크 100만 개 이상이면 페이징 필요.
+func (s *Server) handleListChunks(w http.ResponseWriter, r *http.Request) {
+	root := filepath.Join(s.dataDir, "chunks")
+	var infos []ChunkInfo
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		// 파일 경로에서 chunk_id 복원: <root>/<id[0:2]>/<id[2:]>
+		dir := filepath.Base(filepath.Dir(p))
+		base := filepath.Base(p)
+		if len(dir) != 2 || len(base) != 62 {
+			return nil // 형식 안 맞으면 무시 (.tmp 등)
+		}
+		id := dir + base
+		if !validChunkID(id) {
+			return nil
+		}
+		infos = append(infos, ChunkInfo{
+			ID:    id,
+			Size:  info.Size(),
+			MTime: info.ModTime().Unix(),
+		})
+		return nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].ID < infos[j].ID })
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"dn":     s.id,
+		"count":  len(infos),
+		"chunks": infos,
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

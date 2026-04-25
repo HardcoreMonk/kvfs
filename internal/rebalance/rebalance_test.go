@@ -182,11 +182,16 @@ func TestRun_HappyPath_CopiesAndUpdatesMeta(t *testing.T) {
 	if _, ok := coord.disks["dn4"]["c1"]; !ok {
 		t.Errorf("dn4 should hold c1 after rebalance")
 	}
-	// meta replicas should be unique-sorted union
+	// On full success, meta replicas should equal Desired (surplus dn2 dropped from meta).
+	// dn2 still has the chunk on disk — that's the surplus GC will later clean.
 	got := st.objects[0].Replicas
-	want := []string{"dn1", "dn2", "dn3", "dn4"}
+	want := []string{"dn1", "dn3", "dn4"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("replicas after rebalance = %v, want %v", got, want)
+		t.Errorf("replicas after rebalance = %v, want %v (Desired set)", got, want)
+	}
+	// dn2 still holds the chunk on (fake) disk — kept for GC, never deleted by rebalance
+	if _, ok := coord.disks["dn2"]["c1"]; !ok {
+		t.Errorf("dn2 disk should still hold c1 (rebalance never deletes)")
 	}
 }
 

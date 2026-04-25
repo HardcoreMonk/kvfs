@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
+	"github.com/HardcoreMonk/kvfs/internal/gc"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
@@ -33,6 +34,9 @@ type Server struct {
 	// rebalanceMu serializes /v1/admin/rebalance/apply so two concurrent
 	// triggers don't race on the same chunks. /plan is read-only and excluded.
 	rebalanceMu sync.Mutex
+
+	// gcMu serializes /v1/admin/gc/apply for the same reason.
+	gcMu sync.Mutex
 }
 
 // Routes builds the HTTP mux.
@@ -45,6 +49,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/dns", s.handleDNs)
 	mux.HandleFunc("POST /v1/admin/rebalance/plan", s.handleRebalancePlan)
 	mux.HandleFunc("POST /v1/admin/rebalance/apply", s.handleRebalanceApply)
+	mux.HandleFunc("POST /v1/admin/gc/plan", s.handleGCPlan)
+	mux.HandleFunc("POST /v1/admin/gc/apply", s.handleGCApply)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }
@@ -254,6 +260,72 @@ func (s *Server) handleRebalanceApply(w http.ResponseWriter, r *http.Request) {
 		"bytes_copied": stats.BytesCopied,
 		"errors":       stats.Errors,
 	})
+}
+
+// handleGCPlan computes the surplus chunk plan (read-only).
+// Query: ?min_age_seconds=N (default uses gc.DefaultMinAge = 60s)
+func (s *Server) handleGCPlan(w http.ResponseWriter, r *http.Request) {
+	minAge := parseMinAge(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	plan, err := gc.ComputePlan(ctx, s.Coord, s.Store, minAge)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	plan.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// handleGCApply runs the GC plan with the given concurrency.
+// Serialized via s.gcMu.
+//
+// Query:
+//
+//	?min_age_seconds=N   (default 60s)
+//	?concurrency=N       (default 4)
+func (s *Server) handleGCApply(w http.ResponseWriter, r *http.Request) {
+	minAge := parseMinAge(r)
+	concurrency := 4
+	if q := r.URL.Query().Get("concurrency"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			concurrency = n
+		}
+	}
+
+	s.gcMu.Lock()
+	defer s.gcMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	plan, err := gc.ComputePlan(ctx, s.Coord, s.Store, minAge)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	planSize := len(plan.Sweeps)
+	stats := gc.Run(ctx, s.Coord, plan, concurrency)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scanned":      plan.Scanned,
+		"claimed_keys": plan.ClaimedKeys,
+		"plan_size":    planSize,
+		"concurrency":  concurrency,
+		"min_age_sec":  int(minAge.Seconds()),
+		"deleted":      stats.Deleted,
+		"failed":       stats.Failed,
+		"bytes_freed":  stats.BytesFreed,
+		"errors":       stats.Errors,
+	})
+}
+
+func parseMinAge(r *http.Request) time.Duration {
+	if q := r.URL.Query().Get("min_age_seconds"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n >= 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return gc.DefaultMinAge
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

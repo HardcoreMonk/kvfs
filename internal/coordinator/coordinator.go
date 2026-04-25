@@ -19,6 +19,7 @@ package coordinator
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -207,6 +208,46 @@ func (c *Coordinator) ReadChunk(ctx context.Context, chunkID string, candidates 
 		lastErr = errors.New("no candidates")
 	}
 	return nil, "", fmt.Errorf("all replicas failed: %w", lastErr)
+}
+
+// ChunkInfo mirrors dn.ChunkInfo without importing the dn package
+// (avoid coupling — this is a transport DTO).
+type ChunkInfo struct {
+	ID    string `json:"id"`
+	Size  int64  `json:"size"`
+	MTime int64  `json:"mtime"` // unix seconds
+}
+
+// ListChunks fetches all chunk_ids on disk at the given DN.
+// Used by GC (ADR-012) to enumerate per-DN inventory.
+func (c *Coordinator) ListChunks(ctx context.Context, addr string) ([]ChunkInfo, error) {
+	url := fmt.Sprintf("http://%s/chunks", addr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GET /chunks @ %s: %d: %s", addr, resp.StatusCode, string(b))
+	}
+	var out struct {
+		Chunks []ChunkInfo `json:"chunks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode /chunks @ %s: %w", addr, err)
+	}
+	return out.Chunks, nil
+}
+
+// DeleteChunkFrom removes a chunk from a single DN.
+// Idempotent: 404 (already gone) is treated as success.
+func (c *Coordinator) DeleteChunkFrom(ctx context.Context, addr, chunkID string) error {
+	return c.deleteChunk(ctx, addr, chunkID)
 }
 
 // PutChunkTo writes a chunk to a single DN address (no fanout, no quorum).

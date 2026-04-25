@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-25** · Season 2 Ep.1 완료 시점 기준.
+문서 현행화 일자: **2026-04-26** · Season 2 Ep.3 (ADR-012 GC) 완료 시점 기준.
 
 ## 우선순위 맵
 
@@ -129,18 +129,19 @@
 | 2026-04-25 | 4-DN 라이브 데모 스크립트 | `scripts/demo-zeta.sh` · seed 4 + add dn4 + new 8 쓰기, dn4 4/24 slots 실측, 기존 청크 정지 확인 |
 | 2026-04-25 | Season 2 Ep.2 주제 결정 (P3-01 → P1-05) | ADR-010 Rebalance worker 채택, 010 → 011 → 008 로드맵 확정 |
 | 2026-04-26 | Season 2 Ep.2 — ADR-010 Rebalance worker 구현 완료 | `internal/rebalance/` (8 tests PASS) + edge admin 엔드포인트 + `kvfs-cli rebalance` + `scripts/demo-eta.sh` (라이브 PASS) + `blog/03-rebalance.md` |
+| 2026-04-26 | Season 2 Ep.3 — ADR-012 Surplus chunk GC 구현 완료 | `internal/gc/` (9 tests PASS) + DN `/chunks` list + edge admin + `kvfs-cli gc` + `scripts/demo-theta.sh` (라이브: 15→12 disk chunks, 메타↔디스크 정확 일치) + `blog/04-gc.md`. Rebalance trim-on-full-success 보정 동반 |
 
 ---
 
 ## 현재 상태 요약 (2026-04-25)
 
-- **Git**: main branch, 5 commits, no remote
-- **클러스터**: `localhost:8000` running · edge + dn × 4 (demo-eta 가 down→up→dn4 까지 끝낸 상태)
-- **테스트**: 7 placement + 5 urlkey + 8 rebalance = **20 unit tests PASS**
-- **데모**: α, ε, dedup, ζ, η 전부 라이브 통과
-- **ADR**: 9건 (001~007 + 009 + 010) Accepted
-- **Blog**: Ep.1·Ep.2·Ep.3 완성 (Ep.3 = Rebalance worker 라이브 데모)
-- **LOC**: Go ~2,500 + 문서 ~2,500 + scripts ~400
+- **Git**: main branch, 6 commits, no remote
+- **클러스터**: `localhost:8000` running · edge + dn × 4 (demo-theta 가 down→up→dn4 까지 끝낸 상태)
+- **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc = **29 unit tests PASS**
+- **데모**: α, ε, dedup, ζ, η, θ 전부 라이브 통과
+- **ADR**: 10건 (001~007 + 009 + 010 + 012) Accepted
+- **Blog**: Ep.1~Ep.4 완성 (Ep.4 = Surplus chunk GC 라이브 데모)
+- **LOC**: Go ~3,200 + 문서 ~3,200 + scripts ~550
 
 ## 업데이트 규칙
 

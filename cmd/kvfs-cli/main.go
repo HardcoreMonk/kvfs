@@ -35,6 +35,8 @@ func main() {
 		cmdPlacementSim(os.Args[2:])
 	case "rebalance":
 		cmdRebalance(os.Args[2:])
+	case "gc":
+		cmdGC(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -52,6 +54,7 @@ Subcommands:
   inspect         Dump bbolt metadata store contents
   placement-sim   Simulate Rendezvous Hashing: chunk distribution + rebalance
   rebalance       Migrate misplaced chunks to their HRW-desired DNs (ADR-010)
+  gc              Delete surplus chunks no object's metadata claims (ADR-012)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -473,4 +476,137 @@ func mustPost(url string) []byte {
 		fail(fmt.Errorf("POST %s: HTTP %d: %s", url, resp.StatusCode, string(body)))
 	}
 	return body
+}
+
+// ---- gc ----
+//
+// Talks to a running edge:
+//   POST /v1/admin/gc/plan?min_age_seconds=N
+//   POST /v1/admin/gc/apply?min_age_seconds=N&concurrency=N
+//
+// Two safety nets (ADR-012):
+//   - claimed-set: meta-claimed (chunk_id, addr) pairs are never deleted
+//   - min-age:    fresh chunks (mtime within N seconds) are never deleted
+func cmdGC(args []string) {
+	fs := flag.NewFlagSet("gc", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	doPlan := fs.Bool("plan", false, "show GC plan only (no changes)")
+	doApply := fs.Bool("apply", false, "execute the plan")
+	concurrency := fs.Int("concurrency", 4, "parallel deletes during apply")
+	minAge := fs.Int("min-age", 60, "min chunk age in seconds (race protection)")
+	verbose := fs.Bool("v", false, "print every sweep entry (otherwise just summary)")
+	fs.Parse(args)
+
+	if !*doPlan && !*doApply {
+		fmt.Fprintln(os.Stderr, "gc: specify --plan or --apply")
+		os.Exit(2)
+	}
+	if *doPlan && *doApply {
+		fmt.Fprintln(os.Stderr, "gc: --plan and --apply are mutually exclusive")
+		os.Exit(2)
+	}
+
+	if *doPlan {
+		runGCPlan(*edge, *minAge, *verbose)
+	} else {
+		runGCApply(*edge, *minAge, *concurrency, *verbose)
+	}
+}
+
+func runGCPlan(edge string, minAge int, verbose bool) {
+	url := fmt.Sprintf("%s/v1/admin/gc/plan?min_age_seconds=%d",
+		strings.TrimRight(edge, "/"), minAge)
+	body := mustPost(url)
+	var plan struct {
+		Scanned     int `json:"scanned"`
+		ClaimedKeys int `json:"claimed_keys"`
+		Sweeps      []struct {
+			Addr    string `json:"addr"`
+			ChunkID string `json:"chunk_id"`
+			Size    int64  `json:"size"`
+			AgeSec  int64  `json:"age_seconds"`
+		} `json:"sweeps"`
+	}
+	if err := json.Unmarshal(body, &plan); err != nil {
+		fail(fmt.Errorf("decode plan: %w", err))
+	}
+
+	fmt.Printf("🧹 GC plan — scanned %d on-disk chunks across all DNs\n", plan.Scanned)
+	fmt.Printf("   meta-claimed pairs (protected): %d\n", plan.ClaimedKeys)
+	fmt.Printf("   min-age threshold (protected if newer): %ds\n", minAge)
+	fmt.Printf("   sweeps proposed: %d\n", len(plan.Sweeps))
+	if len(plan.Sweeps) == 0 {
+		fmt.Println("   ✅ No surplus to clean. Cluster disk = meta intent.")
+		return
+	}
+
+	if verbose {
+		fmt.Println()
+		for _, s := range plan.Sweeps {
+			fmt.Printf("  %s  chunk=%s..  size=%d  age=%ds\n",
+				s.Addr, idShort(s.ChunkID), s.Size, s.AgeSec)
+		}
+	} else {
+		shown := 5
+		if shown > len(plan.Sweeps) {
+			shown = len(plan.Sweeps)
+		}
+		fmt.Println()
+		fmt.Printf("First %d sweeps:\n", shown)
+		for i := 0; i < shown; i++ {
+			s := plan.Sweeps[i]
+			fmt.Printf("  %s  chunk=%s..  size=%d  age=%ds\n",
+				s.Addr, idShort(s.ChunkID), s.Size, s.AgeSec)
+		}
+		if len(plan.Sweeps) > shown {
+			fmt.Printf("  ... and %d more (use -v to list all)\n", len(plan.Sweeps)-shown)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("Next:  kvfs-cli gc --apply")
+}
+
+func runGCApply(edge string, minAge, concurrency int, verbose bool) {
+	url := fmt.Sprintf("%s/v1/admin/gc/apply?min_age_seconds=%d&concurrency=%d",
+		strings.TrimRight(edge, "/"), minAge, concurrency)
+	body := mustPost(url)
+	var stats struct {
+		Scanned     int      `json:"scanned"`
+		ClaimedKeys int      `json:"claimed_keys"`
+		PlanSize    int      `json:"plan_size"`
+		Concurrency int      `json:"concurrency"`
+		MinAgeSec   int      `json:"min_age_sec"`
+		Deleted     int      `json:"deleted"`
+		Failed      int      `json:"failed"`
+		BytesFreed  int64    `json:"bytes_freed"`
+		Errors      []string `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &stats); err != nil {
+		fail(fmt.Errorf("decode apply result: %w", err))
+	}
+
+	fmt.Printf("🧹 GC applied (concurrency=%d, min-age=%ds)\n", stats.Concurrency, stats.MinAgeSec)
+	fmt.Printf("   scanned:      %d\n", stats.Scanned)
+	fmt.Printf("   claimed:      %d\n", stats.ClaimedKeys)
+	fmt.Printf("   planned:      %d\n", stats.PlanSize)
+	fmt.Printf("   deleted:      %d\n", stats.Deleted)
+	fmt.Printf("   failed:       %d\n", stats.Failed)
+	fmt.Printf("   bytes_freed:  %d\n", stats.BytesFreed)
+	if verbose && len(stats.Errors) > 0 {
+		fmt.Println("   errors:")
+		for _, e := range stats.Errors {
+			fmt.Printf("     - %s\n", e)
+		}
+	}
+	if stats.Failed > 0 {
+		os.Exit(1)
+	}
+}
+
+func idShort(id string) string {
+	if len(id) > 16 {
+		return id[:16]
+	}
+	return id
 }

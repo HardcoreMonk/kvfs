@@ -200,18 +200,34 @@ func migrateOne(ctx context.Context, coord Coordinator, st ObjectStore, mg Migra
 		return
 	}
 
-	successful := append([]string(nil), mg.Actual...)
+	successfulMissing := []string{}
 	var copyErrs []string
 	for _, dst := range mg.Missing {
 		if err := coord.PutChunkTo(ctx, dst, mg.ChunkID, data); err != nil {
 			copyErrs = append(copyErrs, fmt.Sprintf("%s: %v", dst, err))
 			continue
 		}
-		successful = append(successful, dst)
+		successfulMissing = append(successfulMissing, dst)
 		out.bytesCopied += int64(len(data))
 	}
 
-	finalReplicas := uniqueSorted(successful)
+	// Final replica list — two regimes:
+	//   - All Missing copied successfully → trim meta to Desired
+	//     (drop Surplus DNs from meta; GC will clean their disk later).
+	//     Result: meta == Desired exactly.
+	//   - Any Missing copy failed → keep Actual ∪ successful (safety).
+	//     We must not drop Surplus from meta because we can't guarantee
+	//     R replicas without the surplus DN as a fallback. Next rebalance
+	//     run will retry the failed copies.
+	var finalReplicas []string
+	if len(copyErrs) == 0 {
+		// trim: meta = (Actual ∩ Desired) ∪ successfulMissing == Desired
+		finalReplicas = uniqueSorted(append(intersect(mg.Actual, mg.Desired), successfulMissing...))
+	} else {
+		// safe: meta = Actual ∪ successfulMissing
+		finalReplicas = uniqueSorted(append(append([]string(nil), mg.Actual...), successfulMissing...))
+	}
+
 	if updateErr := st.UpdateReplicas(mg.Bucket, mg.Key, finalReplicas); updateErr != nil {
 		out.err = fmt.Sprintf("%s/%s: update meta: %v", mg.Bucket, mg.Key, updateErr)
 		return
@@ -242,6 +258,21 @@ func setDiff(a, b []string) []string {
 	var out []string
 	for _, x := range a {
 		if _, ok := bset[x]; !ok {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// intersect returns elements present in both a and b.
+func intersect(a, b []string) []string {
+	bset := make(map[string]struct{}, len(b))
+	for _, x := range b {
+		bset[x] = struct{}{}
+	}
+	var out []string
+	for _, x := range a {
+		if _, ok := bset[x]; ok {
 			out = append(out, x)
 		}
 	}
