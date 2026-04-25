@@ -113,3 +113,4 @@ Apache 2.0. PR 환영. **교육적 가치**를 최상위 기준으로 코드 리
 ## 블로그
 
 - [`blog/01-hello-kvfs.md`](blog/01-hello-kvfs.md) — 프로젝트 소개 + α 데모 walkthrough
+- [`blog/02-consistent-hashing.md`](blog/02-consistent-hashing.md) — Rendezvous Hashing 실측 (3→4 / 5→6 / 10→9 시나리오)

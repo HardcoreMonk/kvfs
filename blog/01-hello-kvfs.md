@@ -153,10 +153,10 @@ DN disk after 4 PUTs (hello + sign-test + dup-a + dup-b):
 
 ## 다음 편 예고
 
-- **Ep.2**: UrlKey presigned URL — 100줄 HMAC 구현과 상수 시간 비교의 세부
-- **Ep.3**: dedup 이 정말 무료인지 — reference counting · 삭제 동작 해부
-- **Ep.4**: 1 DN 영구 사망 시나리오 — repair queue 와 자동 복구 설계 (Season 2 프리뷰)
-- **Ep.5**: HTTP vs gRPC vs raw TCP — 왜 MVP는 HTTP 뿐인가, 언제 바꿀까
+- **Ep.2** *(Season 2 진입)*: Rendezvous Hashing — N=3에서 N=4로 갈 때 청크가 75% 이사하는 이유와 그래도 그게 "consistent" 인 이유
+- **Ep.3**: ADR-010 Rebalance worker — 기존 청크를 새 자리로 trickle migration
+- **Ep.4**: ADR-011 Chunking — 큰 객체를 쪼개고 placement가 chunk 단위로 자연 확장
+- **Ep.5**: ADR-008 Reed-Solomon EC — placement가 (K+M)개 노드 선택, Season 2 보스전
 
 ## 참고 자료
 
