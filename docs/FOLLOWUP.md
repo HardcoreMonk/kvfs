@@ -9,7 +9,7 @@
 - **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
 - **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **2건**
 - **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **9건**
-- **P3**: 별도 스펙·사용자 결정 필요 — 현재 **5건**
+- **P3**: 별도 스펙·사용자 결정 필요 — 현재 **4건** (P3-05/06 obsolete · 취소선)
 
 ---
 
@@ -81,10 +81,11 @@
 ## P3 — 사용자 결정·별도 스펙 필요
 
 ### [P3-02] 관찰성 스택 선택
-- **옵션 A**: stdlib `slog` + `/metrics` 엔드포인트 (Prometheus-exposition 포맷 직접 작성)
+- **현황**: ADR-013 으로 `slog` 구조화 로그 + `/v1/admin/auto/status` JSON endpoint 가 부분 도입됨. 클러스터-wide metrics 는 미정
+- **옵션 A**: 기존 slog + `/metrics` 엔드포인트 추가 (Prometheus-exposition 포맷 직접 작성)
 - **옵션 B**: OpenTelemetry SDK 풀 통합 (traces · metrics · logs)
-- **옵션 C**: 외부 stack 없이 현재 구조대로
-- **개인 프로젝트 고려**: A 가 최소 변경. B 는 블로그 Ep.7~8 감
+- **옵션 C**: 외부 stack 없이 현재 구조 유지 (최소 변경)
+- **개인 프로젝트 고려**: A 가 ADR-013 의 slog 흐름과 자연 연결. B 는 별도 Season 3 episode 감
 
 ### [P3-03] 100.legacy DFS/legacy-modernized 의 legacy_client_py3 라이브 검증
 - **배경**: 평가 레포 `/data/projects/claude-zone/100.legacy DFS/legacy-modernized/installer/legacy-coke-nn/script/legacy_client_py3.py` 는 mock server 단위 테스트 14개 PASS. 라이브 legacy meta tier NN 상대 tcpdump 검증은 미완
@@ -92,21 +93,30 @@
 - **현 추세**: 동결 방향. 이 항목은 **completeness 목록** 용
 
 ### [P3-04] Public 전환 타이밍
-- **현**: `HardcoreMonk/kvfs` private (P1-01 완료 전제)
+- **현**: 아직 GitHub 발행 안 됨 (P1-01 대기 중). private 으로 만든 후 public 전환할지, 처음부터 public 으로 만들지 결정 필요
 - **public 전환 기준** (사용자 결정 필요):
-  - (a) 즉시 — 블로그 Ep.1 완성도 수용하면
-  - (b) Season 2 Ep.1 블로그(ADR-009) 완성 후 — 2건 에피소드로 공개 단단함
-  - (c) Season 2 전체 완성 후 — 풀 시즌 공개
+  - (a) 즉시 — Season 2 closed + Season 3 Ep.1 완료, 7 blog episode + 13 ADR + 10 demo 으로 첫 공개에 충분
+  - (b) Season 3 Ep.2~3 완료 후 — 운영성 트랙 한두 개 더 채운 뒤 공개
+  - (c) 후속 작업 (CI workflow P2-03, LICENSE 헤더 P2-01, CONTRIBUTING P2-02) 갖춘 후 공개
 
-### [P3-05] 블로그 Ep.3~5 주제 확정
-- **Ep.3 후보**: dedup 내부 해부 (reference counting 필요 시점, 삭제의 어려움)
-- **Ep.4 후보**: DN 영구 사망 시나리오 — repair queue 설계 (Season 2 프리뷰)
-- **Ep.5 후보**: HTTP vs gRPC vs raw TCP 벤치마크
-- 결정 시 P1 로 승격
+### ~~[P3-05] 블로그 Ep.3~5 주제 확정~~
+- **OBSOLETE (2026-04-26)**: Ep.3~7 모두 완료 (rebalance · GC · chunking · EC · auto-trigger). 후보였던 dedup/repair/RPC 벤치 중 어느 것도 채택 안 됨 — 다른 방향이 더 나아서. 다음 Ep 결정은 신규 [P3-07] 가 받음
 
-### [P3-06] Season 3 로드맵 확정 시점
-- Season 2 완료 후 어느 방향으로? gRPC/coordinator 분리/multi-region?
-- **트리거 이벤트**: Season 2 Ep.5 완료 시점
+### ~~[P3-06] Season 3 로드맵 확정 시점~~
+- **OBSOLETE (2026-04-26)**: Season 2 closed, Season 3 (운영성 트랙) Ep.1 (ADR-013 Auto-trigger) 으로 시작됨. 후속 ep 결정은 신규 [P3-07]
+
+### [P3-07] Season 3 Ep.2 주제 결정
+- **현**: Ep.1 Auto-trigger 완료. 운영성 트랙의 다음 ep 미정
+- **후보** (ADR README 기준):
+  - **ADR-024 — EC stripe rebalance**: ADR-008 의 EC 객체는 현재 rebalance 미적용. 6 DN 클러스터에 dn7 추가 시 stripe 재배치 동작이 빠짐. demo-zeta 와 동일한 갭 패턴 — 자연스러운 다음 ep
+  - **ADR-022 — Multi-edge leader election**: ADR-013 의 single-edge 가정 깨기. auto loop 의 N edge 직렬화. coordinator daemon 분리 (ADR-015) 와 묶이는 큰 작업
+  - **ADR-014 — Meta backup/HA**: bbolt 메타 손상 시 GC 의 자동 삭제가 위험. 안전망 강화
+  - **ADR-017 — Streaming PUT/GET**: 현재 `io.ReadAll` 기반 (chunker 가 byte 슬라이스). 메모리 사용 상한 진짜 강제
+  - **ADR-018 — Content-defined chunking**: 비정렬 데이터 dedup 효율 (rabin/buzhash)
+  - **ADR-019 — SIMD-accelerated RS**: pure Go RS 의 ~50 MB/s → SIMD 1+ GB/s
+  - **ADR-023 — Auto-trigger rate limiting**: 100만 객체 환경에서 한 cycle cap
+- **추천 순서**: 024 (자연 후속 — 같은 알고리즘 패턴) → 014 (메타 안전성) → 022 (HA 본격)
+- **결정 시 P1 로 승격**
 
 ---
 
@@ -133,19 +143,20 @@
 | 2026-04-26 | Season 2 Ep.4 — ADR-011 Chunking 구현 완료 (ADR-006 supersede) | `internal/chunker/` (13 tests PASS) + ObjectMeta 스키마 변경 (Chunks []ChunkRef + legacy adapter) + edge PUT/GET/DELETE 청크화 + rebalance/gc 청크 단위 갱신 + `EDGE_CHUNK_SIZE` env + `scripts/demo-iota.sh` (256 KiB → 4 청크 라이브 PASS) + `blog/05-chunking.md`. demo-eta/theta/alpha 회귀 fix 동반 |
 | 2026-04-26 | Season 2 Ep.5 — ADR-008 Reed-Solomon EC 구현 완료 (Season 2 closed) | `internal/reedsolomon/` from-scratch (24 tests PASS): GF(2^8) + Vandermonde + Gauss-Jordan. ObjectMeta 에 ECParams + Stripes 추가, `Coordinator.PlaceN(stripeID, K+M)`, `X-KVFS-EC: K+M` 헤더로 per-object 모드, `internal/edge` 에 `handlePutEC` / `handleGetEC`. `scripts/demo-kappa.sh` (6 DN, 128 KiB / 4+2, dn5+dn6 kill 후 GET 복원 PASS) + `blog/06-erasure-coding.md`. GC `buildClaimedSet` 가 Stripes iterate |
 | 2026-04-26 | Season 3 Ep.1 — ADR-013 Auto-trigger 구현 완료 | `internal/edge` 에 `AutoConfig` + `StartAuto(ctx)` + 두 개 `time.Ticker` 루프 (rebalance + GC). 기존 `rebalanceMu` / `gcMu` 공유로 수동/자동 직렬화. ring buffer 32 entries 의 `AutoRun` 기록 + `GET /v1/admin/auto/status` + `kvfs-cli auto --status`. `EDGE_AUTO=1` opt-in default. `scripts/demo-lambda.sh` (10s/12s interval, 운영자 명령 0번에 클러스터 정렬 PASS) + `blog/07-auto-trigger.md`. Season 3 운영성 트랙 시작 |
+| 2026-04-26 | /simplify 리뷰 패스 — auto-trigger 코드 정리 | 3 agent 병렬 리뷰 후 6 항목 적용: `executeRebalance` / `executeGC` 헬퍼 추출 (handler+auto runner 공유), ring buffer no-op pollution fix (empty cycle은 lastCheck 만 갱신), redundant state 제거 (`autoLast/Next` → `autoLastCheck`), `autoLoop` 단일화, `parseAutoDur` / `mustGet` / `intQuery` 헬퍼, `AutoJob` typed enum. 246+/250- net -4 LOC, 0 behavior change, 66 tests PASS, demo-lambda 회귀 PASS |
 
 ---
 
-## 현재 상태 요약 (2026-04-25)
+## 현재 상태 요약 (2026-04-26)
 
-- **Git**: main branch, 9 commits, no remote
+- **Git**: main branch, 12 commits, no remote
 - **클러스터**: `localhost:8000` running · edge(EDGE_AUTO=1) + dn × 4 (demo-lambda 가 down→up 까지 끝낸 상태)
-- **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc + 13 chunker + 24 reedsolomon = **66 unit tests PASS**
-- **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ 전부 라이브 통과
+- **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc + 13 chunker + 24 reedsolomon = **66 unit tests PASS**, `go vet` 클린
+- **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ 전부 라이브 통과 (10종)
 - **ADR**: 13건 (001~005 + 007~012 + 013, 006 superseded by 011) Accepted
 - **Blog**: Ep.1~Ep.7 완성 (Ep.7 = Auto-trigger, Season 3 시작)
 - **LOC**: Go ~5,300 + 문서 ~5,500 + scripts ~1,050
-- **Season 2 closed**; **Season 3 (운영성 트랙) 시작** — Ep.1 = Auto-trigger
+- **Season 2 closed**; **Season 3 (운영성 트랙) Ep.1 완료**, Ep.2 주제 미정 ([P3-07])
 
 ## 업데이트 규칙
 
