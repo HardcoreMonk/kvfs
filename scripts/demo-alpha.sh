@@ -42,7 +42,7 @@ resp=$(curl -fsS -X PUT "$put_url" \
   -H "Content-Type: text/plain" \
   --data-binary "$BODY")
 echo "$resp" | pp
-chunk_id=$(echo "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["chunk_id"])')
+chunk_id=$(echo "$resp" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r.get("chunk_id") or r["chunks"][0]["chunk_id"])')
 echo "     chunk_id=$chunk_id"
 
 echo

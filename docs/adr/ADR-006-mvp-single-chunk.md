@@ -1,7 +1,8 @@
 # ADR-006 — MVP: 1 object = 1 chunk
 
 ## 상태
-Accepted · 2026-04-25
+Superseded by [ADR-011](ADR-011-chunking.md) · 2026-04-26
+(원 결정: Accepted · 2026-04-25 — Season 1 MVP 동안 유효)
 
 ## 맥락
 

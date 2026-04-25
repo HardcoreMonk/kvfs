@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-26** · Season 2 Ep.3 (ADR-012 GC) 완료 시점 기준.
+문서 현행화 일자: **2026-04-26** · Season 2 Ep.4 (ADR-011 Chunking) 완료 시점 기준.
 
 ## 우선순위 맵
 
@@ -130,18 +130,19 @@
 | 2026-04-25 | Season 2 Ep.2 주제 결정 (P3-01 → P1-05) | ADR-010 Rebalance worker 채택, 010 → 011 → 008 로드맵 확정 |
 | 2026-04-26 | Season 2 Ep.2 — ADR-010 Rebalance worker 구현 완료 | `internal/rebalance/` (8 tests PASS) + edge admin 엔드포인트 + `kvfs-cli rebalance` + `scripts/demo-eta.sh` (라이브 PASS) + `blog/03-rebalance.md` |
 | 2026-04-26 | Season 2 Ep.3 — ADR-012 Surplus chunk GC 구현 완료 | `internal/gc/` (9 tests PASS) + DN `/chunks` list + edge admin + `kvfs-cli gc` + `scripts/demo-theta.sh` (라이브: 15→12 disk chunks, 메타↔디스크 정확 일치) + `blog/04-gc.md`. Rebalance trim-on-full-success 보정 동반 |
+| 2026-04-26 | Season 2 Ep.4 — ADR-011 Chunking 구현 완료 (ADR-006 supersede) | `internal/chunker/` (13 tests PASS) + ObjectMeta 스키마 변경 (Chunks []ChunkRef + legacy adapter) + edge PUT/GET/DELETE 청크화 + rebalance/gc 청크 단위 갱신 + `EDGE_CHUNK_SIZE` env + `scripts/demo-iota.sh` (256 KiB → 4 청크 라이브 PASS) + `blog/05-chunking.md`. demo-eta/theta/alpha 회귀 fix 동반 |
 
 ---
 
 ## 현재 상태 요약 (2026-04-25)
 
-- **Git**: main branch, 6 commits, no remote
-- **클러스터**: `localhost:8000` running · edge + dn × 4 (demo-theta 가 down→up→dn4 까지 끝낸 상태)
-- **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc = **29 unit tests PASS**
-- **데모**: α, ε, dedup, ζ, η, θ 전부 라이브 통과
-- **ADR**: 10건 (001~007 + 009 + 010 + 012) Accepted
-- **Blog**: Ep.1~Ep.4 완성 (Ep.4 = Surplus chunk GC 라이브 데모)
-- **LOC**: Go ~3,200 + 문서 ~3,200 + scripts ~550
+- **Git**: main branch, 7 commits, no remote
+- **클러스터**: `localhost:8000` running · edge(chunk_size=64KiB) + dn × 4 (demo-iota 가 down→up→4DN 까지 끝낸 상태)
+- **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc + 13 chunker = **42 unit tests PASS**
+- **데모**: α, ε, dedup, ζ, η, θ, ι 전부 라이브 통과
+- **ADR**: 11건 (001~005 + 007 + 009~012, 006 superseded) Accepted
+- **Blog**: Ep.1~Ep.5 완성 (Ep.5 = Chunking 라이브 데모)
+- **LOC**: Go ~3,800 + 문서 ~4,000 + scripts ~700
 
 ## 업데이트 규칙
 

@@ -3,8 +3,6 @@ package edge
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/gc"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
@@ -28,6 +27,10 @@ type Server struct {
 	Coord  *coordinator.Coordinator
 	Signer *urlkey.Signer
 
+	// ChunkSize is bytes-per-chunk for PUT splitting (ADR-011).
+	// Zero / negative falls back to chunker.DefaultChunkSize.
+	ChunkSize int
+
 	// If true, skip UrlKey verification (for demos/tests). Never enable in public.
 	SkipAuth bool
 
@@ -37,6 +40,13 @@ type Server struct {
 
 	// gcMu serializes /v1/admin/gc/apply for the same reason.
 	gcMu sync.Mutex
+}
+
+func (s *Server) chunkSize() int {
+	if s.ChunkSize <= 0 {
+		return chunker.DefaultChunkSize
+	}
+	return s.ChunkSize
 }
 
 // Routes builds the HTTP mux.
@@ -84,17 +94,29 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Content-addressable: chunk_id = hex(sha256(body))
-	sum := sha256.Sum256(body)
-	chunkID := hex.EncodeToString(sum[:])
+	// Split body into fixed-size chunks (ADR-011). Each chunk gets its own
+	// content-addressable id and is placed independently via Rendezvous Hashing.
+	pieces := chunker.Split(body, s.chunkSize())
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	replicas, err := s.Coord.WriteChunk(ctx, chunkID, body)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
+	chunkRefs := make([]store.ChunkRef, len(pieces))
+	for i, p := range pieces {
+		replicas, werr := s.Coord.WriteChunk(ctx, p.ID, p.Data)
+		if werr != nil {
+			// Partial-success orphan chunks remain on disk; GC (ADR-012) cleans
+			// them after min-age. We do NOT commit metadata, so reads can't see
+			// a half-written object.
+			writeError(w, http.StatusBadGateway,
+				fmt.Sprintf("chunk %d/%d (%s): %v", i+1, len(pieces), p.ID[:16], werr))
+			return
+		}
+		chunkRefs[i] = store.ChunkRef{
+			ChunkID:  p.ID,
+			Size:     p.Size,
+			Replicas: replicas,
+		}
 	}
 
 	contentType := r.Header.Get("Content-Type")
@@ -106,8 +128,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		Bucket:      bucket,
 		Key:         key,
 		Size:        int64(len(body)),
-		ChunkID:     chunkID,
-		Replicas:    replicas,
+		Chunks:      chunkRefs,
 		ContentType: contentType,
 	}
 	if err := s.Store.PutObject(meta); err != nil {
@@ -116,12 +137,12 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"bucket":   bucket,
-		"key":      key,
-		"chunk_id": chunkID,
-		"size":     len(body),
-		"replicas": replicas,
-		"version":  meta.Version,
+		"bucket":     bucket,
+		"key":        key,
+		"size":       len(body),
+		"chunk_size": s.chunkSize(),
+		"chunks":     chunkRefs,
+		"version":    meta.Version,
 	})
 }
 
@@ -143,26 +164,29 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	body, servedBy, err := s.Coord.ReadChunk(ctx, meta.ChunkID, meta.Replicas)
+	// Build per-chunk fetch index so chunker.Join can verify each piece.
+	specs := make([]chunker.JoinSpec, len(meta.Chunks))
+	chunkReplicas := make(map[string][]string, len(meta.Chunks))
+	for i, c := range meta.Chunks {
+		specs[i] = chunker.JoinSpec{ChunkID: c.ChunkID, Size: c.Size}
+		chunkReplicas[c.ChunkID] = c.Replicas
+	}
+
+	body, err := chunker.Join(specs, meta.Size, func(chunkID string) ([]byte, error) {
+		data, _, ferr := s.Coord.ReadChunk(ctx, chunkID, chunkReplicas[chunkID])
+		return data, ferr
+	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
-	// Integrity: verify bytes match chunk_id
-	sum := sha256.Sum256(body)
-	if hex.EncodeToString(sum[:]) != meta.ChunkID {
-		writeError(w, http.StatusBadGateway, "chunk integrity check failed")
-		return
-	}
-
 	w.Header().Set("Content-Type", meta.ContentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
-	w.Header().Set("X-KVFS-Served-By", servedBy)
-	w.Header().Set("X-KVFS-Chunk-ID", meta.ChunkID)
+	w.Header().Set("X-KVFS-Chunks", fmt.Sprintf("%d", len(meta.Chunks)))
 	w.Header().Set("X-KVFS-Version", fmt.Sprintf("%d", meta.Version))
 	_, _ = w.Write(body)
 }
@@ -185,10 +209,12 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	// best-effort chunk delete; continue even if some replicas fail (e.g. dead DN)
-	_ = s.Coord.DeleteChunk(ctx, meta.ChunkID, meta.Replicas)
+	// best-effort per-chunk delete; continue even if some replicas fail (dead DN)
+	for _, c := range meta.Chunks {
+		_ = s.Coord.DeleteChunk(ctx, c.ChunkID, c.Replicas)
+	}
 
 	if err := s.Store.DeleteObject(bucket, key); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

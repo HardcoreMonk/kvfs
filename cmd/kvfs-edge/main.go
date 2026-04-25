@@ -7,6 +7,7 @@
 //	EDGE_DATA_DIR        string   "./edge-data"           — where to put bbolt file
 //	EDGE_URLKEY_SECRET   string   required               — HMAC-SHA256 secret (>= 16 bytes recommended)
 //	EDGE_QUORUM_WRITE    int      auto (ceil(N/2+1))     — min replica acks for success
+//	EDGE_CHUNK_SIZE      int      4194304 (4 MiB)        — bytes per chunk (ADR-011)
 //	EDGE_SKIP_AUTH       bool     false                  — DEMO ONLY: disable UrlKey verification
 package main
 
@@ -24,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/edge"
 	"github.com/HardcoreMonk/kvfs/internal/store"
@@ -37,6 +39,7 @@ func main() {
 		flagDataDir = flag.String("data-dir", envOr("EDGE_DATA_DIR", "./edge-data"), "dir for bbolt file")
 		flagSecret  = flag.String("secret", envOr("EDGE_URLKEY_SECRET", ""), "HMAC-SHA256 secret")
 		flagQuorum  = flag.Int("quorum", atoiOr(envOr("EDGE_QUORUM_WRITE", "0"), 0), "write quorum; 0 = auto")
+		flagChunk   = flag.Int("chunk-size", atoiOr(envOr("EDGE_CHUNK_SIZE", "0"), 0), "bytes per chunk (ADR-011); 0 = default 4 MiB")
 		flagSkip    = flag.Bool("skip-auth", envOr("EDGE_SKIP_AUTH", "") == "1", "DEMO ONLY: skip UrlKey verify")
 	)
 	flag.Parse()
@@ -78,17 +81,24 @@ func main() {
 		}
 	}
 
+	chunkSize := *flagChunk
+	if chunkSize <= 0 {
+		chunkSize = chunker.DefaultChunkSize
+	}
+
 	srv := &edge.Server{
-		Store:    ms,
-		Coord:    coord,
-		Signer:   signer,
-		SkipAuth: *flagSkip,
+		Store:     ms,
+		Coord:     coord,
+		Signer:    signer,
+		ChunkSize: chunkSize,
+		SkipAuth:  *flagSkip,
 	}
 
 	log.Info("kvfs-edge starting",
 		"addr", *flagAddr,
 		"dns", dns,
 		"quorum_write", coord.QuorumWrite(),
+		"chunk_size", chunkSize,
 		"meta_path", metaPath,
 		"skip_auth", *flagSkip,
 	)

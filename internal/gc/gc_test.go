@@ -64,6 +64,16 @@ type fakeStore struct{ objs []*store.ObjectMeta }
 
 func (f *fakeStore) ListObjects() ([]*store.ObjectMeta, error) { return f.objs, nil }
 
+// makeObj builds a single-chunk ObjectMeta for tests.
+func makeObj(bucket, key, chunkID string, replicas []string, size int64) *store.ObjectMeta {
+	return &store.ObjectMeta{
+		Bucket: bucket, Key: key, Size: size,
+		Chunks: []store.ChunkRef{
+			{ChunkID: chunkID, Size: size, Replicas: replicas},
+		},
+	}
+}
+
 // ─── helpers ───
 
 func ago(d time.Duration) int64 { return time.Now().Add(-d).Unix() }
@@ -75,7 +85,7 @@ func TestComputePlan_AllClaimed_NoSweeps(t *testing.T) {
 	coord.seed("dn1", coordinator.ChunkInfo{ID: "c1", Size: 10, MTime: ago(2 * time.Hour)})
 	coord.seed("dn2", coordinator.ChunkInfo{ID: "c1", Size: 10, MTime: ago(2 * time.Hour)})
 	st := &fakeStore{objs: []*store.ObjectMeta{
-		{Bucket: "b", Key: "k", ChunkID: "c1", Replicas: []string{"dn1", "dn2"}, Size: 10},
+		makeObj("b", "k", "c1", []string{"dn1", "dn2"}, 10),
 	}}
 	plan, err := ComputePlan(context.Background(), coord, st, time.Minute)
 	if err != nil {
@@ -96,7 +106,7 @@ func TestComputePlan_OneSurplus(t *testing.T) {
 	}
 	// meta only claims dn1+dn3; dn2 holds a surplus copy
 	st := &fakeStore{objs: []*store.ObjectMeta{
-		{Bucket: "b", Key: "k", ChunkID: "c1", Replicas: []string{"dn1", "dn3"}, Size: 100},
+		makeObj("b", "k", "c1", []string{"dn1", "dn3"}, 100),
 	}}
 	plan, _ := ComputePlan(context.Background(), coord, st, time.Minute)
 	if len(plan.Sweeps) != 1 {
@@ -130,8 +140,8 @@ func TestComputePlan_DedupSharedChunkProtectsAllReplicas(t *testing.T) {
 		coord.seed(d, coordinator.ChunkInfo{ID: "shared", Size: 50, MTime: ago(time.Hour)})
 	}
 	st := &fakeStore{objs: []*store.ObjectMeta{
-		{Bucket: "b", Key: "k1", ChunkID: "shared", Replicas: []string{"dn1", "dn2"}, Size: 50},
-		{Bucket: "b", Key: "k2", ChunkID: "shared", Replicas: []string{"dn3"}, Size: 50},
+		makeObj("b", "k1", "shared", []string{"dn1", "dn2"}, 50),
+		makeObj("b", "k2", "shared", []string{"dn3"}, 50),
 	}}
 	plan, _ := ComputePlan(context.Background(), coord, st, time.Minute)
 	if len(plan.Sweeps) != 0 {

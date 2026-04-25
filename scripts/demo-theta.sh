@@ -36,6 +36,10 @@ put_obj() {
   curl -fsS -X PUT "$url" -H "Content-Type: text/plain" --data-binary "$body"
 }
 
+first_chunk_id() {
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["chunks"][0]["chunk_id"])'
+}
+
 dn_chunk_count() {
   docker exec "$1" sh -c 'find /var/lib/kvfs-dn/chunks -type f 2>/dev/null | wc -l' | tr -d ' '
 }
@@ -91,7 +95,7 @@ echo
 echo "[2/8] Seed 4 objects on the 3-DN cluster"
 for i in 1 2 3 4; do
   resp=$(put_obj "seed-${i}.txt" "seed object #${i} at $(date -u +%FT%TZ)")
-  cid=$(echo "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["chunk_id"])')
+  cid=$(echo "$resp" | first_chunk_id)
   printf "  seed-%d.txt  chunk=%s..\n" "$i" "${cid:0:16}"
 done
 

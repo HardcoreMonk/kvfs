@@ -88,22 +88,42 @@ func (f *fakeStore) ListObjects() ([]*store.ObjectMeta, error) {
 	out := make([]*store.ObjectMeta, len(f.objects))
 	for i, o := range f.objects {
 		copyObj := *o
-		copyObj.Replicas = append([]string(nil), o.Replicas...)
+		copyObj.Chunks = make([]store.ChunkRef, len(o.Chunks))
+		for ci, c := range o.Chunks {
+			copyObj.Chunks[ci] = store.ChunkRef{
+				ChunkID:  c.ChunkID,
+				Size:     c.Size,
+				Replicas: append([]string(nil), c.Replicas...),
+			}
+		}
 		out[i] = &copyObj
 	}
 	return out, nil
 }
 
-func (f *fakeStore) UpdateReplicas(bucket, key string, replicas []string) error {
+func (f *fakeStore) UpdateChunkReplicas(bucket, key string, chunkIndex int, replicas []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, o := range f.objects {
 		if o.Bucket == bucket && o.Key == key {
-			o.Replicas = append([]string(nil), replicas...)
+			if chunkIndex < 0 || chunkIndex >= len(o.Chunks) {
+				return errors.New("chunk index out of range")
+			}
+			o.Chunks[chunkIndex].Replicas = append([]string(nil), replicas...)
 			return nil
 		}
 	}
 	return store.ErrNotFound
+}
+
+// makeObj builds a single-chunk ObjectMeta for tests.
+func makeObj(bucket, key, chunkID string, replicas []string, size int64) *store.ObjectMeta {
+	return &store.ObjectMeta{
+		Bucket: bucket, Key: key, Size: size,
+		Chunks: []store.ChunkRef{
+			{ChunkID: chunkID, Size: size, Replicas: replicas},
+		},
+	}
 }
 
 // ─── tests ───
@@ -113,7 +133,7 @@ func TestComputePlan_AllOK(t *testing.T) {
 	coord.placeMap["c1"] = []string{"dn1", "dn2", "dn3"}
 	st := &fakeStore{
 		objects: []*store.ObjectMeta{
-			{Bucket: "b", Key: "k", ChunkID: "c1", Replicas: []string{"dn1", "dn2", "dn3"}, Size: 10},
+			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, 10),
 		},
 	}
 	plan, err := ComputePlan(coord, st)
@@ -133,7 +153,7 @@ func TestComputePlan_OneMisplaced(t *testing.T) {
 	coord.placeMap["c1"] = []string{"dn4", "dn1", "dn3"} // dn4 desired but missing
 	st := &fakeStore{
 		objects: []*store.ObjectMeta{
-			{Bucket: "b", Key: "k", ChunkID: "c1", Replicas: []string{"dn1", "dn2", "dn3"}, Size: 100},
+			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, 100),
 		},
 	}
 	plan, err := ComputePlan(coord, st)
@@ -164,7 +184,7 @@ func TestRun_HappyPath_CopiesAndUpdatesMeta(t *testing.T) {
 	}
 	st := &fakeStore{
 		objects: []*store.ObjectMeta{
-			{Bucket: "b", Key: "k", ChunkID: "c1", Replicas: []string{"dn1", "dn2", "dn3"}, Size: int64(len(body))},
+			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, int64(len(body))),
 		},
 	}
 	plan, _ := ComputePlan(coord, st)
@@ -184,7 +204,7 @@ func TestRun_HappyPath_CopiesAndUpdatesMeta(t *testing.T) {
 	}
 	// On full success, meta replicas should equal Desired (surplus dn2 dropped from meta).
 	// dn2 still has the chunk on disk — that's the surplus GC will later clean.
-	got := st.objects[0].Replicas
+	got := st.objects[0].Chunks[0].Replicas
 	want := []string{"dn1", "dn3", "dn4"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("replicas after rebalance = %v, want %v (Desired set)", got, want)
@@ -207,7 +227,7 @@ func TestRun_PartialCopyFailure_KeepsOldRetriesNext(t *testing.T) {
 
 	st := &fakeStore{
 		objects: []*store.ObjectMeta{
-			{Bucket: "b", Key: "k", ChunkID: "c1", Replicas: []string{"dn1", "dn2", "dn3"}, Size: int64(len(body))},
+			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, int64(len(body))),
 		},
 	}
 	plan, _ := ComputePlan(coord, st)
@@ -219,7 +239,7 @@ func TestRun_PartialCopyFailure_KeepsOldRetriesNext(t *testing.T) {
 		t.Errorf("Migrated = %d, want 0 (had partial)", stats.Migrated)
 	}
 	// dn4 should still be in meta (partial success)
-	got := st.objects[0].Replicas
+	got := st.objects[0].Chunks[0].Replicas
 	wantContains := "dn4"
 	found := false
 	for _, r := range got {
@@ -244,7 +264,7 @@ func TestRun_SourceUnavailable_FailsCleanly(t *testing.T) {
 	coord.readErr["c1"] = errors.New("all sources dead")
 	st := &fakeStore{
 		objects: []*store.ObjectMeta{
-			{Bucket: "b", Key: "k", ChunkID: "c1", Replicas: []string{"dn1"}, Size: 5},
+			makeObj("b", "k", "c1", []string{"dn1"}, 5),
 		},
 	}
 	plan, _ := ComputePlan(coord, st)
@@ -266,7 +286,7 @@ func TestRun_Idempotent_SecondRunZeroMigrations(t *testing.T) {
 	}
 	st := &fakeStore{
 		objects: []*store.ObjectMeta{
-			{Bucket: "b", Key: "k", ChunkID: "c1", Replicas: []string{"dn1", "dn2", "dn3"}, Size: 1},
+			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, 1),
 		},
 	}
 	plan1, _ := ComputePlan(coord, st)
@@ -297,10 +317,8 @@ func TestRun_Concurrency_ParallelBatch(t *testing.T) {
 		coord.placeMap[cid] = []string{"dn4", "dn1", "dn2"}
 		coord.seedDisk("dn1", cid, body)
 		coord.seedDisk("dn3", cid, body)
-		st.objects = append(st.objects, &store.ObjectMeta{
-			Bucket: "b", Key: chunkName(i), ChunkID: cid,
-			Replicas: []string{"dn1", "dn3"}, Size: int64(len(body)),
-		})
+		st.objects = append(st.objects,
+			makeObj("b", chunkName(i), cid, []string{"dn1", "dn3"}, int64(len(body))))
 	}
 	plan, _ := ComputePlan(coord, st)
 	stats := Run(context.Background(), coord, st, plan, 8)
@@ -310,7 +328,7 @@ func TestRun_Concurrency_ParallelBatch(t *testing.T) {
 	// every object should now have dn4
 	for _, o := range st.objects {
 		found := false
-		for _, r := range o.Replicas {
+		for _, r := range o.Chunks[0].Replicas {
 			if r == "dn4" {
 				found = true
 			}

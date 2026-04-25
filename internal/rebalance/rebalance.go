@@ -69,21 +69,25 @@ type Coordinator interface {
 // ObjectStore is the subset of *store.MetaStore used by rebalance.
 type ObjectStore interface {
 	ListObjects() ([]*store.ObjectMeta, error)
-	UpdateReplicas(bucket, key string, replicas []string) error
+	// UpdateChunkReplicas updates one chunk's Replicas inside an object's
+	// metadata (does not bump Version). Used after a successful copy.
+	UpdateChunkReplicas(bucket, key string, chunkIndex int, replicas []string) error
 }
 
 // Migration is a single chunk's planned move.
 //
+// ChunkIndex identifies which chunk inside the object (post ADR-011).
 // Actual / Desired / Missing / Surplus 는 모두 정렬된 슬라이스로 결정성 보장.
 type Migration struct {
-	Bucket  string   `json:"bucket"`
-	Key     string   `json:"key"`
-	ChunkID string   `json:"chunk_id"`
-	Size    int64    `json:"size"`
-	Actual  []string `json:"actual"`            // 메타에 적힌 현재 replica 주소
-	Desired []string `json:"desired"`           // placement.Pick 의 현재 결과
-	Missing []string `json:"missing"`           // desired - actual : 복사 대상
-	Surplus []string `json:"surplus,omitempty"` // actual - desired : 정보용 (삭제 안 함)
+	Bucket     string   `json:"bucket"`
+	Key        string   `json:"key"`
+	ChunkIndex int      `json:"chunk_index"`
+	ChunkID    string   `json:"chunk_id"`
+	Size       int64    `json:"size"`
+	Actual     []string `json:"actual"`            // 메타에 적힌 현재 replica 주소
+	Desired    []string `json:"desired"`           // placement.Pick 의 현재 결과
+	Missing    []string `json:"missing"`           // desired - actual : 복사 대상
+	Surplus    []string `json:"surplus,omitempty"` // actual - desired : 정보용 (삭제 안 함)
 }
 
 // Plan summarizes what would change. Pure read — no side effect.
@@ -101,8 +105,11 @@ type RunStats struct {
 	Errors      []string `json:"errors,omitempty"`
 }
 
-// ComputePlan walks all objects, comparing desired vs actual placement.
-// Read-only: never modifies coord, store, or any DN.
+// ComputePlan walks all chunks of all objects, comparing desired vs actual
+// placement. Read-only: never modifies coord, store, or any DN.
+//
+// Scanned counts objects, but Migrations are per-chunk: a 100-chunk object can
+// contribute up to 100 entries.
 func ComputePlan(coord Coordinator, st ObjectStore) (Plan, error) {
 	objs, err := st.ListObjects()
 	if err != nil {
@@ -110,23 +117,26 @@ func ComputePlan(coord Coordinator, st ObjectStore) (Plan, error) {
 	}
 	plan := Plan{Scanned: len(objs)}
 	for _, obj := range objs {
-		desired := sortedCopy(coord.PlaceChunk(obj.ChunkID))
-		actual := sortedCopy(obj.Replicas)
-		missing := setDiff(desired, actual)
-		surplus := setDiff(actual, desired)
-		if len(missing) == 0 {
-			continue
+		for ci, chunk := range obj.Chunks {
+			desired := sortedCopy(coord.PlaceChunk(chunk.ChunkID))
+			actual := sortedCopy(chunk.Replicas)
+			missing := setDiff(desired, actual)
+			surplus := setDiff(actual, desired)
+			if len(missing) == 0 {
+				continue
+			}
+			plan.Migrations = append(plan.Migrations, Migration{
+				Bucket:     obj.Bucket,
+				Key:        obj.Key,
+				ChunkIndex: ci,
+				ChunkID:    chunk.ChunkID,
+				Size:       chunk.Size,
+				Actual:     actual,
+				Desired:    desired,
+				Missing:    missing,
+				Surplus:    surplus,
+			})
 		}
-		plan.Migrations = append(plan.Migrations, Migration{
-			Bucket:  obj.Bucket,
-			Key:     obj.Key,
-			ChunkID: obj.ChunkID,
-			Size:    obj.Size,
-			Actual:  actual,
-			Desired: desired,
-			Missing: missing,
-			Surplus: surplus,
-		})
 	}
 	return plan, nil
 }
@@ -228,7 +238,7 @@ func migrateOne(ctx context.Context, coord Coordinator, st ObjectStore, mg Migra
 		finalReplicas = uniqueSorted(append(append([]string(nil), mg.Actual...), successfulMissing...))
 	}
 
-	if updateErr := st.UpdateReplicas(mg.Bucket, mg.Key, finalReplicas); updateErr != nil {
+	if updateErr := st.UpdateChunkReplicas(mg.Bucket, mg.Key, mg.ChunkIndex, finalReplicas); updateErr != nil {
 		out.err = fmt.Sprintf("%s/%s: update meta: %v", mg.Bucket, mg.Key, updateErr)
 		return
 	}

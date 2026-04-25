@@ -27,16 +27,39 @@ var (
 )
 
 // ObjectMeta is the persisted record for a stored object.
-// For MVP: 1 object = 1 chunk, replicated across Replicas.
+//
+// Schema (ADR-011, supersedes ADR-006):
+//   - Chunks: ordered list of chunk references. Joining the chunk bytes in
+//     order reconstructs the object.
+//   - Size: total object size = sum(Chunks[*].Size). Stored explicitly for
+//     fast metadata browsing.
+//
+// Backward compatibility (legacy ADR-006 reads):
+//   - Old records had top-level ChunkID + Replicas (single-chunk schema).
+//     LegacyChunkID / LegacyReplicas exist only to deserialize those.
+//     Adapter in GetObject / ListObjects normalizes legacy → Chunks shape
+//     so callers always see the new schema.
 type ObjectMeta struct {
-	Bucket      string    `json:"bucket"`
-	Key         string    `json:"key"`
-	Size        int64     `json:"size"`
-	ChunkID     string    `json:"chunk_id"`             // hex(sha256(body))
-	Replicas    []string  `json:"replicas"`             // DN addresses that acked the write
-	Version     int64     `json:"version"`              // monotonic per-key version
-	CreatedAt   time.Time `json:"created_at"`
-	ContentType string    `json:"content_type,omitempty"`
+	Bucket      string     `json:"bucket"`
+	Key         string     `json:"key"`
+	Size        int64      `json:"size"`
+	Chunks      []ChunkRef `json:"chunks,omitempty"`
+	Version     int64      `json:"version"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ContentType string     `json:"content_type,omitempty"`
+
+	// Legacy single-chunk fields. Read-only; never written by current code.
+	// Present so that old bbolt records still decode without error.
+	LegacyChunkID  string   `json:"chunk_id,omitempty"`
+	LegacyReplicas []string `json:"replicas,omitempty"`
+}
+
+// ChunkRef points to one chunk that, together with its peers in
+// ObjectMeta.Chunks, reconstructs an object.
+type ChunkRef struct {
+	ChunkID  string   `json:"chunk_id"` // hex(sha256(chunk_data))
+	Size     int64    `json:"size"`
+	Replicas []string `json:"replicas"` // DN addresses that acked
 }
 
 // DNInfo records a known DataNode (registry, heartbeats).
@@ -103,7 +126,8 @@ func (m *MetaStore) PutObject(obj *ObjectMeta) error {
 	})
 }
 
-// GetObject fetches an object's metadata.
+// GetObject fetches an object's metadata. Legacy single-chunk records
+// are normalized to the new Chunks-shape transparently.
 func (m *MetaStore) GetObject(bucket, key string) (*ObjectMeta, error) {
 	var out ObjectMeta
 	err := m.db.View(func(tx *bbolt.Tx) error {
@@ -116,15 +140,19 @@ func (m *MetaStore) GetObject(bucket, key string) (*ObjectMeta, error) {
 	if err != nil {
 		return nil, err
 	}
+	normalizeLegacy(&out)
 	return &out, nil
 }
 
-// UpdateReplicas updates only the Replicas field of an existing object,
+// UpdateChunkReplicas updates Replicas of a single chunk inside an object,
 // without bumping Version (data unchanged — only placement metadata moved).
 //
-// Returns ErrNotFound if the object doesn't exist. Used by the rebalance worker
+// chunkIndex is the 0-based position in obj.Chunks. Used by the rebalance worker
 // after copying a chunk to additional DNs.
-func (m *MetaStore) UpdateReplicas(bucket, key string, replicas []string) error {
+//
+// Returns ErrNotFound if the object doesn't exist;
+// Returns an error if chunkIndex is out of range.
+func (m *MetaStore) UpdateChunkReplicas(bucket, key string, chunkIndex int, replicas []string) error {
 	k := objKey(bucket, key)
 	return m.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketObjects)
@@ -136,13 +164,35 @@ func (m *MetaStore) UpdateReplicas(bucket, key string, replicas []string) error 
 		if err := json.Unmarshal(raw, &obj); err != nil {
 			return err
 		}
-		obj.Replicas = replicas
+		normalizeLegacy(&obj)
+		if chunkIndex < 0 || chunkIndex >= len(obj.Chunks) {
+			return fmt.Errorf("store: chunk index %d out of range [0,%d)", chunkIndex, len(obj.Chunks))
+		}
+		obj.Chunks[chunkIndex].Replicas = replicas
+		// Drop legacy fields on write so file stays in new schema.
+		obj.LegacyChunkID = ""
+		obj.LegacyReplicas = nil
 		buf, err := json.Marshal(&obj)
 		if err != nil {
 			return err
 		}
 		return b.Put(k, buf)
 	})
+}
+
+// normalizeLegacy converts an old single-chunk record (LegacyChunkID set,
+// Chunks empty) into the new Chunks-shape in-memory. Idempotent.
+func normalizeLegacy(o *ObjectMeta) {
+	if len(o.Chunks) == 0 && o.LegacyChunkID != "" {
+		o.Chunks = []ChunkRef{{
+			ChunkID:  o.LegacyChunkID,
+			Size:     o.Size,
+			Replicas: o.LegacyReplicas,
+		}}
+	}
+	// Always clear legacy fields after normalization so callers see only Chunks.
+	o.LegacyChunkID = ""
+	o.LegacyReplicas = nil
 }
 
 // DeleteObject removes an object's metadata. Returns ErrNotFound if absent.
@@ -158,6 +208,7 @@ func (m *MetaStore) DeleteObject(bucket, key string) error {
 }
 
 // ListObjects returns all objects (MVP: no pagination).
+// Legacy single-chunk records are normalized to the new Chunks-shape.
 func (m *MetaStore) ListObjects() ([]*ObjectMeta, error) {
 	var out []*ObjectMeta
 	err := m.db.View(func(tx *bbolt.Tx) error {
@@ -166,6 +217,7 @@ func (m *MetaStore) ListObjects() ([]*ObjectMeta, error) {
 			if err := json.Unmarshal(v, &o); err != nil {
 				return err
 			}
+			normalizeLegacy(&o)
 			out = append(out, &o)
 			return nil
 		})
