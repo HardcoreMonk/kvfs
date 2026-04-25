@@ -9,7 +9,7 @@
 - **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
 - **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **2건**
 - **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **9건**
-- **P3**: 별도 스펙·사용자 결정 필요 — 현재 **4건** (P3-05/06 obsolete · 취소선)
+- **P3**: 별도 스펙·사용자 결정 필요 — 현재 **3건** (P3-05/06 obsolete · 취소선; P3-07 ADR-024 완료 → P3-09 신규)
 
 ---
 
@@ -105,17 +105,19 @@
 ### ~~[P3-06] Season 3 로드맵 확정 시점~~
 - **OBSOLETE (2026-04-26)**: Season 2 closed, Season 3 (운영성 트랙) Ep.1 (ADR-013 Auto-trigger) 으로 시작됨. 후속 ep 결정은 신규 [P3-07]
 
-### [P3-07] Season 3 Ep.2 주제 결정
-- **현**: Ep.1 Auto-trigger 완료. 운영성 트랙의 다음 ep 미정
-- **후보** (ADR README 기준):
-  - **ADR-024 — EC stripe rebalance**: ADR-008 의 EC 객체는 현재 rebalance 미적용. 6 DN 클러스터에 dn7 추가 시 stripe 재배치 동작이 빠짐. demo-zeta 와 동일한 갭 패턴 — 자연스러운 다음 ep
-  - **ADR-022 — Multi-edge leader election**: ADR-013 의 single-edge 가정 깨기. auto loop 의 N edge 직렬화. coordinator daemon 분리 (ADR-015) 와 묶이는 큰 작업
+### ~~[P3-07] Season 3 Ep.2 주제 결정~~
+- **OBSOLETE (2026-04-26)**: ADR-024 (EC stripe rebalance) 채택 + 구현 완료. 다음 ep 결정은 신규 [P3-09]
+
+### [P3-09] Season 3 Ep.3 주제 결정
+- **현**: Ep.2 ADR-024 완료. 운영성 트랙의 다음 ep 미정
+- **후보**:
+  - **ADR-025 — EC repair queue**: DN 영구 사망 시 ReadChunk 가 fail → reconstruct K shards 후 새 자리 복구. ADR-024 의 실패 retry 한계 보완 — 자연 후속
+  - **ADR-022 — Multi-edge leader election**: ADR-013 single-edge 가정 깨기. coordinator daemon 분리 (ADR-015) 와 묶이는 큰 작업
   - **ADR-014 — Meta backup/HA**: bbolt 메타 손상 시 GC 의 자동 삭제가 위험. 안전망 강화
-  - **ADR-017 — Streaming PUT/GET**: 현재 `io.ReadAll` 기반 (chunker 가 byte 슬라이스). 메모리 사용 상한 진짜 강제
-  - **ADR-018 — Content-defined chunking**: 비정렬 데이터 dedup 효율 (rabin/buzhash)
-  - **ADR-019 — SIMD-accelerated RS**: pure Go RS 의 ~50 MB/s → SIMD 1+ GB/s
-  - **ADR-023 — Auto-trigger rate limiting**: 100만 객체 환경에서 한 cycle cap
-- **추천 순서**: 024 (자연 후속 — 같은 알고리즘 패턴) → 014 (메타 안전성) → 022 (HA 본격)
+  - **ADR-017 — Streaming PUT/GET**: 현재 `io.ReadAll` 기반. 메모리 사용 상한 진짜 강제
+  - **ADR-018 — Content-defined chunking**: 비정렬 데이터 dedup 효율
+  - **ADR-019 — SIMD-accelerated RS**: pure Go RS ~50 MB/s → SIMD 1+ GB/s
+- **추천 순서**: 025 (자연 후속, ADR-024 의 retry 한계 보완) → 014 (메타 안전성) → 022 (HA 본격)
 - **결정 시 P1 로 승격**
 
 ---
@@ -144,19 +146,23 @@
 | 2026-04-26 | Season 2 Ep.5 — ADR-008 Reed-Solomon EC 구현 완료 (Season 2 closed) | `internal/reedsolomon/` from-scratch (24 tests PASS): GF(2^8) + Vandermonde + Gauss-Jordan. ObjectMeta 에 ECParams + Stripes 추가, `Coordinator.PlaceN(stripeID, K+M)`, `X-KVFS-EC: K+M` 헤더로 per-object 모드, `internal/edge` 에 `handlePutEC` / `handleGetEC`. `scripts/demo-kappa.sh` (6 DN, 128 KiB / 4+2, dn5+dn6 kill 후 GET 복원 PASS) + `blog/06-erasure-coding.md`. GC `buildClaimedSet` 가 Stripes iterate |
 | 2026-04-26 | Season 3 Ep.1 — ADR-013 Auto-trigger 구현 완료 | `internal/edge` 에 `AutoConfig` + `StartAuto(ctx)` + 두 개 `time.Ticker` 루프 (rebalance + GC). 기존 `rebalanceMu` / `gcMu` 공유로 수동/자동 직렬화. ring buffer 32 entries 의 `AutoRun` 기록 + `GET /v1/admin/auto/status` + `kvfs-cli auto --status`. `EDGE_AUTO=1` opt-in default. `scripts/demo-lambda.sh` (10s/12s interval, 운영자 명령 0번에 클러스터 정렬 PASS) + `blog/07-auto-trigger.md`. Season 3 운영성 트랙 시작 |
 | 2026-04-26 | /simplify 리뷰 패스 — auto-trigger 코드 정리 | 3 agent 병렬 리뷰 후 6 항목 적용: `executeRebalance` / `executeGC` 헬퍼 추출 (handler+auto runner 공유), ring buffer no-op pollution fix (empty cycle은 lastCheck 만 갱신), redundant state 제거 (`autoLast/Next` → `autoLastCheck`), `autoLoop` 단일화, `parseAutoDur` / `mustGet` / `intQuery` 헬퍼, `AutoJob` typed enum. 246+/250- net -4 LOC, 0 behavior change, 66 tests PASS, demo-lambda 회귀 PASS |
+| 2026-04-26 | P1-01 GitHub 발행 + push | `https://github.com/HardcoreMonk/kvfs` private, 12 commits push (`076ba27..main`) |
+| 2026-04-26 | P2-03 CI workflow + P2-01 LICENSE 헤더 + P2-02 CONTRIBUTING (부분) | `.github/workflows/ci.yml` (3 jobs: test/staticcheck/govulncheck, Go 1.26 fix), `scripts/add-license-headers.sh` (idempotent + trailing-newline 보존), 23 .go 파일 SPDX 헤더, `Makefile` `license`/`bench` targets, `CONTRIBUTING.md`. /simplify 후 trailing newline 보존 fix 동반 |
+| 2026-04-26 | Season 3 Ep.2 — ADR-024 EC stripe rebalance 구현 완료 | `internal/rebalance/` 확장 (planEC + migrateShard, set-based 최소 이동), Migration 에 `Kind`/`StripeIndex`/`ShardIndex`/`OldAddr`/`NewAddr` 추가, `Coordinator.PlaceN` + `ObjectStore.UpdateShardReplicas` 인터페이스 확장, CLI `[shard]` 렌더링. EC 전용 7 tests PASS (총 73). `scripts/demo-mu.sh` 라이브: 6 DN + dn7 추가 → 정확히 stripe 당 1 migration → GET sha256 일치 + 멱등 + `blog/08-ec-rebalance.md`. ADR-013 auto-trigger 와 자동 통합 |
 
 ---
 
 ## 현재 상태 요약 (2026-04-26)
 
-- **Git**: main branch, 12 commits, no remote
-- **클러스터**: `localhost:8000` running · edge(EDGE_AUTO=1) + dn × 4 (demo-lambda 가 down→up 까지 끝낸 상태)
-- **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc + 13 chunker + 24 reedsolomon = **66 unit tests PASS**, `go vet` 클린
-- **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ 전부 라이브 통과 (10종)
-- **ADR**: 13건 (001~005 + 007~012 + 013, 006 superseded by 011) Accepted
-- **Blog**: Ep.1~Ep.7 완성 (Ep.7 = Auto-trigger, Season 3 시작)
-- **LOC**: Go ~5,300 + 문서 ~5,500 + scripts ~1,050
-- **Season 2 closed**; **Season 3 (운영성 트랙) Ep.1 완료**, Ep.2 주제 미정 ([P3-07])
+- **Git**: main branch, 14 commits, **GitHub `HardcoreMonk/kvfs` private published** (12 commits pushed; +2 local pending)
+- **클러스터**: `localhost:8000` running · edge + dn × 7 (demo-mu 가 down→up→6DN→dn7 까지 끝낸 상태)
+- **테스트**: 7 placement + 5 urlkey + 15 rebalance (8 chunk + 7 EC) + 9 gc + 13 chunker + 24 reedsolomon = **73 unit tests PASS**, `go vet` 클린
+- **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ 전부 라이브 통과 (11종)
+- **ADR**: 14건 (001~005 + 007~013 + 024, 006 superseded by 011) Accepted
+- **Blog**: Ep.1~Ep.8 완성 (Ep.8 = EC stripe rebalance)
+- **LOC**: Go ~5,500 + 문서 ~6,000 + scripts ~1,200
+- **CI**: GitHub Actions (build/vet/test + staticcheck + govulncheck) — public 전환 [P3-04] 대기
+- **Season 2 closed**; **Season 3 Ep.2 완료** (auto-trigger + EC rebalance 결합), Ep.3 주제 미정 ([P3-09])
 
 ## 업데이트 규칙
 

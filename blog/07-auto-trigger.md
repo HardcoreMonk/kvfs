@@ -244,9 +244,10 @@ Season 2 가 **알고리즘** 을 닦았다면 (placement, rebalance, GC, chunki
 
 ## 다음 편 예고
 
-- **Ep.8**: ADR-022 Multi-edge leader election — auto loop 의 single-instance 가정을 깨고 N edge 운용
-- **Ep.9 후보**: ADR-024 EC stripe rebalance — 6 DN 클러스터에 dn7 추가 시 EC 객체 재배치
-- **Ep.10 후보**: ADR-014 Meta backup/HA — bbolt 메타 손실 대비
+- **Ep.8** *(완료)*: ADR-024 EC stripe rebalance — 6 DN EC 클러스터에 dn7 추가 시 EC 객체 자동 재배치, set-based 최소 이동. → [`blog/08-ec-rebalance.md`](08-ec-rebalance.md)
+- **Ep.9 후보**: ADR-022 Multi-edge leader election — auto loop 의 single-instance 가정을 깨고 N edge 운용
+- **Ep.10 후보**: ADR-025 EC repair queue — DN 영구 사망 시 reconstruct + 자동 복구
+- **Ep.11 후보**: ADR-014 Meta backup/HA — bbolt 메타 손실 대비
 
 ## 직접 돌려보기
 

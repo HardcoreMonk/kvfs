@@ -369,64 +369,90 @@ func cmdRebalance(args []string) {
 	}
 }
 
+type planMigration struct {
+	Bucket      string   `json:"bucket"`
+	Key         string   `json:"key"`
+	Kind        string   `json:"kind"`
+	ChunkID     string   `json:"chunk_id"`
+	Size        int64    `json:"size"`
+	ChunkIndex  int      `json:"chunk_index"`
+	Actual      []string `json:"actual"`
+	Desired     []string `json:"desired"`
+	Missing     []string `json:"missing"`
+	Surplus     []string `json:"surplus"`
+	StripeIndex int      `json:"stripe_index"`
+	ShardIndex  int      `json:"shard_index"`
+	OldAddr     string   `json:"old_addr"`
+	NewAddr     string   `json:"new_addr"`
+}
+
 func runRebalancePlan(edge string, verbose bool) {
 	url := strings.TrimRight(edge, "/") + "/v1/admin/rebalance/plan"
 	body := mustPost(url)
 	var plan struct {
-		Scanned    int `json:"scanned"`
-		Migrations []struct {
-			Bucket  string   `json:"bucket"`
-			Key     string   `json:"key"`
-			ChunkID string   `json:"chunk_id"`
-			Size    int64    `json:"size"`
-			Actual  []string `json:"actual"`
-			Desired []string `json:"desired"`
-			Missing []string `json:"missing"`
-			Surplus []string `json:"surplus"`
-		} `json:"migrations"`
+		Scanned    int              `json:"scanned"`
+		Migrations []planMigration  `json:"migrations"`
 	}
 	if err := json.Unmarshal(body, &plan); err != nil {
 		fail(fmt.Errorf("decode plan: %w", err))
 	}
 
-	fmt.Printf("📋 Rebalance plan — scanned %d objects, %d need migration\n",
-		plan.Scanned, len(plan.Migrations))
+	chunks, shards := 0, 0
+	for _, m := range plan.Migrations {
+		if m.Kind == "shard" {
+			shards++
+		} else {
+			chunks++
+		}
+	}
+
+	fmt.Printf("📋 Rebalance plan — scanned %d objects, %d total migrations (%d chunks, %d EC shards)\n",
+		plan.Scanned, len(plan.Migrations), chunks, shards)
 	if len(plan.Migrations) == 0 {
 		fmt.Println("   ✅ Cluster is in HRW-desired state. No work to do.")
 		return
 	}
 
-	if verbose {
-		fmt.Println()
-		for _, m := range plan.Migrations {
-			fmt.Printf("  %s/%s  size=%d  chunk=%s..\n", m.Bucket, m.Key, m.Size, m.ChunkID[:16])
-			fmt.Printf("    actual:  %s\n", strings.Join(m.Actual, ", "))
-			fmt.Printf("    desired: %s\n", strings.Join(m.Desired, ", "))
-			fmt.Printf("    missing: %s\n", strings.Join(m.Missing, ", "))
-			if len(m.Surplus) > 0 {
-				fmt.Printf("    surplus: %s  (kept — never delete in MVP)\n", strings.Join(m.Surplus, ", "))
-			}
-		}
-	} else {
-		// brief: show first 5
-		shown := 5
-		if shown > len(plan.Migrations) {
-			shown = len(plan.Migrations)
-		}
-		fmt.Println()
-		fmt.Printf("First %d migrations:\n", shown)
-		for i := 0; i < shown; i++ {
-			m := plan.Migrations[i]
-			fmt.Printf("  %s/%s  missing=%v  (currently on %v)\n",
-				m.Bucket, m.Key, m.Missing, m.Actual)
-		}
-		if len(plan.Migrations) > shown {
-			fmt.Printf("  ... and %d more (use -v to list all)\n", len(plan.Migrations)-shown)
-		}
+	limit := len(plan.Migrations)
+	if !verbose && limit > 5 {
+		limit = 5
+	}
+	fmt.Println()
+	if !verbose {
+		fmt.Printf("First %d migrations:\n", limit)
+	}
+	for i := 0; i < limit; i++ {
+		printMigration(plan.Migrations[i], verbose)
+	}
+	if !verbose && len(plan.Migrations) > limit {
+		fmt.Printf("  ... and %d more (use -v to list all)\n", len(plan.Migrations)-limit)
 	}
 
 	fmt.Println()
 	fmt.Println("Next:  kvfs-cli rebalance --apply")
+}
+
+func printMigration(m planMigration, verbose bool) {
+	if m.Kind == "shard" {
+		fmt.Printf("  [shard]  %s/%s  stripe=%d shard=%d  size=%d  %s → %s\n",
+			m.Bucket, m.Key, m.StripeIndex, m.ShardIndex, m.Size, m.OldAddr, m.NewAddr)
+		if verbose {
+			fmt.Printf("           chunk=%s..\n", idShort(m.ChunkID))
+		}
+		return
+	}
+	if !verbose {
+		fmt.Printf("  [chunk]  %s/%s  missing=%v  (currently on %v)\n",
+			m.Bucket, m.Key, m.Missing, m.Actual)
+		return
+	}
+	fmt.Printf("  [chunk]  %s/%s  size=%d  chunk=%s..\n", m.Bucket, m.Key, m.Size, idShort(m.ChunkID))
+	fmt.Printf("    actual:  %s\n", strings.Join(m.Actual, ", "))
+	fmt.Printf("    desired: %s\n", strings.Join(m.Desired, ", "))
+	fmt.Printf("    missing: %s\n", strings.Join(m.Missing, ", "))
+	if len(m.Surplus) > 0 {
+		fmt.Printf("    surplus: %s  (kept — never delete; GC cleans)\n", strings.Join(m.Surplus, ", "))
+	}
 }
 
 func runRebalanceApply(edge string, concurrency int, verbose bool) {

@@ -55,7 +55,8 @@ Accepted · YYYY-MM-DD
 
 | # | 제목 | 상태 | 연결 |
 |---|---|---|---|
-| [013](ADR-013-auto-trigger.md) | Auto-trigger policy (in-edge ticker, opt-in) | Accepted · 2026-04-26 | `internal/edge/` auto loops (후속) |
+| [013](ADR-013-auto-trigger.md) | Auto-trigger policy (in-edge ticker, opt-in) | Accepted · 2026-04-26 | `internal/edge/` auto loops |
+| [024](ADR-024-ec-stripe-rebalance.md) | EC stripe rebalance (set-based, min-migration) | Accepted · 2026-04-26 | `internal/rebalance/` 확장 (후속) |
 
 ## Season 3+ 예상 ADR (pending)
 - ADR-014: Meta backup/HA (bbolt 메타 손실 시 복구)

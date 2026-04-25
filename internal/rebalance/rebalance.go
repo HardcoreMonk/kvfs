@@ -57,9 +57,12 @@ import (
 // Coordinator is the subset of *coordinator.Coordinator used by rebalance.
 // Defined as an interface for testability.
 type Coordinator interface {
-	// PlaceChunk returns the addresses currently desired for the given chunk
-	// according to the live placement (Rendezvous Hashing).
+	// PlaceChunk returns the R desired addresses for a replication chunk.
 	PlaceChunk(chunkID string) []string
+
+	// PlaceN returns the top-n addresses for an arbitrary key. Used for
+	// stripe-level placement (ADR-024 EC stripe rebalance).
+	PlaceN(key string, n int) []string
 
 	// ReadChunk fetches the chunk body from the first responsive candidate.
 	// Returns body, address-served-from, error.
@@ -72,25 +75,49 @@ type Coordinator interface {
 // ObjectStore is the subset of *store.MetaStore used by rebalance.
 type ObjectStore interface {
 	ListObjects() ([]*store.ObjectMeta, error)
-	// UpdateChunkReplicas updates one chunk's Replicas inside an object's
-	// metadata (does not bump Version). Used after a successful copy.
+
+	// UpdateChunkReplicas updates one replication chunk's Replicas (no Version bump).
 	UpdateChunkReplicas(bucket, key string, chunkIndex int, replicas []string) error
+
+	// UpdateShardReplicas updates one EC shard's Replicas inside a stripe
+	// (ADR-024). Single-addr per shard.
+	UpdateShardReplicas(bucket, key string, stripeIndex, shardIndex int, replicas []string) error
 }
 
-// Migration is a single chunk's planned move.
+// MigrationKind tags Migration as either a replication-chunk move (ADR-010)
+// or an EC-shard move (ADR-024).
+type MigrationKind string
+
+const (
+	KindChunk MigrationKind = "chunk" // replication mode (obj.Chunks)
+	KindShard MigrationKind = "shard" // EC mode (obj.Stripes[].Shards)
+)
+
+// Migration is one planned move. Field set varies by Kind:
 //
-// ChunkIndex identifies which chunk inside the object (post ADR-011).
-// Actual / Desired / Missing / Surplus 는 모두 정렬된 슬라이스로 결정성 보장.
+//	KindChunk: ChunkIndex + Actual/Desired/Missing/Surplus (R-list semantics)
+//	KindShard: StripeIndex + ShardIndex + OldAddr + NewAddr (single-addr)
+//
+// Both share Bucket, Key, ChunkID, Size.
 type Migration struct {
-	Bucket     string   `json:"bucket"`
-	Key        string   `json:"key"`
-	ChunkIndex int      `json:"chunk_index"`
-	ChunkID    string   `json:"chunk_id"`
-	Size       int64    `json:"size"`
-	Actual     []string `json:"actual"`            // 메타에 적힌 현재 replica 주소
-	Desired    []string `json:"desired"`           // placement.Pick 의 현재 결과
-	Missing    []string `json:"missing"`           // desired - actual : 복사 대상
-	Surplus    []string `json:"surplus,omitempty"` // actual - desired : 정보용 (삭제 안 함)
+	Bucket  string        `json:"bucket"`
+	Key     string        `json:"key"`
+	Kind    MigrationKind `json:"kind"`
+	ChunkID string        `json:"chunk_id"`
+	Size    int64         `json:"size"`
+
+	// KindChunk fields
+	ChunkIndex int      `json:"chunk_index,omitempty"`
+	Actual     []string `json:"actual,omitempty"`
+	Desired    []string `json:"desired,omitempty"`
+	Missing    []string `json:"missing,omitempty"`
+	Surplus    []string `json:"surplus,omitempty"`
+
+	// KindShard fields
+	StripeIndex int    `json:"stripe_index,omitempty"`
+	ShardIndex  int    `json:"shard_index,omitempty"`
+	OldAddr     string `json:"old_addr,omitempty"`
+	NewAddr     string `json:"new_addr,omitempty"`
 }
 
 // Plan summarizes what would change. Pure read — no side effect.
@@ -108,11 +135,12 @@ type RunStats struct {
 	Errors      []string `json:"errors,omitempty"`
 }
 
-// ComputePlan walks all chunks of all objects, comparing desired vs actual
-// placement. Read-only: never modifies coord, store, or any DN.
+// ComputePlan walks every chunk (replication) and every shard (EC) of every
+// object, comparing desired vs actual placement. Read-only.
 //
-// Scanned counts objects, but Migrations are per-chunk: a 100-chunk object can
-// contribute up to 100 entries.
+// Scanned counts objects. Migrations are per-chunk (replication) or per-shard
+// (EC) — a 100-chunk object or a 50-stripe EC object can contribute many
+// entries.
 func ComputePlan(coord Coordinator, st ObjectStore) (Plan, error) {
 	objs, err := st.ListObjects()
 	if err != nil {
@@ -120,28 +148,85 @@ func ComputePlan(coord Coordinator, st ObjectStore) (Plan, error) {
 	}
 	plan := Plan{Scanned: len(objs)}
 	for _, obj := range objs {
-		for ci, chunk := range obj.Chunks {
-			desired := sortedCopy(coord.PlaceChunk(chunk.ChunkID))
-			actual := sortedCopy(chunk.Replicas)
-			missing := setDiff(desired, actual)
-			surplus := setDiff(actual, desired)
-			if len(missing) == 0 {
+		if obj.IsEC() {
+			plan.Migrations = append(plan.Migrations, planEC(coord, obj)...)
+			continue
+		}
+		plan.Migrations = append(plan.Migrations, planChunks(coord, obj)...)
+	}
+	return plan, nil
+}
+
+func planChunks(coord Coordinator, obj *store.ObjectMeta) []Migration {
+	var out []Migration
+	for ci, chunk := range obj.Chunks {
+		desired := sortedCopy(coord.PlaceChunk(chunk.ChunkID))
+		actual := sortedCopy(chunk.Replicas)
+		missing := setDiff(desired, actual)
+		surplus := setDiff(actual, desired)
+		if len(missing) == 0 {
+			continue
+		}
+		out = append(out, Migration{
+			Bucket: obj.Bucket, Key: obj.Key, Kind: KindChunk,
+			ChunkID: chunk.ChunkID, Size: chunk.Size,
+			ChunkIndex: ci,
+			Actual:     actual, Desired: desired,
+			Missing: missing, Surplus: surplus,
+		})
+	}
+	return out
+}
+
+// planEC implements ADR-024 set-based stripe rebalance:
+// for each stripe, find shards whose addr is no longer in the desired set and
+// schedule them onto sorted unused desired-set slots (deterministic).
+func planEC(coord Coordinator, obj *store.ObjectMeta) []Migration {
+	var out []Migration
+	want := obj.EC.K + obj.EC.M
+	for si, stripe := range obj.Stripes {
+		desired := coord.PlaceN(stripe.StripeID, want)
+		desiredSet := make(map[string]struct{}, len(desired))
+		for _, a := range desired {
+			desiredSet[a] = struct{}{}
+		}
+		actualSet := make(map[string]struct{}, len(stripe.Shards))
+		for _, sh := range stripe.Shards {
+			if len(sh.Replicas) > 0 {
+				actualSet[sh.Replicas[0]] = struct{}{}
+			}
+		}
+		// unused = desired - actual, sorted for deterministic assignment.
+		var unused []string
+		for _, a := range desired {
+			if _, in := actualSet[a]; !in {
+				unused = append(unused, a)
+			}
+		}
+		sort.Strings(unused)
+
+		for shi, sh := range stripe.Shards {
+			if len(sh.Replicas) == 0 {
 				continue
 			}
-			plan.Migrations = append(plan.Migrations, Migration{
-				Bucket:     obj.Bucket,
-				Key:        obj.Key,
-				ChunkIndex: ci,
-				ChunkID:    chunk.ChunkID,
-				Size:       chunk.Size,
-				Actual:     actual,
-				Desired:    desired,
-				Missing:    missing,
-				Surplus:    surplus,
+			addr := sh.Replicas[0]
+			if _, ok := desiredSet[addr]; ok {
+				continue
+			}
+			if len(unused) == 0 {
+				continue
+			}
+			newAddr := unused[0]
+			unused = unused[1:]
+			out = append(out, Migration{
+				Bucket: obj.Bucket, Key: obj.Key, Kind: KindShard,
+				ChunkID: sh.ChunkID, Size: sh.Size,
+				StripeIndex: si, ShardIndex: shi,
+				OldAddr:     addr, NewAddr: newAddr,
 			})
 		}
 	}
-	return plan, nil
+	return out
 }
 
 // Run executes the plan with the given concurrency.
@@ -163,12 +248,7 @@ func Run(ctx context.Context, coord Coordinator, st ObjectStore, plan Plan, conc
 		return stats
 	}
 
-	type result struct {
-		ok          bool
-		bytesCopied int64
-		err         string
-	}
-	resultCh := make(chan result, len(plan.Migrations))
+	resultCh := make(chan migrateResult, len(plan.Migrations))
 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -198,11 +278,23 @@ func Run(ctx context.Context, coord Coordinator, st ObjectStore, plan Plan, conc
 	return stats
 }
 
-func migrateOne(ctx context.Context, coord Coordinator, st ObjectStore, mg Migration) (out struct {
+type migrateResult struct {
 	ok          bool
 	bytesCopied int64
 	err         string
-}) {
+}
+
+func migrateOne(ctx context.Context, coord Coordinator, st ObjectStore, mg Migration) migrateResult {
+	switch mg.Kind {
+	case KindShard:
+		return migrateShard(ctx, coord, st, mg)
+	default:
+		// KindChunk (or empty for legacy callers)
+		return migrateChunk(ctx, coord, st, mg)
+	}
+}
+
+func migrateChunk(ctx context.Context, coord Coordinator, st ObjectStore, mg Migration) (out migrateResult) {
 	if len(mg.Actual) == 0 {
 		out.err = fmt.Sprintf("%s/%s: no actual replicas to read from", mg.Bucket, mg.Key)
 		return
@@ -234,10 +326,8 @@ func migrateOne(ctx context.Context, coord Coordinator, st ObjectStore, mg Migra
 	//     run will retry the failed copies.
 	var finalReplicas []string
 	if len(copyErrs) == 0 {
-		// trim: meta = (Actual ∩ Desired) ∪ successfulMissing == Desired
 		finalReplicas = uniqueSorted(append(intersect(mg.Actual, mg.Desired), successfulMissing...))
 	} else {
-		// safe: meta = Actual ∪ successfulMissing
 		finalReplicas = uniqueSorted(append(append([]string(nil), mg.Actual...), successfulMissing...))
 	}
 
@@ -251,6 +341,38 @@ func migrateOne(ctx context.Context, coord Coordinator, st ObjectStore, mg Migra
 		return
 	}
 	out.err = fmt.Sprintf("%s/%s: partial copy: %s", mg.Bucket, mg.Key, joinErrs(copyErrs))
+	return
+}
+
+// migrateShard moves one EC shard from OldAddr to NewAddr (ADR-024).
+// Single-source single-destination — simpler than chunk migration.
+func migrateShard(ctx context.Context, coord Coordinator, st ObjectStore, mg Migration) (out migrateResult) {
+	if mg.OldAddr == "" || mg.NewAddr == "" {
+		out.err = fmt.Sprintf("%s/%s shard %d/%d: missing OldAddr or NewAddr",
+			mg.Bucket, mg.Key, mg.StripeIndex, mg.ShardIndex)
+		return
+	}
+	data, _, err := coord.ReadChunk(ctx, mg.ChunkID, []string{mg.OldAddr})
+	if err != nil {
+		out.err = fmt.Sprintf("%s/%s shard %d/%d: read %s: %v",
+			mg.Bucket, mg.Key, mg.StripeIndex, mg.ShardIndex, mg.OldAddr, err)
+		return
+	}
+	if err := coord.PutChunkTo(ctx, mg.NewAddr, mg.ChunkID, data); err != nil {
+		// Meta untouched; next cycle retries with idempotent PUT.
+		out.err = fmt.Sprintf("%s/%s shard %d/%d: PUT %s: %v",
+			mg.Bucket, mg.Key, mg.StripeIndex, mg.ShardIndex, mg.NewAddr, err)
+		return
+	}
+	out.bytesCopied = int64(len(data))
+	if err := st.UpdateShardReplicas(mg.Bucket, mg.Key, mg.StripeIndex, mg.ShardIndex, []string{mg.NewAddr}); err != nil {
+		// Data is now over-replicated (old + new); next cycle re-detects and
+		// retries the meta update (PUT is idempotent on the new DN).
+		out.err = fmt.Sprintf("%s/%s shard %d/%d: update meta: %v",
+			mg.Bucket, mg.Key, mg.StripeIndex, mg.ShardIndex, err)
+		return
+	}
+	out.ok = true
 	return
 }
 

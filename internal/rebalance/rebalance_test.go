@@ -6,6 +6,7 @@ package rebalance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"sync"
@@ -17,24 +18,30 @@ import (
 // ─── fakes ───
 
 type fakeCoord struct {
-	// placement map: chunkID -> desired addresses
-	placeMap map[string][]string
-	// chunk bodies stored per (addr, chunkID)
-	mu    sync.Mutex
-	disks map[string]map[string][]byte // addr -> chunkID -> data
-	// readErr forces ReadChunk to fail for a given chunkID
-	readErr map[string]error
-	// putErr forces PutChunkTo to fail for (addr, chunkID)
-	putErr map[string]error
+	placeMap  map[string][]string // chunkID -> desired addresses (replication)
+	placeNMap map[string][]string // arbitrary key -> ordered DN list (EC stripe)
+	mu        sync.Mutex
+	disks     map[string]map[string][]byte // addr -> chunkID -> data
+	readErr   map[string]error
+	putErr    map[string]error
 }
 
 func newFakeCoord() *fakeCoord {
 	return &fakeCoord{
-		placeMap: map[string][]string{},
-		disks:    map[string]map[string][]byte{},
-		readErr:  map[string]error{},
-		putErr:   map[string]error{},
+		placeMap:  map[string][]string{},
+		placeNMap: map[string][]string{},
+		disks:     map[string]map[string][]byte{},
+		readErr:   map[string]error{},
+		putErr:    map[string]error{},
 	}
+}
+
+func (f *fakeCoord) PlaceN(key string, n int) []string {
+	out := append([]string(nil), f.placeNMap[key]...)
+	if n < len(out) {
+		out = out[:n]
+	}
+	return out
 }
 
 func (f *fakeCoord) seedDisk(addr, chunkID string, data []byte) {
@@ -99,6 +106,20 @@ func (f *fakeStore) ListObjects() ([]*store.ObjectMeta, error) {
 				Replicas: append([]string(nil), c.Replicas...),
 			}
 		}
+		if len(o.Stripes) > 0 {
+			copyObj.Stripes = make([]store.Stripe, len(o.Stripes))
+			for si, s := range o.Stripes {
+				shards := make([]store.ChunkRef, len(s.Shards))
+				for shi, sh := range s.Shards {
+					shards[shi] = store.ChunkRef{
+						ChunkID:  sh.ChunkID,
+						Size:     sh.Size,
+						Replicas: append([]string(nil), sh.Replicas...),
+					}
+				}
+				copyObj.Stripes[si] = store.Stripe{StripeID: s.StripeID, Shards: shards}
+			}
+		}
 		out[i] = &copyObj
 	}
 	return out, nil
@@ -117,6 +138,48 @@ func (f *fakeStore) UpdateChunkReplicas(bucket, key string, chunkIndex int, repl
 		}
 	}
 	return store.ErrNotFound
+}
+
+func (f *fakeStore) UpdateShardReplicas(bucket, key string, stripeIndex, shardIndex int, replicas []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, o := range f.objects {
+		if o.Bucket == bucket && o.Key == key {
+			if stripeIndex < 0 || stripeIndex >= len(o.Stripes) {
+				return errors.New("stripe index out of range")
+			}
+			s := &o.Stripes[stripeIndex]
+			if shardIndex < 0 || shardIndex >= len(s.Shards) {
+				return errors.New("shard index out of range")
+			}
+			s.Shards[shardIndex].Replicas = append([]string(nil), replicas...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+// makeECObj builds a single-stripe EC ObjectMeta for tests. shardAddrs[i] is
+// the single addr for shard i (data shards 0..K-1, parity K..K+M-1).
+func makeECObj(bucket, key, stripeID string, k, m int, shardAddrs []string, shardSize int64) *store.ObjectMeta {
+	if len(shardAddrs) != k+m {
+		panic("makeECObj: len(shardAddrs) must equal K+M")
+	}
+	shards := make([]store.ChunkRef, len(shardAddrs))
+	for i, addr := range shardAddrs {
+		shards[i] = store.ChunkRef{
+			ChunkID:  fmt.Sprintf("%s-shard-%d", stripeID, i),
+			Size:     shardSize,
+			Replicas: []string{addr},
+		}
+	}
+	return &store.ObjectMeta{
+		Bucket: bucket, Key: key, Size: shardSize * int64(k),
+		EC: &store.ECParams{K: k, M: m, ShardSize: int(shardSize), DataSize: shardSize * int64(k)},
+		Stripes: []store.Stripe{
+			{StripeID: stripeID, Shards: shards},
+		},
+	}
 }
 
 // makeObj builds a single-chunk ObjectMeta for tests.
@@ -344,4 +407,189 @@ func TestRun_Concurrency_ParallelBatch(t *testing.T) {
 
 func chunkName(i int) string {
 	return string(rune('a'+i%26)) + string(rune('0'+i/26))
+}
+
+// ─── EC stripe rebalance tests (ADR-024) ───
+
+func TestECPlan_AllInDesired_NoMigrations(t *testing.T) {
+	coord := newFakeCoord()
+	// stripe with 6 shards on dn1..dn6; desired is the same set
+	coord.placeNMap["s1"] = []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}
+	st := &fakeStore{
+		objects: []*store.ObjectMeta{
+			makeECObj("b", "k", "s1", 4, 2,
+				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16),
+		},
+	}
+	plan, err := ComputePlan(coord, st)
+	if err != nil {
+		t.Fatalf("ComputePlan: %v", err)
+	}
+	if len(plan.Migrations) != 0 {
+		t.Errorf("Migrations = %d, want 0 (all in desired set)", len(plan.Migrations))
+	}
+}
+
+func TestECPlan_OneSurplusOneMissing_OneMigration(t *testing.T) {
+	coord := newFakeCoord()
+	// dn7 added: desired drops dn6, adds dn7. Set diff = swap dn6 → dn7.
+	coord.placeNMap["s1"] = []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn7"}
+	st := &fakeStore{
+		objects: []*store.ObjectMeta{
+			makeECObj("b", "k", "s1", 4, 2,
+				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16),
+		},
+	}
+	plan, _ := ComputePlan(coord, st)
+	if len(plan.Migrations) != 1 {
+		t.Fatalf("Migrations = %d, want 1", len(plan.Migrations))
+	}
+	m := plan.Migrations[0]
+	if m.Kind != KindShard {
+		t.Errorf("Kind = %q, want %q", m.Kind, KindShard)
+	}
+	if m.OldAddr != "dn6" || m.NewAddr != "dn7" {
+		t.Errorf("Old→New = %s→%s, want dn6→dn7", m.OldAddr, m.NewAddr)
+	}
+	if m.StripeIndex != 0 || m.ShardIndex != 5 {
+		t.Errorf("indices = stripe %d shard %d, want 0/5", m.StripeIndex, m.ShardIndex)
+	}
+}
+
+func TestECPlan_DeterministicAssignment(t *testing.T) {
+	// 2 shards need to move (dn5, dn6 surplus), 2 unused (dn7, dn8).
+	// Sorted unused: [dn7, dn8] → shard at index 4 → dn7, index 5 → dn8.
+	coord := newFakeCoord()
+	coord.placeNMap["s1"] = []string{"dn1", "dn2", "dn3", "dn4", "dn8", "dn7"}
+	st := &fakeStore{
+		objects: []*store.ObjectMeta{
+			makeECObj("b", "k", "s1", 4, 2,
+				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16),
+		},
+	}
+	plan, _ := ComputePlan(coord, st)
+	if len(plan.Migrations) != 2 {
+		t.Fatalf("Migrations = %d, want 2", len(plan.Migrations))
+	}
+	// shard[4] (was dn5) → dn7 (sorted unused first)
+	// shard[5] (was dn6) → dn8
+	if plan.Migrations[0].OldAddr != "dn5" || plan.Migrations[0].NewAddr != "dn7" {
+		t.Errorf("mig[0] = %s→%s, want dn5→dn7", plan.Migrations[0].OldAddr, plan.Migrations[0].NewAddr)
+	}
+	if plan.Migrations[1].OldAddr != "dn6" || plan.Migrations[1].NewAddr != "dn8" {
+		t.Errorf("mig[1] = %s→%s, want dn6→dn8", plan.Migrations[1].OldAddr, plan.Migrations[1].NewAddr)
+	}
+}
+
+func TestECRun_HappyPath_MovesShardAndUpdatesMeta(t *testing.T) {
+	coord := newFakeCoord()
+	coord.placeNMap["s1"] = []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn7"}
+	body := []byte("shard-bytes")
+	coord.seedDisk("dn6", "s1-shard-5", body)
+
+	st := &fakeStore{
+		objects: []*store.ObjectMeta{
+			makeECObj("b", "k", "s1", 4, 2,
+				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, int64(len(body))),
+		},
+	}
+	plan, _ := ComputePlan(coord, st)
+	stats := Run(context.Background(), coord, st, plan, 1)
+	if stats.Migrated != 1 || stats.Failed != 0 {
+		t.Errorf("Migrated=%d Failed=%d, want 1 0", stats.Migrated, stats.Failed)
+	}
+	if stats.BytesCopied != int64(len(body)) {
+		t.Errorf("BytesCopied = %d, want %d", stats.BytesCopied, len(body))
+	}
+	// dn7 now has the shard, dn6 still has it on disk (rebalance never deletes)
+	if _, ok := coord.disks["dn7"]["s1-shard-5"]; !ok {
+		t.Error("dn7 should hold s1-shard-5 after rebalance")
+	}
+	if _, ok := coord.disks["dn6"]["s1-shard-5"]; !ok {
+		t.Error("dn6 should still hold s1-shard-5 (rebalance never deletes; GC will)")
+	}
+	// Meta updated to single addr = new addr
+	got := st.objects[0].Stripes[0].Shards[5].Replicas
+	if !reflect.DeepEqual(got, []string{"dn7"}) {
+		t.Errorf("shard[5].Replicas = %v, want [dn7]", got)
+	}
+}
+
+func TestECRun_ReadFails_NoMetaChange(t *testing.T) {
+	coord := newFakeCoord()
+	coord.placeNMap["s1"] = []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn7"}
+	coord.readErr["s1-shard-5"] = errors.New("dn6 dead")
+
+	st := &fakeStore{
+		objects: []*store.ObjectMeta{
+			makeECObj("b", "k", "s1", 4, 2,
+				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16),
+		},
+	}
+	plan, _ := ComputePlan(coord, st)
+	stats := Run(context.Background(), coord, st, plan, 1)
+	if stats.Failed != 1 || stats.Migrated != 0 {
+		t.Errorf("Failed=%d Migrated=%d, want 1 0", stats.Failed, stats.Migrated)
+	}
+	// Meta unchanged (still dn6) so next cycle will retry.
+	got := st.objects[0].Stripes[0].Shards[5].Replicas
+	if !reflect.DeepEqual(got, []string{"dn6"}) {
+		t.Errorf("Replicas after failed migration = %v, want [dn6] (unchanged)", got)
+	}
+}
+
+func TestECRun_Idempotent_SecondRunZero(t *testing.T) {
+	coord := newFakeCoord()
+	coord.placeNMap["s1"] = []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn7"}
+	body := []byte("x")
+	coord.seedDisk("dn6", "s1-shard-5", body)
+	st := &fakeStore{
+		objects: []*store.ObjectMeta{
+			makeECObj("b", "k", "s1", 4, 2,
+				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 1),
+		},
+	}
+	plan1, _ := ComputePlan(coord, st)
+	Run(context.Background(), coord, st, plan1, 1)
+
+	plan2, _ := ComputePlan(coord, st)
+	if len(plan2.Migrations) != 0 {
+		t.Errorf("second plan = %d migrations, want 0", len(plan2.Migrations))
+	}
+}
+
+func TestECPlan_MultipleStripes(t *testing.T) {
+	// Two stripes, only one needs migration (other stripe's desired matches).
+	coord := newFakeCoord()
+	coord.placeNMap["s1"] = []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn7"} // dn6 → dn7
+	coord.placeNMap["s2"] = []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"} // unchanged
+	obj := &store.ObjectMeta{
+		Bucket: "b", Key: "k", Size: 32,
+		EC: &store.ECParams{K: 4, M: 2, ShardSize: 16, DataSize: 32},
+		Stripes: []store.Stripe{
+			{StripeID: "s1", Shards: ecShards("s1", []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16)},
+			{StripeID: "s2", Shards: ecShards("s2", []string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16)},
+		},
+	}
+	st := &fakeStore{objects: []*store.ObjectMeta{obj}}
+	plan, _ := ComputePlan(coord, st)
+	if len(plan.Migrations) != 1 {
+		t.Fatalf("Migrations = %d, want 1 (only s1 needs work)", len(plan.Migrations))
+	}
+	if plan.Migrations[0].StripeIndex != 0 {
+		t.Errorf("StripeIndex = %d, want 0 (s1)", plan.Migrations[0].StripeIndex)
+	}
+}
+
+// ecShards builds a Shards slice for makeECObj-style EC fixtures.
+func ecShards(stripeID string, addrs []string, size int64) []store.ChunkRef {
+	out := make([]store.ChunkRef, len(addrs))
+	for i, a := range addrs {
+		out[i] = store.ChunkRef{
+			ChunkID:  fmt.Sprintf("%s-shard-%d", stripeID, i),
+			Size:     size,
+			Replicas: []string{a},
+		}
+	}
+	return out
 }

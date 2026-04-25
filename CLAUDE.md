@@ -44,6 +44,7 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `internal/chunker/` | Chunking (ADR-011, Season 2 Ep.4, ADR-006 supersede). Split/Join 고정 크기 |
 | `internal/reedsolomon/` | Reed-Solomon EC (ADR-008, Season 2 Ep.5). GF(2^8) + 행렬 + Encode/Reconstruct, from-scratch |
 | `internal/edge/` `StartAuto` | Auto-trigger (ADR-013, Season 3 Ep.1). time.Ticker 두 개, 같은 mutex 공유 |
+| `internal/rebalance/` `planEC`/`migrateShard` | EC stripe rebalance (ADR-024, Season 3 Ep.2). set-based 최소 이동 |
 | `scripts/` | 클러스터 lifecycle + 데모 (bash, curl, docker, python3만) |
 | `docs/adr/` | 아키텍처 의사결정 기록 (불변) |
 | `docs/FOLLOWUP.md` | 우선순위별 pending 작업 단일 소스 |
@@ -67,7 +68,8 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `./scripts/demo-iota.sh` | Chunking 라이브 데모 (Season 2 Ep.4) |
 | `./scripts/demo-kappa.sh` | Reed-Solomon EC 라이브 데모 (Season 2 Ep.5) |
 | `./scripts/demo-lambda.sh` | Auto-trigger 라이브 데모 (Season 3 Ep.1) |
-| `./scripts/down.sh` | 정리 (dn1~dn6 + edge 포함) |
+| `./scripts/demo-mu.sh` | EC stripe rebalance 라이브 데모 (Season 3 Ep.2) |
+| `./scripts/down.sh` | 정리 (dn1~dn8 + edge 포함) |
 
 Docker로 빌드 검증 (로컬 Go 없어도):
 
