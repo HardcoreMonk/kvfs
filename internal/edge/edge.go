@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,12 +25,39 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
 )
 
+// AutoConfig controls the in-edge automatic rebalance + GC loops (ADR-013).
+//
+// Default zero value: Enabled=false (opt-in). When Enabled, two background
+// goroutines run on Server.StartAuto(ctx). Each respects the same mutex used
+// by manual /v1/admin/{rebalance,gc}/apply so manual + auto interleave safely.
+type AutoConfig struct {
+	Enabled           bool
+	RebalanceInterval time.Duration // default 5m
+	GCInterval        time.Duration // default 15m
+	GCMinAge          time.Duration // default gc.DefaultMinAge (60s)
+	Concurrency       int           // default 4
+}
+
+// AutoRun records the outcome of a single auto-trigger cycle, kept in a
+// ring buffer for /v1/admin/auto/status.
+type AutoRun struct {
+	Job        string         `json:"job"` // "rebalance" | "gc"
+	StartedAt  time.Time      `json:"started_at"`
+	DurationMS int64          `json:"duration_ms"`
+	PlanSize   int            `json:"plan_size"` // migrations / sweeps planned
+	Stats      map[string]any `json:"stats,omitempty"`
+	Error      string         `json:"error,omitempty"`
+}
+
+const autoRunHistory = 32
+
 // Server assembles the edge HTTP handlers over a metadata store, a coordinator,
 // and a UrlKey signer.
 type Server struct {
 	Store  *store.MetaStore
 	Coord  *coordinator.Coordinator
 	Signer *urlkey.Signer
+	Log    *slog.Logger
 
 	// ChunkSize is bytes-per-chunk for PUT splitting (ADR-011).
 	// Zero / negative falls back to chunker.DefaultChunkSize.
@@ -38,12 +66,30 @@ type Server struct {
 	// If true, skip UrlKey verification (for demos/tests). Never enable in public.
 	SkipAuth bool
 
+	// AutoCfg controls the auto-trigger loops (ADR-013). See StartAuto.
+	AutoCfg AutoConfig
+
 	// rebalanceMu serializes /v1/admin/rebalance/apply so two concurrent
 	// triggers don't race on the same chunks. /plan is read-only and excluded.
 	rebalanceMu sync.Mutex
 
 	// gcMu serializes /v1/admin/gc/apply for the same reason.
 	gcMu sync.Mutex
+
+	// autoMu protects autoRuns ring buffer and last-run timestamps.
+	autoMu             sync.Mutex
+	autoRuns           []AutoRun
+	autoLastRebalance  time.Time
+	autoLastGC         time.Time
+	autoNextRebalance  time.Time
+	autoNextGC         time.Time
+}
+
+func (s *Server) logger() *slog.Logger {
+	if s.Log != nil {
+		return s.Log
+	}
+	return slog.Default()
 }
 
 func (s *Server) chunkSize() int {
@@ -65,6 +111,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/admin/rebalance/apply", s.handleRebalanceApply)
 	mux.HandleFunc("POST /v1/admin/gc/plan", s.handleGCPlan)
 	mux.HandleFunc("POST /v1/admin/gc/apply", s.handleGCApply)
+	mux.HandleFunc("GET /v1/admin/auto/status", s.handleAutoStatus)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }
@@ -411,6 +458,223 @@ type statusRecorder struct {
 func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// ─── auto-trigger (ADR-013) ───
+
+// StartAuto launches background goroutines that periodically run rebalance
+// and GC. They reuse Server.rebalanceMu / gcMu so manual /apply and auto
+// runs interleave safely. Stops on ctx.Done().
+//
+// Returns immediately if AutoCfg.Enabled is false.
+func (s *Server) StartAuto(ctx context.Context) {
+	if !s.AutoCfg.Enabled {
+		return
+	}
+	rb := s.AutoCfg.RebalanceInterval
+	if rb <= 0 {
+		rb = 5 * time.Minute
+	}
+	gci := s.AutoCfg.GCInterval
+	if gci <= 0 {
+		gci = 15 * time.Minute
+	}
+	minAge := s.AutoCfg.GCMinAge
+	if minAge <= 0 {
+		minAge = gc.DefaultMinAge
+	}
+	conc := s.AutoCfg.Concurrency
+	if conc <= 0 {
+		conc = 4
+	}
+
+	s.logger().Info("auto-trigger starting",
+		"rebalance_interval", rb, "gc_interval", gci,
+		"gc_min_age", minAge, "concurrency", conc)
+
+	s.autoMu.Lock()
+	s.autoNextRebalance = time.Now().Add(rb)
+	s.autoNextGC = time.Now().Add(gci)
+	s.autoMu.Unlock()
+
+	go s.autoRebalanceLoop(ctx, rb, conc)
+	go s.autoGCLoop(ctx, gci, minAge, conc)
+}
+
+func (s *Server) autoRebalanceLoop(ctx context.Context, interval time.Duration, conc int) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger().Info("auto-rebalance loop stopping")
+			return
+		case <-t.C:
+			s.runAutoRebalance(ctx, conc)
+			s.autoMu.Lock()
+			s.autoNextRebalance = time.Now().Add(interval)
+			s.autoMu.Unlock()
+		}
+	}
+}
+
+func (s *Server) autoGCLoop(ctx context.Context, interval, minAge time.Duration, conc int) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger().Info("auto-gc loop stopping")
+			return
+		case <-t.C:
+			s.runAutoGC(ctx, minAge, conc)
+			s.autoMu.Lock()
+			s.autoNextGC = time.Now().Add(interval)
+			s.autoMu.Unlock()
+		}
+	}
+}
+
+func (s *Server) runAutoRebalance(ctx context.Context, conc int) {
+	s.rebalanceMu.Lock()
+	defer s.rebalanceMu.Unlock()
+
+	start := time.Now()
+	plan, err := rebalance.ComputePlan(s.Coord, s.Store)
+	if err != nil {
+		s.recordAuto(AutoRun{
+			Job: "rebalance", StartedAt: start,
+			DurationMS: time.Since(start).Milliseconds(),
+			Error:      "ComputePlan: " + err.Error(),
+		})
+		s.logger().Warn("auto-rebalance ComputePlan failed", "err", err)
+		return
+	}
+	planSize := len(plan.Migrations)
+	if planSize == 0 {
+		s.recordAuto(AutoRun{
+			Job: "rebalance", StartedAt: start,
+			DurationMS: time.Since(start).Milliseconds(),
+		})
+		s.autoMu.Lock()
+		s.autoLastRebalance = start
+		s.autoMu.Unlock()
+		return
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	stats := rebalance.Run(rctx, s.Coord, s.Store, plan, conc)
+
+	s.recordAuto(AutoRun{
+		Job: "rebalance", StartedAt: start,
+		DurationMS: time.Since(start).Milliseconds(),
+		PlanSize:   planSize,
+		Stats: map[string]any{
+			"scanned":      plan.Scanned,
+			"migrated":     stats.Migrated,
+			"failed":       stats.Failed,
+			"bytes_copied": stats.BytesCopied,
+		},
+	})
+	s.autoMu.Lock()
+	s.autoLastRebalance = start
+	s.autoMu.Unlock()
+	s.logger().Info("auto-rebalance cycle",
+		"plan_size", planSize, "migrated", stats.Migrated,
+		"failed", stats.Failed, "bytes", stats.BytesCopied,
+		"duration_ms", time.Since(start).Milliseconds())
+}
+
+func (s *Server) runAutoGC(ctx context.Context, minAge time.Duration, conc int) {
+	s.gcMu.Lock()
+	defer s.gcMu.Unlock()
+
+	start := time.Now()
+	gctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	plan, err := gc.ComputePlan(gctx, s.Coord, s.Store, minAge)
+	if err != nil {
+		s.recordAuto(AutoRun{
+			Job: "gc", StartedAt: start,
+			DurationMS: time.Since(start).Milliseconds(),
+			Error:      "ComputePlan: " + err.Error(),
+		})
+		s.logger().Warn("auto-gc ComputePlan failed", "err", err)
+		return
+	}
+	planSize := len(plan.Sweeps)
+	if planSize == 0 {
+		s.recordAuto(AutoRun{
+			Job: "gc", StartedAt: start,
+			DurationMS: time.Since(start).Milliseconds(),
+		})
+		s.autoMu.Lock()
+		s.autoLastGC = start
+		s.autoMu.Unlock()
+		return
+	}
+
+	stats := gc.Run(gctx, s.Coord, plan, conc)
+
+	s.recordAuto(AutoRun{
+		Job: "gc", StartedAt: start,
+		DurationMS: time.Since(start).Milliseconds(),
+		PlanSize:   planSize,
+		Stats: map[string]any{
+			"scanned":      plan.Scanned,
+			"claimed_keys": plan.ClaimedKeys,
+			"deleted":      stats.Deleted,
+			"failed":       stats.Failed,
+			"bytes_freed":  stats.BytesFreed,
+			"min_age_sec":  int(minAge.Seconds()),
+		},
+	})
+	s.autoMu.Lock()
+	s.autoLastGC = start
+	s.autoMu.Unlock()
+	s.logger().Info("auto-gc cycle",
+		"plan_size", planSize, "deleted", stats.Deleted,
+		"failed", stats.Failed, "bytes", stats.BytesFreed,
+		"duration_ms", time.Since(start).Milliseconds())
+}
+
+func (s *Server) recordAuto(r AutoRun) {
+	s.autoMu.Lock()
+	defer s.autoMu.Unlock()
+	s.autoRuns = append(s.autoRuns, r)
+	if len(s.autoRuns) > autoRunHistory {
+		s.autoRuns = s.autoRuns[len(s.autoRuns)-autoRunHistory:]
+	}
+}
+
+// handleAutoStatus returns the auto-trigger configuration plus the ring
+// buffer of recent runs. Read-only.
+func (s *Server) handleAutoStatus(w http.ResponseWriter, r *http.Request) {
+	s.autoMu.Lock()
+	runs := append([]AutoRun(nil), s.autoRuns...)
+	lastRb := s.autoLastRebalance
+	lastGC := s.autoLastGC
+	nextRb := s.autoNextRebalance
+	nextGC := s.autoNextGC
+	s.autoMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"config": map[string]any{
+			"enabled":            s.AutoCfg.Enabled,
+			"rebalance_interval": s.AutoCfg.RebalanceInterval.String(),
+			"gc_interval":        s.AutoCfg.GCInterval.String(),
+			"gc_min_age":         s.AutoCfg.GCMinAge.String(),
+			"concurrency":        s.AutoCfg.Concurrency,
+		},
+		"last_rebalance":     lastRb,
+		"last_gc":            lastGC,
+		"next_rebalance":     nextRb,
+		"next_gc":            nextGC,
+		"history_size":       len(runs),
+		"history_capacity":   autoRunHistory,
+		"runs":               runs,
+	})
 }
 
 // ─── EC mode handlers (ADR-008) ───

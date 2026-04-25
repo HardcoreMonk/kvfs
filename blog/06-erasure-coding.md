@@ -320,7 +320,7 @@ ADR-008 은 "K+M shard 중 어느 K 개로도 원본 복원" 만 약속. SIMD, r
 
 ## 다음 편 예고
 
-- **Ep.7**: ADR-013 Auto-trigger policy — DN 변경 감지 + rebalance + GC + EC re-encoding 자동화
+- **Ep.7** *(완료)*: ADR-013 Auto-trigger policy — 운영자 호출 0번에 자동 정렬. → [`blog/07-auto-trigger.md`](07-auto-trigger.md)
 - **Ep.8 후보**: ADR-019 SIMD-accelerated RS — Go `_amd64.s` 또는 klauspost 통합
 - **Ep.9 후보**: ADR-020 Hybrid storage — 객체 크기 / age 기반 자동 replication↔EC 마이그레이션
 - **Ep.10 후보**: ADR-021 Local Reconstruction Codes (LRC)

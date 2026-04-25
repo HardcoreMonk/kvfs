@@ -37,6 +37,8 @@ func main() {
 		cmdRebalance(os.Args[2:])
 	case "gc":
 		cmdGC(os.Args[2:])
+	case "auto":
+		cmdAuto(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -55,6 +57,7 @@ Subcommands:
   placement-sim   Simulate Rendezvous Hashing: chunk distribution + rebalance
   rebalance       Migrate misplaced chunks to their HRW-desired DNs (ADR-010)
   gc              Delete surplus chunks no object's metadata claims (ADR-012)
+  auto            Show auto-trigger config + recent run history (ADR-013)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -609,4 +612,114 @@ func idShort(id string) string {
 		return id[:16]
 	}
 	return id
+}
+
+// ---- auto ----
+//
+// Queries GET /v1/admin/auto/status and pretty-prints config + history.
+func cmdAuto(args []string) {
+	fs := flag.NewFlagSet("auto", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	doStatus := fs.Bool("status", false, "show auto-trigger status")
+	verbose := fs.Bool("v", false, "print all history entries (otherwise last 5)")
+	fs.Parse(args)
+
+	if !*doStatus {
+		fmt.Fprintln(os.Stderr, "auto: specify --status")
+		os.Exit(2)
+	}
+
+	url := strings.TrimRight(*edge, "/") + "/v1/admin/auto/status"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		fail(err)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fail(fmt.Errorf("GET %s: %w", url, err))
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		fail(fmt.Errorf("GET %s: HTTP %d: %s", url, resp.StatusCode, string(body)))
+	}
+
+	var status struct {
+		Config struct {
+			Enabled           bool   `json:"enabled"`
+			RebalanceInterval string `json:"rebalance_interval"`
+			GCInterval        string `json:"gc_interval"`
+			GCMinAge          string `json:"gc_min_age"`
+			Concurrency       int    `json:"concurrency"`
+		} `json:"config"`
+		LastRebalance time.Time `json:"last_rebalance"`
+		LastGC        time.Time `json:"last_gc"`
+		NextRebalance time.Time `json:"next_rebalance"`
+		NextGC        time.Time `json:"next_gc"`
+		HistorySize   int       `json:"history_size"`
+		Runs          []struct {
+			Job        string                 `json:"job"`
+			StartedAt  time.Time              `json:"started_at"`
+			DurationMS int64                  `json:"duration_ms"`
+			PlanSize   int                    `json:"plan_size"`
+			Stats      map[string]interface{} `json:"stats"`
+			Error      string                 `json:"error"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(body, &status); err != nil {
+		fail(fmt.Errorf("decode status: %w", err))
+	}
+
+	state := "DISABLED (opt-in via EDGE_AUTO=1)"
+	if status.Config.Enabled {
+		state = "ENABLED"
+	}
+	fmt.Printf("⏱  Auto-trigger: %s\n", state)
+	if status.Config.Enabled {
+		fmt.Printf("   rebalance_interval: %s\n", status.Config.RebalanceInterval)
+		fmt.Printf("   gc_interval:        %s\n", status.Config.GCInterval)
+		fmt.Printf("   gc_min_age:         %s\n", status.Config.GCMinAge)
+		fmt.Printf("   concurrency:        %d\n", status.Config.Concurrency)
+		if !status.LastRebalance.IsZero() {
+			fmt.Printf("   last_rebalance:     %s\n", status.LastRebalance.Format(time.RFC3339))
+		}
+		if !status.LastGC.IsZero() {
+			fmt.Printf("   last_gc:            %s\n", status.LastGC.Format(time.RFC3339))
+		}
+		if !status.NextRebalance.IsZero() {
+			fmt.Printf("   next_rebalance:     %s\n", status.NextRebalance.Format(time.RFC3339))
+		}
+		if !status.NextGC.IsZero() {
+			fmt.Printf("   next_gc:            %s\n", status.NextGC.Format(time.RFC3339))
+		}
+	}
+
+	if status.HistorySize == 0 {
+		fmt.Println()
+		fmt.Println("No runs yet.")
+		return
+	}
+
+	show := len(status.Runs)
+	if !*verbose && show > 5 {
+		show = 5
+	}
+	fmt.Println()
+	fmt.Printf("Recent %d runs (most recent last):\n", show)
+	startIdx := len(status.Runs) - show
+	for i := startIdx; i < len(status.Runs); i++ {
+		r := status.Runs[i]
+		ts := r.StartedAt.Format("15:04:05")
+		if r.Error != "" {
+			fmt.Printf("  %s  %-9s  ERROR: %s\n", ts, r.Job, r.Error)
+			continue
+		}
+		if r.PlanSize == 0 {
+			fmt.Printf("  %s  %-9s  no work  (%dms)\n", ts, r.Job, r.DurationMS)
+			continue
+		}
+		fmt.Printf("  %s  %-9s  plan=%d  stats=%v  (%dms)\n",
+			ts, r.Job, r.PlanSize, r.Stats, r.DurationMS)
+	}
 }

@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-26** · Season 2 Ep.5 (ADR-008 Reed-Solomon EC) 완료 시점 기준 — Season 2 closed.
+문서 현행화 일자: **2026-04-26** · Season 3 Ep.1 (ADR-013 Auto-trigger) 완료 시점 기준.
 
 ## 우선순위 맵
 
@@ -132,19 +132,20 @@
 | 2026-04-26 | Season 2 Ep.3 — ADR-012 Surplus chunk GC 구현 완료 | `internal/gc/` (9 tests PASS) + DN `/chunks` list + edge admin + `kvfs-cli gc` + `scripts/demo-theta.sh` (라이브: 15→12 disk chunks, 메타↔디스크 정확 일치) + `blog/04-gc.md`. Rebalance trim-on-full-success 보정 동반 |
 | 2026-04-26 | Season 2 Ep.4 — ADR-011 Chunking 구현 완료 (ADR-006 supersede) | `internal/chunker/` (13 tests PASS) + ObjectMeta 스키마 변경 (Chunks []ChunkRef + legacy adapter) + edge PUT/GET/DELETE 청크화 + rebalance/gc 청크 단위 갱신 + `EDGE_CHUNK_SIZE` env + `scripts/demo-iota.sh` (256 KiB → 4 청크 라이브 PASS) + `blog/05-chunking.md`. demo-eta/theta/alpha 회귀 fix 동반 |
 | 2026-04-26 | Season 2 Ep.5 — ADR-008 Reed-Solomon EC 구현 완료 (Season 2 closed) | `internal/reedsolomon/` from-scratch (24 tests PASS): GF(2^8) + Vandermonde + Gauss-Jordan. ObjectMeta 에 ECParams + Stripes 추가, `Coordinator.PlaceN(stripeID, K+M)`, `X-KVFS-EC: K+M` 헤더로 per-object 모드, `internal/edge` 에 `handlePutEC` / `handleGetEC`. `scripts/demo-kappa.sh` (6 DN, 128 KiB / 4+2, dn5+dn6 kill 후 GET 복원 PASS) + `blog/06-erasure-coding.md`. GC `buildClaimedSet` 가 Stripes iterate |
+| 2026-04-26 | Season 3 Ep.1 — ADR-013 Auto-trigger 구현 완료 | `internal/edge` 에 `AutoConfig` + `StartAuto(ctx)` + 두 개 `time.Ticker` 루프 (rebalance + GC). 기존 `rebalanceMu` / `gcMu` 공유로 수동/자동 직렬화. ring buffer 32 entries 의 `AutoRun` 기록 + `GET /v1/admin/auto/status` + `kvfs-cli auto --status`. `EDGE_AUTO=1` opt-in default. `scripts/demo-lambda.sh` (10s/12s interval, 운영자 명령 0번에 클러스터 정렬 PASS) + `blog/07-auto-trigger.md`. Season 3 운영성 트랙 시작 |
 
 ---
 
 ## 현재 상태 요약 (2026-04-25)
 
-- **Git**: main branch, 8 commits, no remote
-- **클러스터**: `localhost:8000` running · edge(chunk_size=16KiB) + dn × 6 (demo-kappa 가 down→up→6DN 까지 끝낸 상태)
+- **Git**: main branch, 9 commits, no remote
+- **클러스터**: `localhost:8000` running · edge(EDGE_AUTO=1) + dn × 4 (demo-lambda 가 down→up 까지 끝낸 상태)
 - **테스트**: 7 placement + 5 urlkey + 8 rebalance + 9 gc + 13 chunker + 24 reedsolomon = **66 unit tests PASS**
-- **데모**: α, ε, dedup, ζ, η, θ, ι, κ 전부 라이브 통과
-- **ADR**: 12건 (001~005 + 007 + 008~012, 006 superseded by 011) Accepted
-- **Blog**: Ep.1~Ep.6 완성 (Ep.6 = Reed-Solomon EC 라이브 데모)
-- **LOC**: Go ~5,000 + 문서 ~5,000 + scripts ~900
-- **Season 2 closed** — placement → rebalance → GC → chunking → EC 5 episode 완성
+- **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ 전부 라이브 통과
+- **ADR**: 13건 (001~005 + 007~012 + 013, 006 superseded by 011) Accepted
+- **Blog**: Ep.1~Ep.7 완성 (Ep.7 = Auto-trigger, Season 3 시작)
+- **LOC**: Go ~5,300 + 문서 ~5,500 + scripts ~1,050
+- **Season 2 closed**; **Season 3 (운영성 트랙) 시작** — Ep.1 = Auto-trigger
 
 ## 업데이트 규칙
 

@@ -8,6 +8,11 @@
 //	EDGE_URLKEY_SECRET   string   required               — HMAC-SHA256 secret (>= 16 bytes recommended)
 //	EDGE_QUORUM_WRITE    int      auto (ceil(N/2+1))     — min replica acks for success
 //	EDGE_CHUNK_SIZE      int      4194304 (4 MiB)        — bytes per chunk (ADR-011)
+//	EDGE_AUTO            bool     0                      — opt-in auto rebalance + GC (ADR-013)
+//	EDGE_AUTO_REBALANCE_INTERVAL  duration  5m           — auto rebalance ticker interval
+//	EDGE_AUTO_GC_INTERVAL         duration  15m          — auto GC ticker interval
+//	EDGE_AUTO_GC_MIN_AGE          duration  60s          — min chunk age for auto-GC
+//	EDGE_AUTO_CONCURRENCY         int       4            — parallel ops per cycle
 //	EDGE_SKIP_AUTH       bool     false                  — DEMO ONLY: disable UrlKey verification
 package main
 
@@ -40,6 +45,11 @@ func main() {
 		flagSecret  = flag.String("secret", envOr("EDGE_URLKEY_SECRET", ""), "HMAC-SHA256 secret")
 		flagQuorum  = flag.Int("quorum", atoiOr(envOr("EDGE_QUORUM_WRITE", "0"), 0), "write quorum; 0 = auto")
 		flagChunk   = flag.Int("chunk-size", atoiOr(envOr("EDGE_CHUNK_SIZE", "0"), 0), "bytes per chunk (ADR-011); 0 = default 4 MiB")
+		flagAuto    = flag.Bool("auto", envOr("EDGE_AUTO", "") == "1", "enable auto rebalance + GC loops (ADR-013)")
+		flagAutoRb  = flag.String("auto-rebalance-interval", envOr("EDGE_AUTO_REBALANCE_INTERVAL", "5m"), "auto rebalance ticker interval")
+		flagAutoGC  = flag.String("auto-gc-interval", envOr("EDGE_AUTO_GC_INTERVAL", "15m"), "auto GC ticker interval")
+		flagAutoMin = flag.String("auto-gc-min-age", envOr("EDGE_AUTO_GC_MIN_AGE", "60s"), "min chunk age for auto GC")
+		flagAutoCnc = flag.Int("auto-concurrency", atoiOr(envOr("EDGE_AUTO_CONCURRENCY", "4"), 4), "parallel ops per auto cycle")
 		flagSkip    = flag.Bool("skip-auth", envOr("EDGE_SKIP_AUTH", "") == "1", "DEMO ONLY: skip UrlKey verify")
 	)
 	flag.Parse()
@@ -86,11 +96,30 @@ func main() {
 		chunkSize = chunker.DefaultChunkSize
 	}
 
+	autoCfg := edge.AutoConfig{Enabled: *flagAuto, Concurrency: *flagAutoCnc}
+	if d, err := time.ParseDuration(*flagAutoRb); err == nil {
+		autoCfg.RebalanceInterval = d
+	} else if *flagAuto {
+		fatal("invalid EDGE_AUTO_REBALANCE_INTERVAL: " + err.Error())
+	}
+	if d, err := time.ParseDuration(*flagAutoGC); err == nil {
+		autoCfg.GCInterval = d
+	} else if *flagAuto {
+		fatal("invalid EDGE_AUTO_GC_INTERVAL: " + err.Error())
+	}
+	if d, err := time.ParseDuration(*flagAutoMin); err == nil {
+		autoCfg.GCMinAge = d
+	} else if *flagAuto {
+		fatal("invalid EDGE_AUTO_GC_MIN_AGE: " + err.Error())
+	}
+
 	srv := &edge.Server{
 		Store:     ms,
 		Coord:     coord,
 		Signer:    signer,
+		Log:       log,
 		ChunkSize: chunkSize,
+		AutoCfg:   autoCfg,
 		SkipAuth:  *flagSkip,
 	}
 
@@ -99,6 +128,7 @@ func main() {
 		"dns", dns,
 		"quorum_write", coord.QuorumWrite(),
 		"chunk_size", chunkSize,
+		"auto", autoCfg.Enabled,
 		"meta_path", metaPath,
 		"skip_auth", *flagSkip,
 	)
@@ -114,6 +144,10 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Start auto-trigger loops (no-op if AutoCfg.Enabled is false). They
+	// exit when ctx is cancelled by signal.
+	srv.StartAuto(ctx)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.ListenAndServe() }()
