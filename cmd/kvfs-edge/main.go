@@ -293,25 +293,25 @@ func main() {
 			ElectionTimeoutMin: etMin,
 			ElectionTimeoutMax: etMax,
 			Log:                log,
-		})
-		// Followers apply pushed WAL entries directly into local store
-		// (ADR-031 follow-up — synchronous replication path).
-		elector.SetAppendEntryFunc(func(body []byte) error {
-			var e store.WALEntry
-			if err := json.Unmarshal(body, &e); err != nil {
-				return err
-			}
-			return ms.ApplyEntry(e)
+			// Followers apply pushed WAL entries directly into local store
+			// (ADR-031 follow-up — synchronous replication path).
+			AppendEntryFn: func(body []byte) error {
+				var e store.WALEntry
+				if err := json.Unmarshal(body, &e); err != nil {
+					return err
+				}
+				return ms.ApplyEntry(e)
+			},
 		})
 		// Leader-side: every local WAL.Append fires this hook → push to
-		// peers (best-effort, quorum-ack within timeout).
+		// peers (best-effort, quorum-ack within Config.ReplicateTimeout).
 		ms.SetWALHook(func(entryJSON []byte) {
 			if !elector.IsLeader() {
 				return // followers don't replicate
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := elector.ReplicateEntry(ctx, entryJSON, 2*time.Second); err != nil {
+			if err := elector.ReplicateEntry(ctx, entryJSON); err != nil {
 				log.Warn("replication failed", "err", err.Error())
 			}
 		})

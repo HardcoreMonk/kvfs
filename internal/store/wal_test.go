@@ -18,7 +18,7 @@ func TestWALAppendAndSince(t *testing.T) {
 	defer w.Close()
 
 	for i := 1; i <= 5; i++ {
-		seq, err := w.Append("put_object", map[string]any{"i": i})
+		seq, _, err := w.Append("put_object", map[string]any{"i": i})
 		if err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
@@ -55,7 +55,7 @@ func TestWALRecoverLastSeq(t *testing.T) {
 
 	w, _ := OpenWAL(path)
 	for i := 1; i <= 3; i++ {
-		_, _ = w.Append("delete_object", map[string]any{"i": i})
+		_, _, _ = w.Append("delete_object", map[string]any{"i": i})
 	}
 	_ = w.Close()
 
@@ -68,7 +68,7 @@ func TestWALRecoverLastSeq(t *testing.T) {
 		t.Errorf("after reopen LastSeq=%d want 3", w2.LastSeq())
 	}
 	// Continuing to append must produce seq 4.
-	seq, _ := w2.Append("put_object", "hi")
+	seq, _, _ := w2.Append("put_object", "hi")
 	if seq != 4 {
 		t.Errorf("next append seq=%d want 4", seq)
 	}
@@ -80,7 +80,7 @@ func TestWALTruncate(t *testing.T) {
 	defer w.Close()
 
 	for i := 0; i < 5; i++ {
-		_, _ = w.Append("put_object", i)
+		_, _, _ = w.Append("put_object", i)
 	}
 	prev, err := w.Truncate()
 	if err != nil {
@@ -93,7 +93,7 @@ func TestWALTruncate(t *testing.T) {
 		t.Errorf("after truncate LastSeq=%d want 0", w.LastSeq())
 	}
 	// New appends start at 1.
-	seq, _ := w.Append("delete_object", nil)
+	seq, _, _ := w.Append("delete_object", nil)
 	if seq != 1 {
 		t.Errorf("post-truncate append seq=%d want 1", seq)
 	}
@@ -104,7 +104,7 @@ func TestWALWriteSinceTo(t *testing.T) {
 	w, _ := OpenWAL(filepath.Join(dir, "wal.log"))
 	defer w.Close()
 	for i := 1; i <= 4; i++ {
-		_, _ = w.Append("put_object", i)
+		_, _, _ = w.Append("put_object", i)
 	}
 
 	var buf bytes.Buffer

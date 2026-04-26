@@ -44,12 +44,10 @@ import (
 	"log/slog"
 	mathrand "math/rand"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
-
-func bytesNewReader(b []byte) io.Reader { return bytes.NewReader(b) }
-func readAll(r io.Reader) ([]byte, error) { return io.ReadAll(r) }
 
 // State is the current role in the election state machine.
 type State int
@@ -80,13 +78,19 @@ type Peer struct {
 
 // Config bundles tunables. Defaults (zero) are reasonable for ~3-5 edges.
 type Config struct {
-	SelfID                string
-	Peers                 []Peer        // includes self
-	HeartbeatInterval     time.Duration // leader → followers cadence (default 500ms)
-	ElectionTimeoutMin    time.Duration // follower→candidate trigger (default 1500ms)
-	ElectionTimeoutMax    time.Duration // (default 3000ms)
-	HTTPClient            *http.Client  // for vote/heartbeat outbound calls
-	Log                   *slog.Logger
+	SelfID             string
+	Peers              []Peer        // includes self
+	HeartbeatInterval  time.Duration // leader → followers cadence (default 500ms)
+	ElectionTimeoutMin time.Duration // follower→candidate trigger (default 1500ms)
+	ElectionTimeoutMax time.Duration // (default 3000ms)
+	HTTPClient         *http.Client  // for vote/heartbeat outbound calls
+	Log                *slog.Logger
+	// ReplicateTimeout is the per-call deadline for ReplicateEntry's quorum
+	// wait (default 2s). Override only if peer RTT exceeds the default.
+	ReplicateTimeout time.Duration
+	// AppendEntryFn applies a pushed WAL entry to local state. Set at
+	// construction; passed through to the AppendWAL HTTP handler.
+	AppendEntryFn AppendEntryFunc
 }
 
 // Elector runs the election state machine.
@@ -94,6 +98,11 @@ type Elector struct {
 	cfg        Config
 	httpClient *http.Client
 	rng        *mathrand.Rand
+
+	// hbCh is signalled (non-blocking) when a valid heartbeat or vote-grant
+	// arrives, waking the follower loop instead of polling. Buffer 1 so a
+	// tight burst doesn't drop notifications below the wake threshold.
+	hbCh chan struct{}
 
 	// Mutable state — protected by mu.
 	mu          sync.RWMutex
@@ -122,12 +131,17 @@ func New(cfg Config) *Elector {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	if cfg.ReplicateTimeout <= 0 {
+		cfg.ReplicateTimeout = 2 * time.Second
+	}
 	return &Elector{
 		cfg:        cfg,
 		httpClient: cfg.HTTPClient,
 		rng:        mathrand.New(mathrand.NewSource(time.Now().UnixNano())),
+		hbCh:       make(chan struct{}, 1),
 		state:      Follower,
 		lastHB:     time.Now(),
+		appendFn:   cfg.AppendEntryFn,
 	}
 }
 
@@ -194,6 +208,9 @@ func (e *Elector) randomElectionTimeout() time.Duration {
 	return min + time.Duration(e.rng.Int63n(int64(delta)))
 }
 
+// runFollower waits for either a heartbeat (resetting the timer) or the
+// election timeout (transitioning to candidate). Heartbeat resets are
+// signalled via e.hbCh by HandleHeartbeat / HandleVote — no polling.
 func (e *Elector) runFollower(ctx context.Context) {
 	timeout := e.randomElectionTimeout()
 	t := time.NewTimer(timeout)
@@ -212,21 +229,26 @@ func (e *Elector) runFollower(ctx context.Context) {
 			e.state = Candidate
 			e.mu.Unlock()
 			return
-		case <-time.After(50 * time.Millisecond):
-			// Periodic check: did a heartbeat reset us?
-			e.mu.RLock()
-			lastHB := e.lastHB
-			e.mu.RUnlock()
-			if time.Since(lastHB) < timeout {
-				if !t.Stop() {
-					select {
-					case <-t.C:
-					default:
-					}
+		case <-e.hbCh:
+			// Reset election timer (drain pending tick first if needed).
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
 				}
-				t.Reset(timeout - time.Since(lastHB))
 			}
+			t.Reset(timeout)
 		}
+	}
+}
+
+// signalHeartbeat is called from HandleHeartbeat / HandleVote (after they
+// update lastHB) to wake runFollower. Non-blocking — buffer 1 absorbs the
+// burst case where multiple resets arrive while the follower is processing.
+func (e *Elector) signalHeartbeat() {
+	select {
+	case e.hbCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -436,6 +458,9 @@ func (e *Elector) HandleVote(w http.ResponseWriter, r *http.Request) {
 		e.votedFor = candidate
 		e.lastHB = time.Now() // grant resets election timer
 		writeVote(w, true, e.currentTerm)
+		// Wake follower loop (non-blocking; buffer 1 absorbs the case where
+		// the previous signal wasn't yet consumed).
+		defer e.signalHeartbeat()
 		return
 	}
 	writeVote(w, false, e.currentTerm)
@@ -469,20 +494,12 @@ func (e *Elector) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	e.leader = leader
 	e.lastHB = time.Now()
 	writeVote(w, true, e.currentTerm)
+	defer e.signalHeartbeat()
 }
 
 // AppendEntryFunc is called by HandleAppendWAL on followers to apply a
-// received entry to local state. Set via SetAppendEntryFunc; defaults to
-// no-op if unset.
+// received entry to local state. Set via Config.AppendEntryFn at New time.
 type AppendEntryFunc func(entryBody []byte) error
-
-// SetAppendEntryFunc registers the per-edge applicator that runs when a
-// peer pushes a WAL entry. Hooked from edge.Server during construction.
-func (e *Elector) SetAppendEntryFunc(fn AppendEntryFunc) {
-	e.mu.Lock()
-	e.appendFn = fn
-	e.mu.Unlock()
-}
 
 // HandleAppendWAL serves POST /v1/election/append-wal?term=X with a JSON
 // body = one WAL entry. Used by the leader to synchronously replicate
@@ -499,7 +516,7 @@ func (e *Elector) HandleAppendWAL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	body, err := readAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
@@ -537,25 +554,22 @@ func (e *Elector) HandleAppendWAL(w http.ResponseWriter, r *http.Request) {
 }
 
 // ReplicateEntry pushes one WAL entry body (raw JSON) to all peers in parallel.
-// Returns nil if quorum (N/2+1 including self) acked within the timeout, else
-// an error. Called by edge.Server's WAL hook on the leader.
+// Returns nil if quorum (N/2+1 including self) acked within Config.ReplicateTimeout,
+// else an error. Called by edge.Server's WAL hook on the leader.
 //
 // Best-effort semantics for now:
 //   - Leader has already locally committed (bbolt + WAL append).
 //   - This RPC informs peers; quorum-ack improves durability vs pure pull.
 //   - On quorum failure, error is returned but the leader's local state is
 //     unchanged — caller decides whether to surface to the client.
-func (e *Elector) ReplicateEntry(ctx context.Context, entryBody []byte, timeout time.Duration) error {
+func (e *Elector) ReplicateEntry(ctx context.Context, entryBody []byte) error {
 	if e.State() != Leader {
 		return fmt.Errorf("not leader")
-	}
-	if timeout <= 0 {
-		timeout = 2 * time.Second
 	}
 	e.mu.RLock()
 	term := e.currentTerm
 	e.mu.RUnlock()
-	pctx, cancel := context.WithTimeout(ctx, timeout)
+	pctx, cancel := context.WithTimeout(ctx, e.cfg.ReplicateTimeout)
 	defer cancel()
 
 	acks := 1 // self
@@ -586,7 +600,7 @@ func (e *Elector) ReplicateEntry(ctx context.Context, entryBody []byte, timeout 
 
 func (e *Elector) pushAppendWAL(ctx context.Context, peer Peer, term uint64, body []byte) bool {
 	url := fmt.Sprintf("%s/v1/election/append-wal?term=%d", peer.URL, term)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytesNewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return false
 	}
@@ -620,9 +634,7 @@ func parseTerm(s string) (uint64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("missing term")
 	}
-	var v uint64
-	_, err := fmt.Sscanf(s, "%d", &v)
-	return v, err
+	return strconv.ParseUint(s, 10, 64)
 }
 
 func writeVote(w http.ResponseWriter, granted bool, term uint64) {

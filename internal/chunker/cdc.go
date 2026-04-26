@@ -36,8 +36,6 @@
 package chunker
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	mathrand "math/rand"
@@ -134,24 +132,23 @@ func (c *CDCReader) Next() (*StreamPiece, error) {
 	data := make([]byte, cut)
 	copy(data, c.buf[:cut])
 	c.buf = c.buf[cut:]
-	sum := sha256.Sum256(data)
-	return &StreamPiece{
-		ID:   hex.EncodeToString(sum[:]),
-		Data: data,
-		Size: int64(cut),
-	}, nil
+	return newStreamPiece(data), nil
 }
 
 // fillBuf reads from src until buf has at least MaxSize bytes or src is
-// exhausted. Returns io.EOF when src is fully drained AND we've decided not
-// to read more (so caller can switch to flush mode).
+// exhausted. Reads directly into c.buf's tail (no per-Read allocation).
+// Returns io.EOF when src is fully drained.
 func (c *CDCReader) fillBuf() error {
+	if cap(c.buf) < c.cfg.MaxSize {
+		nb := make([]byte, len(c.buf), c.cfg.MaxSize)
+		copy(nb, c.buf)
+		c.buf = nb
+	}
 	for !c.done && len(c.buf) < c.cfg.MaxSize {
-		need := c.cfg.MaxSize - len(c.buf)
-		tmp := make([]byte, need)
-		n, err := c.src.Read(tmp)
+		end := len(c.buf)
+		n, err := c.src.Read(c.buf[end:c.cfg.MaxSize])
 		if n > 0 {
-			c.buf = append(c.buf, tmp[:n]...)
+			c.buf = c.buf[:end+n]
 		}
 		if err == io.EOF {
 			c.done = true

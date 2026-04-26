@@ -1402,7 +1402,6 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 
 	var stripes []store.Stripe
 	var dataLen int64
-	var lastStripeShortMarker error // only fixed mode uses this (sentinel)
 
 	for stripeIdx := 0; ; stripeIdx++ {
 		p, rerr := nextStripe()
@@ -1412,9 +1411,6 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 		if rerr != nil && rerr != io.ErrUnexpectedEOF {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("read stripe %d: %v", stripeIdx, rerr))
 			return
-		}
-		if rerr == io.ErrUnexpectedEOF {
-			lastStripeShortMarker = io.ErrUnexpectedEOF
 		}
 		dataLen += int64(len(p.raw))
 
@@ -1477,7 +1473,6 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 			break // last (padded) stripe processed
 		}
 	}
-	_ = lastStripeShortMarker // silence unused if path skipped
 
 	if dataLen == 0 {
 		writeError(w, http.StatusBadRequest, "empty body")

@@ -40,6 +40,18 @@ import (
 	"time"
 )
 
+// WALOp is the typed name of a mutation kind. Defined as a string for
+// JSON-friendly wire format; constants below are the only legal values
+// (ApplyEntry's switch is the authoritative producer/consumer pair).
+type WALOp string
+
+const (
+	OpPutObject      WALOp = "put_object"
+	OpDeleteObject   WALOp = "delete_object"
+	OpAddRuntimeDN   WALOp = "add_runtime_dn"
+	OpRemoveRuntimeDN WALOp = "remove_runtime_dn"
+)
+
 // WALEntry is one record in the WAL.
 type WALEntry struct {
 	Seq       int64           `json:"seq"`
@@ -101,15 +113,17 @@ func (w *WAL) recoverLastSeq() (int64, error) {
 // LastSeq returns the seq of the most recently appended entry (0 = empty WAL).
 func (w *WAL) LastSeq() int64 { return w.seq.Load() }
 
-// Append writes one entry, fsyncs, and returns the assigned seq.
+// Append writes one entry, fsyncs, and returns the assigned seq plus the
+// raw JSON line bytes (without the trailing newline). The bytes are returned
+// so callers can reuse them for replication hooks without re-marshalling.
 // Args is marshalled to JSON internally.
-func (w *WAL) Append(op string, args any) (int64, error) {
+func (w *WAL) Append(op string, args any) (int64, []byte, error) {
 	if w == nil {
-		return 0, nil
+		return 0, nil, nil
 	}
 	rawArgs, err := json.Marshal(args)
 	if err != nil {
-		return 0, fmt.Errorf("wal marshal args: %w", err)
+		return 0, nil, fmt.Errorf("wal marshal args: %w", err)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -117,21 +131,21 @@ func (w *WAL) Append(op string, args any) (int64, error) {
 	entry := WALEntry{Seq: seq, Timestamp: time.Now().UTC(), Op: op, Args: rawArgs}
 	line, err := json.Marshal(entry)
 	if err != nil {
-		return 0, fmt.Errorf("wal marshal entry: %w", err)
+		return 0, nil, fmt.Errorf("wal marshal entry: %w", err)
 	}
 	if _, err := w.w.Write(line); err != nil {
-		return 0, fmt.Errorf("wal write: %w", err)
+		return 0, nil, fmt.Errorf("wal write: %w", err)
 	}
 	if err := w.w.WriteByte('\n'); err != nil {
-		return 0, fmt.Errorf("wal write nl: %w", err)
+		return 0, nil, fmt.Errorf("wal write nl: %w", err)
 	}
 	if err := w.w.Flush(); err != nil {
-		return 0, fmt.Errorf("wal flush: %w", err)
+		return 0, nil, fmt.Errorf("wal flush: %w", err)
 	}
 	if err := w.f.Sync(); err != nil {
-		return 0, fmt.Errorf("wal fsync: %w", err)
+		return 0, nil, fmt.Errorf("wal fsync: %w", err)
 	}
-	return seq, nil
+	return seq, line, nil
 }
 
 // Since returns all entries with seq > sinceSeq, in order.
@@ -263,26 +277,26 @@ func (w *WAL) Close() error {
 // Unknown ops return an error so a future schema bump (new mutation type)
 // is loud rather than silent.
 func (m *MetaStore) ApplyEntry(e WALEntry) error {
-	switch e.Op {
-	case "put_object":
+	switch WALOp(e.Op) {
+	case OpPutObject:
 		var obj ObjectMeta
 		if err := json.Unmarshal(e.Args, &obj); err != nil {
 			return fmt.Errorf("apply put_object decode: %w", err)
 		}
 		return m.putObjectInternal(&obj, false)
-	case "delete_object":
+	case OpDeleteObject:
 		var a struct{ Bucket, Key string }
 		if err := json.Unmarshal(e.Args, &a); err != nil {
 			return fmt.Errorf("apply delete_object decode: %w", err)
 		}
 		return m.deleteObjectInternal(a.Bucket, a.Key, false)
-	case "add_runtime_dn":
+	case OpAddRuntimeDN:
 		var addr string
 		if err := json.Unmarshal(e.Args, &addr); err != nil {
 			return fmt.Errorf("apply add_runtime_dn decode: %w", err)
 		}
 		return m.addRuntimeDNInternal(addr, false)
-	case "remove_runtime_dn":
+	case OpRemoveRuntimeDN:
 		var addr string
 		if err := json.Unmarshal(e.Args, &addr); err != nil {
 			return fmt.Errorf("apply remove_runtime_dn decode: %w", err)
@@ -325,22 +339,21 @@ type WALHook func(entryJSON []byte)
 // disable. Called synchronously from PutObject / DeleteObject etc.
 func (m *MetaStore) SetWALHook(h WALHook) { m.walHook = h }
 
-// fireHook marshals a fresh WALEntry mirror and invokes the registered
-// hook. Called only when m.walHook != nil (caller should guard).
-func (m *MetaStore) fireHook(seq int64, op string, args any) {
-	if m.walHook == nil {
+// appendWAL is the unified writeWAL+hook helper used by every mutation
+// method. Reuses the JSON line returned by WAL.Append so the hook payload
+// is byte-identical to the on-disk entry (same seq, same timestamp).
+// No-op when WAL is disabled.
+func (m *MetaStore) appendWAL(op WALOp, args any) {
+	if m.wal == nil {
 		return
 	}
-	rawArgs, err := json.Marshal(args)
-	if err != nil {
+	_, line, err := m.wal.Append(string(op), args)
+	if err != nil || line == nil {
 		return
 	}
-	entry := WALEntry{Seq: seq, Timestamp: time.Now().UTC(), Op: op, Args: rawArgs}
-	body, err := json.Marshal(entry)
-	if err != nil {
-		return
+	if m.walHook != nil {
+		m.walHook(line)
 	}
-	m.walHook(body)
 }
 
 // Errors returned by WAL operations.

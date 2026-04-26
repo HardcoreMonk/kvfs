@@ -34,13 +34,25 @@ import (
 
 // StreamPiece is a single chunk pulled from a streaming source.
 //
-// Data is owned by the caller after Next returns — Reader internally
-// allocates fresh storage per piece so the caller can safely retain the
+// Data is owned by the caller after Next returns — readers internally
+// allocate fresh storage per piece so the caller can safely retain the
 // slice while the next Next() runs concurrently.
 type StreamPiece struct {
 	ID   string // hex(sha256(Data))
 	Data []byte
 	Size int64
+}
+
+// newStreamPiece is the shared constructor used by both fixed (Reader) and
+// content-defined (CDCReader) chunkers. Callers pass an owned []byte (data
+// is NOT defensively copied here — readers do that before calling).
+func newStreamPiece(data []byte) *StreamPiece {
+	sum := sha256.Sum256(data)
+	return &StreamPiece{
+		ID:   hex.EncodeToString(sum[:]),
+		Data: data,
+		Size: int64(len(data)),
+	}
 }
 
 // Reader produces fixed-size content-addressable chunks from an io.Reader.
@@ -92,10 +104,5 @@ func (r *Reader) Next() (*StreamPiece, error) {
 	// Defensive copy: caller may keep the slice past the next Next() call.
 	data := make([]byte, n)
 	copy(data, r.buf[:n])
-	sum := sha256.Sum256(data)
-	return &StreamPiece{
-		ID:   hex.EncodeToString(sum[:]),
-		Data: data,
-		Size: int64(n),
-	}, nil
+	return newStreamPiece(data), nil
 }

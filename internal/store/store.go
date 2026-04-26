@@ -245,9 +245,8 @@ func (m *MetaStore) putObjectInternal(obj *ObjectMeta, writeWAL bool) error {
 		}
 		return b.Put(k, buf)
 	})
-	if err == nil && writeWAL && m.wal != nil {
-		seq, _ := m.wal.Append("put_object", obj)
-		m.fireHook(seq, "put_object", obj)
+	if err == nil && writeWAL {
+		m.appendWAL(OpPutObject, obj)
 	}
 	return err
 }
@@ -374,10 +373,8 @@ func (m *MetaStore) deleteObjectInternal(bucket, key string, writeWAL bool) erro
 		}
 		return b.Delete(k)
 	})
-	if err == nil && writeWAL && m.wal != nil {
-		args := map[string]string{"Bucket": bucket, "Key": key}
-		seq, _ := m.wal.Append("delete_object", args)
-		m.fireHook(seq, "delete_object", args)
+	if err == nil && writeWAL {
+		m.appendWAL(OpDeleteObject, map[string]string{"Bucket": bucket, "Key": key})
 	}
 	return err
 }
@@ -456,9 +453,8 @@ func (m *MetaStore) addRuntimeDNInternal(addr string, writeWAL bool) error {
 		}
 		return tx.Bucket(bucketDNsRuntime).Put([]byte(addr), buf)
 	})
-	if err == nil && writeWAL && m.wal != nil {
-		seq, _ := m.wal.Append("add_runtime_dn", addr)
-		m.fireHook(seq, "add_runtime_dn", addr)
+	if err == nil && writeWAL {
+		m.appendWAL(OpAddRuntimeDN, addr)
 	}
 	return err
 }
@@ -475,9 +471,8 @@ func (m *MetaStore) removeRuntimeDNInternal(addr string, writeWAL bool) error {
 	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketDNsRuntime).Delete([]byte(addr))
 	})
-	if err == nil && writeWAL && m.wal != nil {
-		seq, _ := m.wal.Append("remove_runtime_dn", addr)
-		m.fireHook(seq, "remove_runtime_dn", addr)
+	if err == nil && writeWAL {
+		m.appendWAL(OpRemoveRuntimeDN, addr)
 	}
 	return err
 }
