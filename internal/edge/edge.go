@@ -97,9 +97,19 @@ type Server struct {
 	Signer *urlkey.Signer
 	Log    *slog.Logger
 
-	// ChunkSize is bytes-per-chunk for PUT splitting (ADR-011).
+	// ChunkSize is bytes-per-chunk for fixed-mode PUT splitting (ADR-011).
 	// Zero / negative falls back to chunker.DefaultChunkSize.
 	ChunkSize int
+
+	// CDCEnabled selects content-defined chunking (ADR-018) over fixed.
+	// When true, replication-mode handlePut uses chunker.NewCDCReader with
+	// CDCConfig (CDCConfig zero value → DefaultCDCConfig). EC mode is always
+	// fixed (encoder needs uniform shard sizes).
+	CDCEnabled bool
+
+	// CDCConfig tunes the FastCDC parameters (min/normal/max + masks).
+	// Ignored when CDCEnabled is false. Zero value falls back to defaults.
+	CDCConfig chunker.CDCConfig
 
 	// If true, skip UrlKey verification (for demos/tests). Never enable in public.
 	SkipAuth bool
@@ -172,6 +182,21 @@ func (s *Server) chunkSize() int {
 	return s.ChunkSize
 }
 
+// pieceReader is the common interface for both fixed and CDC streaming
+// chunkers. handlePut treats them uniformly.
+type pieceReader interface {
+	Next() (*chunker.StreamPiece, error)
+}
+
+// newPutReader picks the chunker mode (fixed vs CDC, ADR-018) based on
+// Server.CDCEnabled.
+func (s *Server) newPutReader(src io.Reader) pieceReader {
+	if s.CDCEnabled {
+		return chunker.NewCDCReader(src, s.CDCConfig)
+	}
+	return chunker.NewReader(src, s.chunkSize())
+}
+
 // Routes builds the HTTP mux.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
@@ -242,10 +267,13 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	// Replication mode: stream per chunk (ADR-017). Memory bound = chunkSize
 	// regardless of object size. Each chunk gets its own content-addressable id
 	// and is placed independently via Rendezvous Hashing.
+	//
+	// Two chunker modes (ADR-018): fixed (default) or CDC (content-defined).
+	// CDC gives shift-invariant dedup at the cost of variable chunk sizes.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	reader := chunker.NewReader(r.Body, s.chunkSize())
+	reader := s.newPutReader(r.Body)
 	var chunkRefs []store.ChunkRef
 	var totalSize int64
 	for i := 0; ; i++ {

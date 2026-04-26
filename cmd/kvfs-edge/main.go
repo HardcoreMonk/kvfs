@@ -78,6 +78,7 @@ func main() {
 		flagSnapDir = flag.String("snapshot-dir", envOr("EDGE_SNAPSHOT_DIR", ""), "auto-snapshot output directory (ADR-016); empty disables")
 		flagSnapInt = flag.String("snapshot-interval", envOr("EDGE_SNAPSHOT_INTERVAL", "1h"), "auto-snapshot ticker interval")
 		flagSnapKp  = flag.Int("snapshot-keep", atoiOr(envOr("EDGE_SNAPSHOT_KEEP", "7"), 7), "how many recent snapshots to retain")
+		flagChunkMd = flag.String("chunk-mode", envOr("EDGE_CHUNK_MODE", "fixed"), "PUT chunker mode (ADR-018): fixed | cdc")
 		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
 		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
 		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
@@ -228,6 +229,15 @@ func main() {
 		snapSched = store.NewSnapshotScheduler(ms, *flagSnapDir, snapInt, *flagSnapKp)
 	}
 
+	cdcEnabled := false
+	switch *flagChunkMd {
+	case "fixed", "":
+	case "cdc":
+		cdcEnabled = true
+	default:
+		fatal("EDGE_CHUNK_MODE must be 'fixed' or 'cdc' (got " + *flagChunkMd + ")")
+	}
+
 	srv := &edge.Server{
 		Store:             ms,
 		Coord:             coord,
@@ -238,6 +248,7 @@ func main() {
 		SkipAuth:          *flagSkip,
 		Heartbeat:         hbMon,
 		SnapshotScheduler: snapSched,
+		CDCEnabled:        cdcEnabled,
 	}
 
 	switch edge.Role(*flagRole) {
