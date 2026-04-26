@@ -158,6 +158,7 @@ type MetaStore struct {
 	db       atomic.Pointer[bbolt.DB]
 	reloadMu sync.Mutex
 	wal      *WAL
+	walHook  WALHook
 }
 
 // Open opens or creates a bbolt database file at path.
@@ -245,7 +246,8 @@ func (m *MetaStore) putObjectInternal(obj *ObjectMeta, writeWAL bool) error {
 		return b.Put(k, buf)
 	})
 	if err == nil && writeWAL && m.wal != nil {
-		_, _ = m.wal.Append("put_object", obj)
+		seq, _ := m.wal.Append("put_object", obj)
+		m.fireHook(seq, "put_object", obj)
 	}
 	return err
 }
@@ -373,7 +375,9 @@ func (m *MetaStore) deleteObjectInternal(bucket, key string, writeWAL bool) erro
 		return b.Delete(k)
 	})
 	if err == nil && writeWAL && m.wal != nil {
-		_, _ = m.wal.Append("delete_object", map[string]string{"Bucket": bucket, "Key": key})
+		args := map[string]string{"Bucket": bucket, "Key": key}
+		seq, _ := m.wal.Append("delete_object", args)
+		m.fireHook(seq, "delete_object", args)
 	}
 	return err
 }
@@ -453,7 +457,8 @@ func (m *MetaStore) addRuntimeDNInternal(addr string, writeWAL bool) error {
 		return tx.Bucket(bucketDNsRuntime).Put([]byte(addr), buf)
 	})
 	if err == nil && writeWAL && m.wal != nil {
-		_, _ = m.wal.Append("add_runtime_dn", addr)
+		seq, _ := m.wal.Append("add_runtime_dn", addr)
+		m.fireHook(seq, "add_runtime_dn", addr)
 	}
 	return err
 }
@@ -471,7 +476,8 @@ func (m *MetaStore) removeRuntimeDNInternal(addr string, writeWAL bool) error {
 		return tx.Bucket(bucketDNsRuntime).Delete([]byte(addr))
 	})
 	if err == nil && writeWAL && m.wal != nil {
-		_, _ = m.wal.Append("remove_runtime_dn", addr)
+		seq, _ := m.wal.Append("remove_runtime_dn", addr)
+		m.fireHook(seq, "remove_runtime_dn", addr)
 	}
 	return err
 }

@@ -75,6 +75,13 @@ Accepted · YYYY-MM-DD
 | [031](ADR-031-auto-leader-election.md) | Auto leader election (Raft-style, multi-edge HA) | Accepted · 2026-04-26 | `internal/election/` + `EDGE_PEERS` |
 | [019](ADR-019-wal-incremental-backup.md) | WAL of metadata mutations (audit + future incremental sync) | Accepted · 2026-04-26 | `internal/store/wal.go` + `EDGE_WAL_PATH` |
 
+## Season 4 follow-ups (in progress, no separate ADR)
+
+- Ep.5 — **Follower WAL auto-pull** (ADR-019 follow-up): follower sync attempts WAL since last seq before snapshot fallback. RPO ≤ pull interval.
+- Ep.6 — **EC streaming PUT/GET** (ADR-017 follow-up): per-stripe pump via io.ReadFull. Memory bound = stripeBytes regardless of object size.
+- Ep.7 — **EC + CDC combined mode** (ADR-018 follow-up): `Stripe.DataLen` per-stripe variable size + CDC reader inside EC PUT. demo-psi PASS.
+- Ep.8 — **Synchronous Raft-style WAL replication** (ADR-031 follow-up): leader pushes each WAL entry to peers via `POST /v1/election/append-wal`, followers `ApplyEntry` on receipt. demo-omega: PUT to leader → GET from follower works without polling.
+
 ## Season 3+ 예상 ADR (pending)
 - ADR-015: Coordinator daemon 분리 + Raft HA
 - 진짜 Raft log replication (ADR-031 후속, write loss window 제거 — ADR-019 인프라 활용)

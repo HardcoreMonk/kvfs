@@ -36,15 +36,20 @@
 package election
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	mathrand "math/rand"
 	"net/http"
 	"sync"
 	"time"
 )
+
+func bytesNewReader(b []byte) io.Reader { return bytes.NewReader(b) }
+func readAll(r io.Reader) ([]byte, error) { return io.ReadAll(r) }
 
 // State is the current role in the election state machine.
 type State int
@@ -97,6 +102,7 @@ type Elector struct {
 	votedFor    string    // candidate ID this term (empty = none)
 	leader      string    // current leader ID (empty = unknown)
 	lastHB      time.Time // last heartbeat received (or sent if leader)
+	appendFn    AppendEntryFunc
 }
 
 // New constructs an Elector. Peers must include self (matched by SelfID).
@@ -463,6 +469,134 @@ func (e *Elector) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	e.leader = leader
 	e.lastHB = time.Now()
 	writeVote(w, true, e.currentTerm)
+}
+
+// AppendEntryFunc is called by HandleAppendWAL on followers to apply a
+// received entry to local state. Set via SetAppendEntryFunc; defaults to
+// no-op if unset.
+type AppendEntryFunc func(entryBody []byte) error
+
+// SetAppendEntryFunc registers the per-edge applicator that runs when a
+// peer pushes a WAL entry. Hooked from edge.Server during construction.
+func (e *Elector) SetAppendEntryFunc(fn AppendEntryFunc) {
+	e.mu.Lock()
+	e.appendFn = fn
+	e.mu.Unlock()
+}
+
+// HandleAppendWAL serves POST /v1/election/append-wal?term=X with a JSON
+// body = one WAL entry. Used by the leader to synchronously replicate
+// writes to followers (ADR-031 follow-up — toward strong consistency).
+//
+// Rules:
+//   1. Stale term → reject 409 (caller will downgrade or step down).
+//   2. Higher term → adopt + step down to follower, then apply.
+//   3. Same term → apply via the registered AppendEntryFunc.
+func (e *Elector) HandleAppendWAL(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	term, err := parseTerm(q.Get("term"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	body, err := readAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	e.mu.Lock()
+	if term < e.currentTerm {
+		curTerm := e.currentTerm
+		e.mu.Unlock()
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "term": curTerm, "reason": "stale_term"})
+		return
+	}
+	if term > e.currentTerm {
+		e.currentTerm = term
+		e.votedFor = ""
+		e.state = Follower
+		e.lastHB = time.Now()
+	}
+	fn := e.appendFn
+	e.mu.Unlock()
+
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "reason": "no append fn"})
+		return
+	}
+	if err := fn(body); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "reason": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "term": term})
+}
+
+// ReplicateEntry pushes one WAL entry body (raw JSON) to all peers in parallel.
+// Returns nil if quorum (N/2+1 including self) acked within the timeout, else
+// an error. Called by edge.Server's WAL hook on the leader.
+//
+// Best-effort semantics for now:
+//   - Leader has already locally committed (bbolt + WAL append).
+//   - This RPC informs peers; quorum-ack improves durability vs pure pull.
+//   - On quorum failure, error is returned but the leader's local state is
+//     unchanged — caller decides whether to surface to the client.
+func (e *Elector) ReplicateEntry(ctx context.Context, entryBody []byte, timeout time.Duration) error {
+	if e.State() != Leader {
+		return fmt.Errorf("not leader")
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	e.mu.RLock()
+	term := e.currentTerm
+	e.mu.RUnlock()
+	pctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	acks := 1 // self
+	var ackMu sync.Mutex
+	var wg sync.WaitGroup
+	for _, peer := range e.cfg.Peers {
+		if peer.ID == e.cfg.SelfID {
+			continue
+		}
+		wg.Add(1)
+		go func(p Peer) {
+			defer wg.Done()
+			if e.pushAppendWAL(pctx, p, term, entryBody) {
+				ackMu.Lock()
+				acks++
+				ackMu.Unlock()
+			}
+		}(peer)
+	}
+	wg.Wait()
+
+	quorum := len(e.cfg.Peers)/2 + 1
+	if acks >= quorum {
+		return nil
+	}
+	return fmt.Errorf("replicate: only %d/%d acks (need %d)", acks, len(e.cfg.Peers), quorum)
+}
+
+func (e *Elector) pushAppendWAL(ctx context.Context, peer Peer, term uint64, body []byte) bool {
+	url := fmt.Sprintf("%s/v1/election/append-wal?term=%d", peer.URL, term)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytesNewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // HandleState serves GET /v1/election/state for diagnostics.

@@ -124,12 +124,19 @@
 ### ~~[P4-05] Season 4 Ep.5 주제 결정~~
 - **DONE 2026-04-26**: ADR-019 follow-up (Follower WAL auto-pull) 채택 + 구현 완료
 
-### [P4-06] Season 4 Ep.6+ 진행 — EC streaming · EC+CDC · Raft log repl
-- **현**: Ep.5 follower WAL auto-pull 완료. 남은 후보 3개
-  - **EC streaming PUT/GET** (ADR-017 follow-up)
-  - **EC + CDC 조합** (ADR-018 follow-up)
-  - **진짜 Raft log replication** (ADR-031 follow-up)
-- 진행 중
+### ~~[P4-06] Season 4 Ep.6/7/8 진행~~
+- **DONE 2026-04-26**: Ep.6 (EC streaming, ADR-017 follow-up) · Ep.7 (EC+CDC, ADR-018 follow-up) · Ep.8 (sync Raft-style WAL replication, ADR-031 follow-up) 모두 채택 + 구현 완료. Season 4 의 4 가지 candidate (#1-4) 모두 처리됨.
+
+### [P4-09] Season 4 close 후 Season 5 진입 결정
+- **현**: Season 4 의 8 ep 누적 완료 (streaming, CDC, election, WAL, follower-pull, EC-streaming, EC+CDC, sync repl)
+- **남은 가능 트랙**:
+  - 관측성 (Prometheus `/metrics` 또는 OTel 통합)
+  - SIMD-accelerated Reed-Solomon
+  - Hot/Cold tiering
+  - NFS/SMB gateway
+  - WAL → snapshot 자동 회전 + log compaction
+  - 진짜 strong consistency (commit 전 quorum ack — 현재는 best-effort)
+- **결정**: 사용자
 
 ---
 
@@ -171,13 +178,16 @@
 | 2026-04-26 | Season 4 Ep.3 — ADR-031 Auto leader election 구현 완료 | `internal/election/election.go` Raft-style 3-state machine + vote/heartbeat RPC (~440 LOC, 6 tests PASS: vote stale / vote 1-per-term / higher-term step-down / HB reset / stale HB / live 3-edge cluster). `Server.Elector` + `effectiveRole`/`effectivePrimaryURL` 동적 분기, ADR-022 manual mode 호환 유지. `EDGE_PEERS/SELF_URL/ELECTION_*` env. `scripts/demo-upsilon.sh` 3 edge 라이브: edge1 leader (term 1) → kill → ~4s 후 edge3 새 leader (term 2), PUT 재개 PASS. `blog/16-leader-election.md` |
 | 2026-04-26 | Season 4 Ep.4 — ADR-019 WAL 구현 완료 | `internal/store/wal.go` append-only JSON-lines + ApplyEntry replay (~270 LOC, 6 tests PASS: append + Since + LastSeq recovery + Truncate + WriteSinceTo streaming + ApplyAll round-trip). 4 mutation methods (PutObject/DeleteObject/Add+RemoveRuntimeDN) split into internal version with writeWAL flag. `GET /v1/admin/wal?since=N` + `wal/info`, snapshot endpoint 헤더 `X-KVFS-WAL-Seq`. `kvfs-cli wal {info,stream}`. `scripts/demo-phi.sh` 라이브: 7 entries (5 PUT + 2 DELETE) audit + snapshot 헤더 동봉. `blog/17-wal.md` |
 | 2026-04-26 | Season 4 Ep.5 — Follower WAL auto-pull (ADR-019 follow-up) | `followerSyncOnce` 가 lastWALSeq>0 이면 `GET /v1/admin/wal?since=lastSeq` 시도, snapshot fallback. snapshot 응답의 `X-KVFS-WAL-Seq` 헤더로 lastWALSeq seed. `scripts/demo-chi.sh` 라이브: PUT 3 → snapshot pull → PUT 2 더 → follower WAL apply 만으로 catch-up (last_size 0 = 추가 snapshot 없이) PASS |
+| 2026-04-26 | Season 4 Ep.6 — EC streaming PUT/GET (ADR-017 follow-up to ADR-008) | handlePutECStream replaces handlePutEC (io.ReadFull stripe pump, io.ErrUnexpectedEOF → padded last stripe). handleGetEC streams data shards directly to ResponseWriter, trim by remaining. Memory bound (K+M)×shardSize 만, object size 무관. demo-kappa regression PASS |
+| 2026-04-26 | Season 4 Ep.7 — EC + CDC combined mode (ADR-018 follow-up) | `Stripe.DataLen int64 omitempty` 신규 필드. handlePutECStream 안에 nextStripe closure (fixed: io.ReadFull / CDC: chunker.NewCDCReader, per-stripe ceil-padded to K). handleGetEC trim mode per-stripe (CDC: by Stripe.DataLen; fixed: by remaining DataSize). `scripts/demo-psi.sh` EC(4+2)+CDC F1+F2 round-trip PASS |
+| 2026-04-26 | Season 4 Ep.8 — Synchronous Raft-style WAL replication (ADR-031 follow-up) | `Elector.AppendEntryFunc` + `HandleAppendWAL` (`POST /v1/election/append-wal?term=X`) + `ReplicateEntry(ctx, body, timeout)` parallel push to peers, quorum ack (best-effort, leader local commit 가 이미 끝난 후). `MetaStore.SetWALHook` + `fireHook` 으로 WAL.Append 후 leader-only push. `scripts/demo-omega.sh`: 3-edge cluster, PUT to leader → 100ms 후 follower GET 성공 (replicated bbolt 직접 read, no pull) PASS |
 
 ---
 
 ## 현재 상태 요약 (2026-04-26)
 
 - **Git**: main branch, **GitHub `HardcoreMonk/kvfs` PUBLIC** (https://github.com/HardcoreMonk/kvfs, repo 신규 재생성 후 fresh history)
-- **테스트**: 핵심 패키지 모두 = **129 unit tests PASS** (WAL 6 추가), `go vet` 클린
+- **테스트**: 핵심 패키지 모두 = **129 unit tests PASS**, `go vet` 클린 (Ep.5/6/7/8 = 통합 + 데모 추가, 신규 unit test 0)
 - **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ, ν, ξ, ο, π, ρ 전부 라이브 통과 (15종)
 - **ADR**: 22건 Accepted (022 추가)
 - **Blog**: Ep.1~Ep.13 완성 (Ep.13 = Multi-edge HA)

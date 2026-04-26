@@ -248,6 +248,7 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
 		mux.HandleFunc("GET /v1/election/state", s.Elector.HandleState)
+		mux.HandleFunc("POST /v1/election/append-wal", s.Elector.HandleAppendWAL)
 	}
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)

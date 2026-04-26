@@ -35,6 +35,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -121,6 +122,13 @@ func main() {
 		defer wal.Close()
 		log.Info("WAL enabled", "path", *flagWALPath, "last_seq", wal.LastSeq())
 	}
+
+	// ADR-031 follow-up — synchronous Raft-style replication: when election
+	// is enabled AND WAL is enabled, the leader pushes each new WAL entry
+	// to peers and waits for quorum ack. The hook fires AFTER local commit,
+	// so failure to reach quorum is logged but not propagated to the client
+	// (best-effort replication; followers can still catch up via WAL pull).
+	// The actual hook is wired below after elector is constructed.
 
 	envDNs := splitTrim(*flagDNs)
 
@@ -285,6 +293,27 @@ func main() {
 			ElectionTimeoutMin: etMin,
 			ElectionTimeoutMax: etMax,
 			Log:                log,
+		})
+		// Followers apply pushed WAL entries directly into local store
+		// (ADR-031 follow-up — synchronous replication path).
+		elector.SetAppendEntryFunc(func(body []byte) error {
+			var e store.WALEntry
+			if err := json.Unmarshal(body, &e); err != nil {
+				return err
+			}
+			return ms.ApplyEntry(e)
+		})
+		// Leader-side: every local WAL.Append fires this hook → push to
+		// peers (best-effort, quorum-ack within timeout).
+		ms.SetWALHook(func(entryJSON []byte) {
+			if !elector.IsLeader() {
+				return // followers don't replicate
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := elector.ReplicateEntry(ctx, entryJSON, 2*time.Second); err != nil {
+				log.Warn("replication failed", "err", err.Error())
+			}
 		})
 		log.Info("election enabled", "self", *flagSelfURL, "peers", len(peers),
 			"hb", hbInt, "timeout_min", etMin, "timeout_max", etMax)

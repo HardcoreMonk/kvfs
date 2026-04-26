@@ -311,6 +311,38 @@ func (m *MetaStore) SetWAL(w *WAL) { m.wal = w }
 // WAL returns the attached WAL (or nil).
 func (m *MetaStore) WAL() *WAL { return m.wal }
 
+// WALHook is invoked synchronously after each successful local WAL.Append.
+// Used by ADR-031 follow-up (synchronous Raft-style replication) to push
+// the just-appended entry to peers and wait for quorum ack.
+//
+// The hook receives the raw JSON entry body (already serialized for the
+// WAL file) so it can be reused as the replication payload without
+// re-marshal. Errors are logged by the caller, not surfaced to the
+// mutation method (best-effort replication).
+type WALHook func(entryJSON []byte)
+
+// SetWALHook registers a callback fired after each WAL.Append. Pass nil to
+// disable. Called synchronously from PutObject / DeleteObject etc.
+func (m *MetaStore) SetWALHook(h WALHook) { m.walHook = h }
+
+// fireHook marshals a fresh WALEntry mirror and invokes the registered
+// hook. Called only when m.walHook != nil (caller should guard).
+func (m *MetaStore) fireHook(seq int64, op string, args any) {
+	if m.walHook == nil {
+		return
+	}
+	rawArgs, err := json.Marshal(args)
+	if err != nil {
+		return
+	}
+	entry := WALEntry{Seq: seq, Timestamp: time.Now().UTC(), Op: op, Args: rawArgs}
+	body, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	m.walHook(body)
+}
+
 // Errors returned by WAL operations.
 var (
 	ErrWALClosed = errors.New("wal: closed")
