@@ -87,6 +87,7 @@ func main() {
 		flagElectMin = flag.String("election-timeout-min", envOr("EDGE_ELECTION_TIMEOUT_MIN", "1500ms"), "follower → candidate timeout (min)")
 		flagElectMax = flag.String("election-timeout-max", envOr("EDGE_ELECTION_TIMEOUT_MAX", "3000ms"), "follower → candidate timeout (max)")
 		flagWALPath  = flag.String("wal-path", envOr("EDGE_WAL_PATH", ""), "ADR-019 WAL file path (empty disables WAL)")
+		flagMetrics  = flag.Bool("metrics", envOr("EDGE_METRICS", "1") == "1", "expose /metrics Prometheus endpoint (default on)")
 		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
 		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
 		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
@@ -386,6 +387,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Wire Prometheus-style /metrics endpoint (default on).
+	if *flagMetrics {
+		srv.SetupMetrics()
+	}
 
 	// Start auto-trigger loops (no-op if AutoCfg.Enabled is false). They
 	// exit when ctx is cancelled by signal.

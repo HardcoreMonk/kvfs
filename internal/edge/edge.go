@@ -152,6 +152,10 @@ type Server struct {
 	// disables it. StartSnapshotScheduler wires up the loop.
 	SnapshotScheduler *store.SnapshotScheduler
 
+	// Metrics holds Prometheus-compatible counters/gauges. nil = no /metrics
+	// endpoint and no instrumentation overhead. Set via SetupMetrics.
+	Metrics *metricsHandle
+
 	// Role is "primary" (default) or "follower" (ADR-022 manual mode).
 	// When Elector != nil (ADR-031 election mode), this field is ignored —
 	// effectiveRole() consults the elector instead.
@@ -244,6 +248,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/role", s.handleRole)
 	mux.HandleFunc("GET /v1/admin/wal", s.handleWAL)
 	mux.HandleFunc("GET /v1/admin/wal/info", s.handleWALInfo)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
@@ -280,9 +285,11 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	// Encoder needs uniform K data shards per stripe, so we still pull
 	// stripeBytes worth of bytes at a time, but never the whole object.
 	if ecHdr := r.Header.Get("X-KVFS-EC"); ecHdr != "" {
+		s.recordPut("ec")
 		s.handlePutECStream(w, r, bucket, key, ecHdr)
 		return
 	}
+	s.recordPut("replication")
 
 	// Replication mode: stream per chunk (ADR-017). Memory bound = chunkSize
 	// regardless of object size. Each chunk gets its own content-addressable id
@@ -376,9 +383,11 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	// EC-mode objects: reconstruct each stripe from any K surviving shards.
 	if meta.IsEC() {
+		s.recordGet("ec")
 		s.handleGetEC(w, r, ctx, meta)
 		return
 	}
+	s.recordGet("replication")
 
 	// Replication mode: stream each chunk to the response writer (ADR-017).
 	// Memory bound = chunkSize per iteration, regardless of object size.
@@ -424,6 +433,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
+	s.recordDelete()
 	bucket := r.PathValue("bucket")
 	key := r.PathValue("key")
 
