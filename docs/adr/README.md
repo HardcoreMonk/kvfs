@@ -64,12 +64,13 @@ Accepted · YYYY-MM-DD
 | [014](ADR-014-meta-backup.md) | Metadata backup (snapshot + offline restore) | Accepted · 2026-04-26 | `internal/store/snapshot.go` + `kvfs-cli meta` |
 | [030](ADR-030-dn-heartbeat.md) | DN heartbeat (in-edge pull-based liveness) | Accepted · 2026-04-26 | `internal/heartbeat/` + `kvfs-cli heartbeat` |
 | [016](ADR-016-auto-snapshot-scheduler.md) | Auto-snapshot scheduler (ticker + retention) | Accepted · 2026-04-26 | `internal/store/scheduler.go` + `kvfs-cli meta history` |
+| [022](ADR-022-multi-edge-ha.md) | Multi-edge HA (read-replica via snapshot-pull) | Accepted · 2026-04-26 | `internal/edge/replica.go` + `kvfs-cli role` + atomic.Pointer[bbolt.DB] |
 
 ## Season 3+ 예상 ADR (pending)
 - ADR-015: Coordinator daemon 분리 + Raft HA
 - ADR-017: Streaming PUT/GET (io.Reader 기반)
 - ADR-018: Content-defined chunking
 - ADR-019: WAL / incremental backup (분 단위 RPO, ADR-016 후속)
-- ADR-022: Multi-edge leader election
+- ADR-031: 자동 leader election (Raft / etcd, ADR-022 후속)
 
 작성 시점: 해당 기능 설계 직전.

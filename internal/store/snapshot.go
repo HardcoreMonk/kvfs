@@ -28,7 +28,7 @@ import (
 // with one writer.
 func (m *MetaStore) Snapshot(w io.Writer) (int64, error) {
 	var n int64
-	err := m.db.View(func(tx *bbolt.Tx) error {
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
 		var werr error
 		n, werr = tx.WriteTo(w)
 		return werr
@@ -81,7 +81,7 @@ func (m *MetaStore) Stats() (MetaStats, error) {
 		s.URLKeys = len(keys)
 	}
 	// bbolt logical size = pages × pageSize via a read tx (cheap).
-	_ = m.db.View(func(tx *bbolt.Tx) error {
+	_ = m.db.Load().View(func(tx *bbolt.Tx) error {
 		s.BBoltBytes = tx.Size()
 		return nil
 	})

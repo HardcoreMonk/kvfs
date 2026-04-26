@@ -117,6 +117,22 @@ type Server struct {
 	// SnapshotScheduler is the in-edge auto-backup ticker (ADR-016). nil
 	// disables it. StartSnapshotScheduler wires up the loop.
 	SnapshotScheduler *store.SnapshotScheduler
+
+	// Role is "primary" (default) or "follower" (ADR-022). Followers reject
+	// /v1/o/ writes with 503 + X-KVFS-Primary header and periodically pull
+	// snapshot from primary.
+	Role Role
+
+	// followerSt holds follower mode state. Initialized when Role == follower
+	// via SetFollowerConfig. Nil otherwise.
+	followerSt *followerState
+}
+
+// SetFollowerConfig switches Role to follower and registers the sync config.
+// Call once before StartFollowerSync.
+func (s *Server) SetFollowerConfig(cfg FollowerConfig) {
+	s.Role = RoleFollower
+	s.followerSt = &followerState{cfg: cfg}
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -157,6 +173,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/meta/info", s.handleMetaInfo)
 	mux.HandleFunc("GET /v1/admin/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("GET /v1/admin/snapshot/history", s.handleSnapshotHistory)
+	mux.HandleFunc("GET /v1/admin/role", s.handleRole)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }
@@ -169,6 +186,9 @@ func (s *Server) verifyAuth(r *http.Request) error {
 }
 
 func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
+	if s.rejectIfFollowerWrite(w, r) {
+		return
+	}
 	if err := s.verifyAuth(r); err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -300,6 +320,9 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if s.rejectIfFollowerWrite(w, r) {
+		return
+	}
 	if err := s.verifyAuth(r); err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -1076,6 +1099,20 @@ func (s *Server) StartSnapshotScheduler(ctx context.Context) {
 		return
 	}
 	go s.SnapshotScheduler.Run(ctx.Done())
+}
+
+// handleRole returns the current role + (follower) sync stats (ADR-022).
+func (s *Server) handleRole(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.roleStatus())
+}
+
+// StartFollowerSync runs the follower-only snapshot pull loop in a goroutine.
+// No-op if Role != RoleFollower. Stops on ctx.Done.
+func (s *Server) StartFollowerSync(ctx context.Context) {
+	if s.Role != RoleFollower {
+		return
+	}
+	go s.runFollowerSync(ctx)
 }
 
 // StartHeartbeat runs a goroutine that probes all runtime DNs every

@@ -106,15 +106,18 @@
 ### ~~[P3-12] Season 3 Ep.6 주제 결정~~
 - **OBSOLETE (2026-04-26)**: ADR-016 Auto-snapshot scheduler 채택 + 구현 완료. 다음 ep 결정은 신규 [P3-13]
 
-### [P3-13] Season 3 Ep.7 주제 결정 (Season 3 close 후보)
-- **현**: Ep.6 ADR-016 완료. 운영성 트랙 마무리 ep 후보
-- **남은 후보**:
-  - **ADR-022 — Multi-edge leader election**: HA 본격 — Season 3 닫는 마무리
-  - **ADR-019 — WAL / incremental backup**: ADR-016 위에 분 단위 RPO
-  - **ADR-017 — Streaming PUT/GET**: 성능 트랙 (Season 4)
-  - **ADR-018 — Content-defined chunking**: 효율 트랙 (Season 4)
-- **추천**: 022 — Season 3 closing 의 가장 큰 마일스톤. read-replica MVP 부터 시작
-- **결정 시 P1 로 승격**
+### ~~[P3-13] Season 3 Ep.7 주제 결정~~
+- **DONE 2026-04-26**: ADR-022 Multi-edge HA (read-replica MVP) 채택 + 구현 완료. **Season 3 close**
+
+### [P4-01] Season 4 (성능·효율 트랙) 진입 시점 결정
+- **현**: Season 3 close. 다음 트랙 미정
+- **후보 ep**:
+  - **ADR-017 — Streaming PUT/GET**: io.ReadAll → io.Reader 진짜 streaming. 큰 객체 메모리 부담 해소
+  - **ADR-018 — Content-defined chunking**: rabin/buzhash 비정렬 dedup 효율
+  - **ADR-019 — WAL / incremental backup**: ADR-016/022 의 후속 — RPO 초 단위
+  - **ADR-031 — Auto leader election**: ADR-022 의 후속 — Raft / etcd 통합
+- **추천**: 017 (성능 가시성↑) → 018 (효율) → 019/031 (운영 깊이)
+- **결정**: 사용자 결정 — 즉시 진행 vs 잠시 휴식
 
 ---
 
@@ -150,17 +153,18 @@
 | 2026-04-26 | Season 3 Ep.4 — ADR-014 Meta backup 구현 완료 | `internal/store/snapshot.go` (`Snapshot(io.Writer)` + `Stats()`, 2 tests PASS) · `GET /v1/admin/meta/snapshot|info` · `kvfs-cli meta snapshot/restore/info` (lock-probe + auto backup) · `scripts/demo-xi.sh` (PUT 3 → snapshot → bbolt 강제 삭제 → restore → GET 모두 복원 라이브 PASS) · `blog/10-meta-backup.md` |
 | 2026-04-26 | Season 3 Ep.5 — ADR-030 DN heartbeat 구현 완료 | `internal/heartbeat/` (Probe interface + Monitor, 6 tests PASS), `EDGE_HEARTBEAT_INTERVAL/THRESHOLD` env, `GET /v1/admin/heartbeat`, `kvfs-cli heartbeat` 사람-친화 표 출력. `scripts/demo-omicron.sh` (3 DN: kill dn3 → 4s 후 unhealthy 표시 → restart → 즉시 recovery 라이브 PASS). `blog/11-dn-heartbeat.md` |
 | 2026-04-26 | Season 3 Ep.6 — ADR-016 Auto-snapshot scheduler 구현 완료 | `internal/store/scheduler.go` (`SnapshotScheduler.Run` ticker + atomic temp+rename + mtime-based prune, 4 tests PASS). `EDGE_SNAPSHOT_DIR/INTERVAL/KEEP` env, `GET /v1/admin/snapshot/history`, `kvfs-cli meta history`. `scripts/demo-pi.sh` (interval=2s, keep=3 → 5 ticks 후 정확히 newest 3 file 잔존, 회전 검증 라이브 PASS). `blog/12-auto-snapshot.md` |
+| 2026-04-26 | Season 3 Ep.7 — ADR-022 Multi-edge HA 구현 완료 (Season 3 close) | `internal/store/store.go` `atomic.Pointer[bbolt.DB]` 리팩토링 + `Reload(path)` (~30 LOC 변경). `internal/edge/replica.go` Role/FollowerConfig/snapshot-pull loop/rejectIfFollowerWrite middleware (~210 LOC). `EDGE_ROLE/PRIMARY_URL/PULL_INTERVAL` env, `GET /v1/admin/role`, `kvfs-cli role`. `scripts/demo-rho.sh` 라이브: primary + 1 follower (pull=2s) → PUT primary → 2s 후 follower GET 성공 (4 syncs 0 errors), follower PUT → 503 + X-KVFS-Primary 헤더. `blog/13-multi-edge-ha.md` |
 
 ---
 
 ## 현재 상태 요약 (2026-04-26)
 
 - **Git**: main branch, **GitHub `HardcoreMonk/kvfs` PUBLIC** (https://github.com/HardcoreMonk/kvfs, repo 신규 재생성 후 fresh history)
-- **테스트**: 핵심 패키지 모두 + scheduler 4 tests = **93 unit tests PASS**, `go vet` 클린
-- **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ, ν, ξ, ο, π 전부 라이브 통과 (14종)
-- **ADR**: 21건 Accepted (016 추가)
-- **Blog**: Ep.1~Ep.12 완성 (Ep.12 = Auto-snapshot scheduler)
-- **Season 3 Ep.6 완료** (운영성: auto-trigger → EC rebalance → EC repair → meta backup → DN heartbeat → auto-snapshot), Ep.7 주제 미정 ([P3-13]) — Season 3 close 후보
+- **테스트**: 핵심 패키지 모두 = **93 unit tests PASS**, `go vet` 클린
+- **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ, ν, ξ, ο, π, ρ 전부 라이브 통과 (15종)
+- **ADR**: 22건 Accepted (022 추가)
+- **Blog**: Ep.1~Ep.13 완성 (Ep.13 = Multi-edge HA)
+- **Season 3 closed** (운영성 7 ep: auto-trigger → EC rebalance → EC repair → meta backup → DN heartbeat → auto-snapshot → multi-edge HA). 다음은 Season 4 (성능·효율) 진입 ([P4-01])
 
 ## 업데이트 규칙
 

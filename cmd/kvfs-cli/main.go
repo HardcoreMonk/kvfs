@@ -54,6 +54,8 @@ func main() {
 		cmdMeta(os.Args[2:])
 	case "heartbeat":
 		cmdHeartbeat(os.Args[2:])
+	case "role":
+		cmdRole(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -78,6 +80,7 @@ Subcommands:
   repair          rebuild EC shards on dead DNs via Reed-Solomon (ADR-025)
   meta            snapshot / restore / info — metadata backup (ADR-014)
   heartbeat       per-DN liveness snapshot from edge (ADR-030)
+  role            show edge role (primary/follower) + sync stats (ADR-022)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -1312,4 +1315,47 @@ func healthLabel(h bool) string {
 		return "yes"
 	}
 	return "NO"
+}
+
+// ---- role (ADR-022) ----
+
+func cmdRole(args []string) {
+	fs := flag.NewFlagSet("role", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	body := mustHTTP("GET", *edge+"/v1/admin/role")
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+	var resp struct {
+		Role         string    `json:"role"`
+		PrimaryURL   string    `json:"primary_url"`
+		PullInterval string    `json:"pull_interval"`
+		LastSync     time.Time `json:"last_sync"`
+		LastSize     int64     `json:"last_size_bytes"`
+		LastErr      string    `json:"last_err"`
+		TotalSyncs   uint64    `json:"total_syncs"`
+		TotalErrors  uint64    `json:"total_errors"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		fail(err)
+	}
+	fmt.Printf("role:           %s\n", resp.Role)
+	if resp.Role == "follower" {
+		fmt.Printf("primary URL:    %s\n", resp.PrimaryURL)
+		fmt.Printf("pull interval:  %s\n", resp.PullInterval)
+		if !resp.LastSync.IsZero() {
+			ago := time.Since(resp.LastSync).Truncate(time.Second)
+			fmt.Printf("last sync:      %s (%s ago, %d bytes)\n", resp.LastSync.Format(time.RFC3339), ago, resp.LastSize)
+		} else {
+			fmt.Printf("last sync:      (never — initial pull pending)\n")
+		}
+		fmt.Printf("total syncs:    %d (errors: %d)\n", resp.TotalSyncs, resp.TotalErrors)
+		if resp.LastErr != "" {
+			fmt.Printf("last error:     %s\n", resp.LastErr)
+		}
+	}
 }

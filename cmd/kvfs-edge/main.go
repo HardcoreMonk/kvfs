@@ -65,6 +65,9 @@ func main() {
 		flagSnapDir = flag.String("snapshot-dir", envOr("EDGE_SNAPSHOT_DIR", ""), "auto-snapshot output directory (ADR-016); empty disables")
 		flagSnapInt = flag.String("snapshot-interval", envOr("EDGE_SNAPSHOT_INTERVAL", "1h"), "auto-snapshot ticker interval")
 		flagSnapKp  = flag.Int("snapshot-keep", atoiOr(envOr("EDGE_SNAPSHOT_KEEP", "7"), 7), "how many recent snapshots to retain")
+		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
+		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
+		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
 	)
 	flag.Parse()
 
@@ -221,6 +224,27 @@ func main() {
 		SnapshotScheduler: snapSched,
 	}
 
+	switch edge.Role(*flagRole) {
+	case edge.RolePrimary:
+		// default; nothing extra
+	case edge.RoleFollower:
+		if *flagPrim == "" {
+			fatal("EDGE_PRIMARY_URL required when EDGE_ROLE=follower")
+		}
+		pullDur, perr := time.ParseDuration(*flagPullInt)
+		if perr != nil {
+			fatal("invalid EDGE_FOLLOWER_PULL_INTERVAL: " + perr.Error())
+		}
+		srv.SetFollowerConfig(edge.FollowerConfig{
+			PrimaryURL:   *flagPrim,
+			DataDir:      *flagDataDir,
+			PullInterval: pullDur,
+		})
+		log.Info("kvfs-edge in follower role", "primary", *flagPrim, "pull_interval", pullDur)
+	default:
+		fatal("EDGE_ROLE must be 'primary' or 'follower' (got " + *flagRole + ")")
+	}
+
 	log.Info("kvfs-edge starting",
 		"addr", *flagAddr,
 		"dns", dns,
@@ -252,6 +276,9 @@ func main() {
 
 	// Start auto-snapshot scheduler (ADR-016). No-op if SnapshotScheduler is nil.
 	srv.StartSnapshotScheduler(ctx)
+
+	// Start follower snapshot pull (ADR-022). No-op if Role != follower.
+	srv.StartFollowerSync(ctx)
 
 	errCh := make(chan error, 1)
 	tlsCert := envOr("EDGE_TLS_CERT", "")

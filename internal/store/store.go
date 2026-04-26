@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -111,13 +112,28 @@ type DNInfo struct {
 	Status string    `json:"status"` // "healthy" | "unhealthy"
 }
 
-// MetaStore is a bbolt-backed metadata store.
+// MetaStore is a bbolt-backed metadata store. The underlying *bbolt.DB is held
+// in an atomic.Pointer so it can be hot-swapped by Reload (ADR-022 follower
+// sync) without invalidating concurrent readers — readers load the current
+// pointer per call, and the swapped-out DB is closed only after pending tx
+// finish (bbolt.Close blocks; we run it in a goroutine).
 type MetaStore struct {
-	db *bbolt.DB
+	db atomic.Pointer[bbolt.DB]
 }
 
 // Open opens or creates a bbolt database file at path.
 func Open(path string) (*MetaStore, error) {
+	db, err := openInitialized(path)
+	if err != nil {
+		return nil, err
+	}
+	m := &MetaStore{}
+	m.db.Store(db)
+	return m, nil
+}
+
+// openInitialized opens a bbolt file and ensures the standard buckets exist.
+func openInitialized(path string) (*bbolt.DB, error) {
 	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: 2 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("open bbolt: %w", err)
@@ -134,17 +150,36 @@ func Open(path string) (*MetaStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &MetaStore{db: db}, nil
+	return db, nil
+}
+
+// Reload swaps the internal *bbolt.DB to the file at path (ADR-022). Used by
+// follower edges to consume a freshly-pulled snapshot from primary. The old
+// DB is closed asynchronously so in-flight read txns are not aborted.
+//
+// path must point to a valid bbolt file — typically a snapshot dropped into
+// the data dir via atomic temp+rename. If Reload fails, the previous DB
+// remains active.
+func (m *MetaStore) Reload(path string) error {
+	newDB, err := openInitialized(path)
+	if err != nil {
+		return fmt.Errorf("reload: %w", err)
+	}
+	old := m.db.Swap(newDB)
+	if old != nil {
+		go func() { _ = old.Close() }()
+	}
+	return nil
 }
 
 // Close flushes and closes the bbolt file.
-func (m *MetaStore) Close() error { return m.db.Close() }
+func (m *MetaStore) Close() error { return m.db.Load().Close() }
 
 // PutObject stores or overwrites an object's metadata.
 // Version is auto-incremented if an existing record is found.
 func (m *MetaStore) PutObject(obj *ObjectMeta) error {
 	k := objKey(obj.Bucket, obj.Key)
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketObjects)
 		if prev := b.Get(k); prev != nil {
 			var prevObj ObjectMeta
@@ -170,7 +205,7 @@ func (m *MetaStore) PutObject(obj *ObjectMeta) error {
 // are normalized to the new Chunks-shape transparently.
 func (m *MetaStore) GetObject(bucket, key string) (*ObjectMeta, error) {
 	var out ObjectMeta
-	err := m.db.View(func(tx *bbolt.Tx) error {
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
 		raw := tx.Bucket(bucketObjects).Get(objKey(bucket, key))
 		if raw == nil {
 			return ErrNotFound
@@ -194,7 +229,7 @@ func (m *MetaStore) GetObject(bucket, key string) (*ObjectMeta, error) {
 // Returns an error if chunkIndex is out of range.
 func (m *MetaStore) UpdateChunkReplicas(bucket, key string, chunkIndex int, replicas []string) error {
 	k := objKey(bucket, key)
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketObjects)
 		raw := b.Get(k)
 		if raw == nil {
@@ -242,7 +277,7 @@ func normalizeLegacy(o *ObjectMeta) {
 // are out of range or the object isn't EC-mode.
 func (m *MetaStore) UpdateShardReplicas(bucket, key string, stripeIndex, shardIndex int, replicas []string) error {
 	k := objKey(bucket, key)
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketObjects)
 		raw := b.Get(k)
 		if raw == nil {
@@ -276,7 +311,7 @@ func (m *MetaStore) UpdateShardReplicas(bucket, key string, stripeIndex, shardIn
 
 // DeleteObject removes an object's metadata. Returns ErrNotFound if absent.
 func (m *MetaStore) DeleteObject(bucket, key string) error {
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketObjects)
 		k := objKey(bucket, key)
 		if b.Get(k) == nil {
@@ -290,7 +325,7 @@ func (m *MetaStore) DeleteObject(bucket, key string) error {
 // Legacy single-chunk records are normalized to the new Chunks-shape.
 func (m *MetaStore) ListObjects() ([]*ObjectMeta, error) {
 	var out []*ObjectMeta
-	err := m.db.View(func(tx *bbolt.Tx) error {
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketObjects).ForEach(func(_, v []byte) error {
 			var o ObjectMeta
 			if err := json.Unmarshal(v, &o); err != nil {
@@ -306,7 +341,7 @@ func (m *MetaStore) ListObjects() ([]*ObjectMeta, error) {
 
 // PutDN upserts a DN registry entry.
 func (m *MetaStore) PutDN(dn *DNInfo) error {
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		buf, err := json.Marshal(dn)
 		if err != nil {
 			return err
@@ -318,7 +353,7 @@ func (m *MetaStore) PutDN(dn *DNInfo) error {
 // ListDNs lists all known DNs.
 func (m *MetaStore) ListDNs() ([]*DNInfo, error) {
 	var out []*DNInfo
-	err := m.db.View(func(tx *bbolt.Tx) error {
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketDNs).ForEach(func(_, v []byte) error {
 			var d DNInfo
 			if err := json.Unmarshal(v, &d); err != nil {
@@ -346,7 +381,7 @@ func (m *MetaStore) AddRuntimeDN(addr string) error {
 	if addr == "" {
 		return errors.New("store: empty addr")
 	}
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		buf, err := json.Marshal(map[string]any{
 			"addr":          addr,
 			"registered_at": time.Now().UTC(),
@@ -363,7 +398,7 @@ func (m *MetaStore) RemoveRuntimeDN(addr string) error {
 	if addr == "" {
 		return errors.New("store: empty addr")
 	}
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketDNsRuntime).Delete([]byte(addr))
 	})
 }
@@ -371,7 +406,7 @@ func (m *MetaStore) RemoveRuntimeDN(addr string) error {
 // ListRuntimeDNs returns sorted addrs from the live DN set.
 func (m *MetaStore) ListRuntimeDNs() ([]string, error) {
 	var out []string
-	err := m.db.View(func(tx *bbolt.Tx) error {
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketDNsRuntime).ForEach(func(k, _ []byte) error {
 			out = append(out, string(k))
 			return nil
@@ -387,7 +422,7 @@ func (m *MetaStore) ListRuntimeDNs() ([]string, error) {
 // SeedRuntimeDNs populates the bucket from a list (for first boot from
 // EDGE_DNS env, or for EDGE_DNS_RESET=1 disaster-recovery).
 func (m *MetaStore) SeedRuntimeDNs(addrs []string) error {
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		// Wipe + reseed.
 		if err := tx.DeleteBucket(bucketDNsRuntime); err != nil && !errors.Is(err, bbolt.ErrBucketNotFound) {
 			return err
@@ -428,7 +463,7 @@ func (m *MetaStore) PutURLKey(kid string, secretHex string, isPrimary bool) erro
 	if kid == "" || secretHex == "" {
 		return errors.New("store: kid and secret_hex required")
 	}
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketURLKeySecrets)
 		if isPrimary {
 			// Clear primary flag on existing entries.
@@ -469,7 +504,7 @@ func (m *MetaStore) PutURLKey(kid string, secretHex string, isPrimary bool) erro
 
 // DeleteURLKey removes a kid. Refuses primary kid (caller must rotate first).
 func (m *MetaStore) DeleteURLKey(kid string) error {
-	return m.db.Update(func(tx *bbolt.Tx) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketURLKeySecrets)
 		raw := b.Get([]byte(kid))
 		if raw == nil {
@@ -489,7 +524,7 @@ func (m *MetaStore) DeleteURLKey(kid string) error {
 // ListURLKeys returns all entries sorted by kid.
 func (m *MetaStore) ListURLKeys() ([]*URLKeyEntry, error) {
 	var out []*URLKeyEntry
-	err := m.db.View(func(tx *bbolt.Tx) error {
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketURLKeySecrets).ForEach(func(_, v []byte) error {
 			var e URLKeyEntry
 			if err := json.Unmarshal(v, &e); err != nil {
