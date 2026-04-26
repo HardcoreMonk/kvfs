@@ -156,6 +156,13 @@ type Server struct {
 	// endpoint and no instrumentation overhead. Set via SetupMetrics.
 	Metrics *metricsHandle
 
+	// PlacementPreferClass biases new chunk writes toward DNs with this class
+	// label (Hot/Cold tiering follow-up). Empty = no bias (use full DN set
+	// via Coordinator.WriteChunk). When set: edge first tries
+	// Coord.PlaceNFromAddrs over the class-filtered subset, falling back to
+	// the full set when the subset has fewer than R nodes.
+	PlacementPreferClass string
+
 	// StrictReplication enables ADR-034's transactional commit path:
 	// PutObject pre-marshals the WAL entry, replicates to peers, waits for
 	// quorum-ack, THEN commits locally + writes WAL (with hook suppressed
@@ -310,6 +317,27 @@ func (s *Server) handleListBucket(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// writeChunkPreferClass writes chunk to DNs, optionally biased toward DNs
+// labelled with PlacementPreferClass (Hot/Cold tiering). Falls back to the
+// full DN set when the class subset can't satisfy quorum.
+//
+// Bias semantics:
+//  1. If PlacementPreferClass == "" → coord.WriteChunk (legacy, full set).
+//  2. Else: query Store.ListRuntimeDNsByClass(class). If subset satisfies
+//     ReplicationFactor → place there only. Otherwise fall back to full
+//     coord.WriteChunk (so a sparse hot tier doesn't reject writes).
+func (s *Server) writeChunkPreferClass(ctx context.Context, chunkID string, data []byte) ([]string, error) {
+	if s.PlacementPreferClass == "" {
+		return s.Coord.WriteChunk(ctx, chunkID, data)
+	}
+	classDNs, err := s.Store.ListRuntimeDNsByClass(s.PlacementPreferClass)
+	if err != nil || len(classDNs) < s.Coord.ReplicationFactor() {
+		return s.Coord.WriteChunk(ctx, chunkID, data)
+	}
+	targets := s.Coord.PlaceNFromAddrs(chunkID, s.Coord.ReplicationFactor(), classDNs)
+	return s.Coord.WriteChunkToAddrs(ctx, chunkID, data, targets)
+}
+
 // commitPutMeta is the unified PutObject path that picks transactional
 // (ADR-034) vs informational (ADR-033) replication based on Server config.
 //
@@ -440,7 +468,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("read chunk %d: %v", i+1, err))
 			return
 		}
-		replicas, werr := s.Coord.WriteChunk(ctx, piece.ID, piece.Data)
+		replicas, werr := s.writeChunkPreferClass(ctx, piece.ID, piece.Data)
 		if werr != nil {
 			// Partial-success orphan chunks remain on disk; GC (ADR-012) cleans
 			// them after min-age. We do NOT commit metadata, so reads can't see

@@ -215,6 +215,26 @@ func (c *Coordinator) PlaceChunk(chunkID string) []string {
 	return out
 }
 
+// PlaceNFromAddrs runs HRW against an arbitrary subset of DN addresses
+// (typically a class-filtered list for hot/cold tiered placement). Returns
+// up to min(n, len(filtered)) addresses. Falls back to nil if the subset
+// is empty — caller must handle.
+func (c *Coordinator) PlaceNFromAddrs(key string, n int, addrs []string) []string {
+	if len(addrs) == 0 || n <= 0 {
+		return nil
+	}
+	nodes := make([]placement.Node, len(addrs))
+	for i, a := range addrs {
+		nodes[i] = placement.Node{ID: a, Addr: a}
+	}
+	picked := placement.PickFromNodes(key, n, nodes)
+	out := make([]string, len(picked))
+	for i, p := range picked {
+		out[i] = p.Addr
+	}
+	return out
+}
+
 // PlaceN returns the top-n addresses for the given placement key, regardless
 // of ReplicationFactor. Used by EC mode (ADR-008) to pick K+M distinct DNs
 // per stripe.
@@ -264,6 +284,48 @@ func (c *Coordinator) WriteChunk(ctx context.Context, chunkID string, data []byt
 	}
 	go func() { wg.Wait(); close(results) }()
 
+	var ok []string
+	var errs []error
+	for r := range results {
+		if r.err == nil {
+			ok = append(ok, r.addr)
+		} else {
+			errs = append(errs, fmt.Errorf("%s: %w", r.addr, r.err))
+		}
+	}
+	if len(ok) < c.quorumWrite {
+		return ok, fmt.Errorf("quorum not reached: %d/%d success; errors: %v",
+			len(ok), c.quorumWrite, errs)
+	}
+	return ok, nil
+}
+
+// WriteChunkToAddrs is the variant used by tiered placement (hot/cold):
+// caller passes a pre-picked target list (typically from PlaceNFromAddrs
+// over a class-filtered subset). Same fan-out + quorum semantics as
+// WriteChunk; if len(targets) < quorum, returns an error without trying.
+func (c *Coordinator) WriteChunkToAddrs(ctx context.Context, chunkID string, data []byte, targets []string) ([]string, error) {
+	if len(targets) == 0 {
+		return nil, errors.New("coordinator: no target nodes available")
+	}
+	if len(targets) < c.quorumWrite {
+		return nil, fmt.Errorf("coordinator: %d targets < quorum %d", len(targets), c.quorumWrite)
+	}
+	type result struct {
+		addr string
+		err  error
+	}
+	results := make(chan result, len(targets))
+	var wg sync.WaitGroup
+	for _, addr := range targets {
+		wg.Add(1)
+		go func(a string) {
+			defer wg.Done()
+			err := c.putChunk(ctx, a, chunkID, data)
+			results <- result{addr: a, err: err}
+		}(addr)
+	}
+	go func() { wg.Wait(); close(results) }()
 	var ok []string
 	var errs []error
 	for r := range results {

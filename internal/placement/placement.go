@@ -139,11 +139,19 @@ func (p *Placer) Nodes() []Node {
 // 실제 프로덕션(Ceph CRUSH 등)도 이 핵심을 공유한다 — 단지 추가로
 // rack-awareness, failure domain 등 조건을 얹는 것뿐.
 func (p *Placer) Pick(chunkID string, n int) []Node {
-	if n <= 0 || len(p.nodes) == 0 {
+	return PickFromNodes(chunkID, n, p.nodes)
+}
+
+// PickFromNodes runs the same HRW algorithm against an arbitrary node
+// subset (e.g., hot-tier filtered list). Used by tiered-placement code in
+// edge that wants to bias new writes toward a class without rebuilding a
+// whole Placer. Stateless / pure function.
+func PickFromNodes(chunkID string, n int, nodes []Node) []Node {
+	if n <= 0 || len(nodes) == 0 {
 		return nil
 	}
-	if n > len(p.nodes) {
-		n = len(p.nodes)
+	if n > len(nodes) {
+		n = len(nodes)
 	}
 
 	// 1. 각 노드의 점수 계산
@@ -151,8 +159,8 @@ func (p *Placer) Pick(chunkID string, n int) []Node {
 		node  Node
 		score uint64
 	}
-	scoreds := make([]scored, len(p.nodes))
-	for i, node := range p.nodes {
+	scoreds := make([]scored, len(nodes))
+	for i, node := range nodes {
 		scoreds[i] = scored{node: node, score: hrwScore(chunkID, node.ID)}
 	}
 

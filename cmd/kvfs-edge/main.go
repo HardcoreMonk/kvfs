@@ -90,6 +90,7 @@ func main() {
 		flagMetrics  = flag.Bool("metrics", envOr("EDGE_METRICS", "1") == "1", "expose /metrics Prometheus endpoint (default on)")
 		flagStrict   = flag.Bool("strict-repl", envOr("EDGE_STRICT_REPL", "") == "1", "ADR-033: surface quorum-replication failure as 503 to client (informational; bbolt commits regardless)")
 		flagTxnRaft  = flag.Bool("transactional-raft", envOr("EDGE_TRANSACTIONAL_RAFT", "") == "1", "ADR-034: replicate-then-commit semantics for PutObject (true Raft-style; rejects writes when quorum unavailable)")
+		flagPrefer   = flag.String("placement-prefer-class", envOr("EDGE_PLACEMENT_PREFER", ""), "Hot/Cold tier (ADR-035 follow-up): bias new writes toward DNs with this class label (empty = no bias)")
 		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
 		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
 		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
@@ -347,8 +348,9 @@ func main() {
 		Heartbeat:         hbMon,
 		SnapshotScheduler: snapSched,
 		CDCEnabled:        cdcEnabled,
-		Elector:           elector,
-		StrictReplication: *flagTxnRaft,
+		Elector:              elector,
+		StrictReplication:    *flagTxnRaft,
+		PlacementPreferClass: *flagPrefer,
 	}
 
 	if elector != nil {
