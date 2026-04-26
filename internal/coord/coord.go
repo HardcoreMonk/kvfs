@@ -38,6 +38,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 )
@@ -48,9 +49,23 @@ type Server struct {
 	Store  *store.MetaStore
 	Placer *placement.Placer
 	Log    *slog.Logger
+
+	// Elector is optional. When set (Season 5 Ep.3, ADR-038), this coord
+	// participates in a multi-coord election and only the current leader
+	// accepts mutating RPCs. Followers return 503 with a X-COORD-LEADER
+	// header pointing at the leader's URL — clients (edge.CoordClient)
+	// transparently follow.
+	Elector *election.Elector
 }
 
+// HeaderCoordLeader names the redirect header used when a follower coord
+// returns 503 on a write — value is the current leader's base URL (from
+// COORD_PEERS). Empty when no leader is known yet (election in progress).
+const HeaderCoordLeader = "X-COORD-LEADER"
+
 // Routes returns a configured ServeMux. Caller wires it into http.Server.
+// When Elector is set, election RPCs are mounted on /v1/election/* (same
+// paths the elector hardcodes for outbound calls).
 func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/coord/place", s.handlePlace)
@@ -58,7 +73,28 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/coord/lookup", s.handleLookup)
 	mux.HandleFunc("POST /v1/coord/delete", s.handleDelete)
 	mux.HandleFunc("GET /v1/coord/healthz", s.handleHealthz)
+	if s.Elector != nil {
+		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
+		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
+	}
 	return mux
+}
+
+// requireLeader is the gate for mutating RPCs in HA mode. Returns true if
+// the request was rejected (caller must return immediately). When Elector
+// is nil (single-coord mode), always returns false (allow).
+func (s *Server) requireLeader(w http.ResponseWriter) bool {
+	if s.Elector == nil {
+		return false
+	}
+	if s.Elector.IsLeader() {
+		return false
+	}
+	if leader := s.Elector.LeaderURL(); leader != "" {
+		w.Header().Set(HeaderCoordLeader, leader)
+	}
+	writeErr(w, http.StatusServiceUnavailable, errors.New("not the coord leader"))
+	return true
 }
 
 // PlaceRequest is the body of POST /v1/coord/place.
@@ -105,8 +141,12 @@ type CommitResponse struct {
 
 // handleCommit persists object metadata. Coord owns the bbolt write, so
 // this is the single point of serialization in the cluster — a property
-// edge multi-instance setups didn't have.
+// edge multi-instance setups didn't have. In HA mode (Ep.3), only the
+// current leader accepts this; followers reply 503 + X-COORD-LEADER.
 func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
 	var req CommitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("decode: %w", err))
@@ -150,6 +190,9 @@ type DeleteRequest struct {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
 	var req DeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("decode: %w", err))

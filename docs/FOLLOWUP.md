@@ -70,8 +70,8 @@
 ### ~~[P6-02] Edge → coord client 통합~~
 - **DONE 2026-04-27**: `internal/edge/coord_client.go` (CommitObject/LookupObject/DeleteObject/Healthz). edge.Server 에 `CoordClient` 필드, `commitPutMeta`/`lookupMeta`/`deleteMeta` 헬퍼 분기. handleHead/handleGet/handleDelete 모두 lookupMeta 경유. cmd/kvfs-edge/main.go: `EDGE_COORD_URL` env, boot 시 healthz fail-fast, coord-proxy 모드면 auto-trigger 자동 비활성. 데모 demo-bet.sh: edge.db vs coord.db 크기 비교로 단일 source 검증. 2 unit tests (round-trip + healthz fast-fail). 기존 동작 0 변경 (env unset 시 인라인).
 
-### [P6-03] coord 자체의 Raft (peer set, election 재사용)
-- **다음 단계**: coord HA. ADR-031 의 Elector 를 coord 가 가져와 다중 coord 구성. ADR 신규 (예상 ADR-038).
+### ~~[P6-03] coord 자체의 Raft (peer set, election 재사용)~~
+- **DONE 2026-04-27**: ADR-038 작성 + 구현. `internal/election` 그대로 재사용 (새 state machine 0). `coord.Server.Elector` field, mounting at `/v1/election/{vote,heartbeat}`. follower coord 가 mutating RPC 받으면 503 + `X-COORD-LEADER`. edge.CoordClient 가 transparent 1-hop redirect (`MaxLeaderRedirects=1` default). `COORD_PEERS`/`COORD_SELF_URL` env. 데모 demo-gimel.sh (히브리 ג): 3-coord election + leader kill + new leader. **알려진 갭**: 새 leader bbolt 비어있음 (P6-04 가 sync). 1 unit test (TestRequireLeader_FollowerRejectsWritesPropagatesLeaderHint).
 
 ### [P6-04] coord 간 메타 sync (WAL replication 재사용)
 - **다음 단계**: ADR-019 WAL + ADR-031 sync push 를 coord 간에. leader coord 가 follower coord 에 push.

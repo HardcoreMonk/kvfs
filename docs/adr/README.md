@@ -92,7 +92,8 @@ Accepted · YYYY-MM-DD
 
 | # | 제목 | 상태 | 연결 · demo |
 |---|---|---|---|
-| [015](ADR-015-coordinator-daemon-split.md) | Coordinator daemon 분리 (ADR-002 **supersede**) | Accepted · 2026-04-26 | `cmd/kvfs-coord/` + `internal/coord/` · demo-aleph (Ep.1) |
+| [015](ADR-015-coordinator-daemon-split.md) | Coordinator daemon 분리 (ADR-002 **supersede**) | Accepted · 2026-04-26 | `cmd/kvfs-coord/` + `internal/coord/` · demo-aleph (Ep.1) · demo-bet (Ep.2) |
+| [038](ADR-038-coord-ha-via-raft.md) | Coord HA via Raft (election + leader-redirect, ADR-031 reuse) | Accepted · 2026-04-27 | `coord.Server.Elector` + `X-COORD-LEADER` redirect · demo-gimel (Ep.3) |
 
 > Greek alpha-omega 가 소진됐으므로 Season 5 demos 는 Hebrew (aleph, bet, gimel ...).
 

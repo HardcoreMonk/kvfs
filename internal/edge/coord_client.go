@@ -44,11 +44,23 @@ import (
 // CoordClient is a thin HTTP client for the kvfs-coord RPC surface defined
 // in internal/coord. Only the methods the edge actually needs in Ep.2 are
 // implemented — Place will join when placement also moves to coord (Ep.3+).
+//
+// HA awareness (Ep.3, ADR-038): when a write hits a follower coord, coord
+// answers 503 with header `X-COORD-LEADER: <url>`. CoordClient follows the
+// hint exactly once per call — caller sees a single transparent retry.
+// MaxLeaderRedirects bounds that loop so a misconfigured cluster can't
+// trap us in a cycle. Default 1 (one redirect = one retry max).
 type CoordClient struct {
-	BaseURL string        // e.g. "http://coord:9000"
-	HTTP    *http.Client  // caller-provided; nil → defaultHTTPClient
-	Timeout time.Duration // per-call deadline (default 10s)
+	BaseURL            string        // current target — updated when leader hint arrives
+	HTTP               *http.Client  // caller-provided; nil → defaultHTTPClient
+	Timeout            time.Duration // per-call deadline (default 10s)
+	MaxLeaderRedirects int           // 0 → uses default 1
 }
+
+// HeaderCoordLeader names the redirect header the coord uses when a follower
+// rejects a mutating RPC. Mirrors coord.HeaderCoordLeader to avoid an
+// import cycle (edge → coord would be fine but symmetry matters).
+const HeaderCoordLeader = "X-COORD-LEADER"
 
 // NewCoordClient builds a client with a sensible default HTTP client.
 func NewCoordClient(baseURL string) *CoordClient {
@@ -139,22 +151,41 @@ func (c *CoordClient) do(ctx context.Context, method, path string, body []byte) 
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	var rdr io.Reader
-	if body != nil {
-		rdr = bytes.NewReader(body)
+	maxRedirects := c.MaxLeaderRedirects
+	if maxRedirects <= 0 {
+		maxRedirects = 1
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rdr)
-	if err != nil {
-		return nil, fmt.Errorf("coord-client: build req: %w", err)
+	target := c.BaseURL
+	for attempt := 0; attempt <= maxRedirects; attempt++ {
+		var rdr io.Reader
+		if body != nil {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, target+path, rdr)
+		if err != nil {
+			return nil, fmt.Errorf("coord-client: build req: %w", err)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("coord-client: %s %s: %w", method, path, err)
+		}
+		// HA leader-redirect protocol (ADR-038): 503 + X-COORD-LEADER means
+		// "I'm not the leader; here's who is." Update BaseURL so subsequent
+		// calls go straight to the new leader (cheap fast-path) and retry.
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			if leader := resp.Header.Get(HeaderCoordLeader); leader != "" && leader != target {
+				_ = resp.Body.Close()
+				c.BaseURL = leader
+				target = leader
+				continue
+			}
+		}
+		return resp, nil
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("coord-client: %s %s: %w", method, path, err)
-	}
-	return resp, nil
+	return nil, fmt.Errorf("coord-client: leader redirect loop exceeded (%d hops)", maxRedirects)
 }
 
 // readErrBody reads (small) error body from coord without leaking the

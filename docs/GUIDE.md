@@ -492,6 +492,7 @@ type Stripe struct {
 | `EDGE_ROLE` / `EDGE_PRIMARY_URL` / `EDGE_FOLLOWER_PULL_INTERVAL` | `primary` / — / 30s | follower 모드: read-only + snapshot pull (ADR-022) |
 | `EDGE_TLS_CERT` / `EDGE_TLS_KEY` | (off) | 설정 시 HTTPS 활성 (ADR-029, `internal/tlsutil`) |
 | `EDGE_COORD_URL` | (off) | Season 5 Ep.2 (ADR-015): 설정 시 edge 가 메타 RPC 를 coord 로 위임 (proxy mode) |
+| `COORD_PEERS` / `COORD_SELF_URL` | (off) | Season 5 Ep.3 (ADR-038): coord-side election. 설정 시 coord 가 HA cluster 일원이 됨 |
 
 > 운영 디테일 (election timing, DN-side TLS CA 등) 은 `README.md` § "환경 변수" 의 전체 표.
 
@@ -570,8 +571,9 @@ type Stripe struct {
 ADR-015 Accept (2026-04-26). `kvfs-coord` daemon 신설 — placement + 메타 ownership 이 edge 에서 떨어져 나간다. ADR-002 supersede.
 
 - Ep.1: `cmd/kvfs-coord/` skeleton + 4 RPC (`/v1/coord/{place,commit,lookup,delete}`). 데모 `scripts/demo-aleph.sh`.
-- Ep.2 (현재): edge → coord client 통합. `EDGE_COORD_URL` 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임 (`internal/edge/coord_client.go`). edge.bbolt unused, coord.bbolt 가 single source. 데모 `scripts/demo-bet.sh` (히브리 ב). backward compat 100% — env unset 시 인라인.
-- 후속: Ep.3 coord 자체 Raft, Ep.4 coord 간 메타 sync, Ep.5 edge 의 placement 코드 제거.
+- Ep.2: edge → coord client 통합. `EDGE_COORD_URL` 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임. 데모 demo-bet (히브리 ב).
+- Ep.3 (현재): coord HA via Raft (ADR-038). `internal/election` 재사용 — `COORD_PEERS`/`COORD_SELF_URL` 설정 시 coord 끼리 leader election. follower coord 는 write 503 + `X-COORD-LEADER` 헤더, edge.CoordClient 가 transparent 1-hop redirect. 데모 demo-gimel (히브리 ג). 알려진 갭: leader 교체 시 새 leader bbolt 비어있음 (Ep.4 가 sync).
+- 후속: Ep.4 coord 간 메타 sync (WAL replication 재사용), Ep.5 edge 의 placement 코드 제거.
 
 이 트랙이 완료되면 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.
 

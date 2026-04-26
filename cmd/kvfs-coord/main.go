@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/coord"
+	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 )
@@ -49,6 +50,9 @@ func main() {
 		flagAddr    = flag.String("addr", envOr("COORD_ADDR", ":9000"), "HTTP bind address")
 		flagDataDir = flag.String("data-dir", envOr("COORD_DATA_DIR", "./coord-data"), "dir for bbolt file")
 		flagDNs     = flag.String("dns", envOr("COORD_DNS", ""), "comma-separated DN addresses (required)")
+		// HA mode (Ep.3, ADR-038): set both to enable Raft-style leader election.
+		flagPeers   = flag.String("peers", envOr("COORD_PEERS", ""), "comma-separated peer URLs incl. self, e.g. http://coord1:9000,http://coord2:9000,http://coord3:9000 (empty = single-coord mode)")
+		flagSelfURL = flag.String("self-url", envOr("COORD_SELF_URL", ""), "this coord's own URL (must match an entry in -peers when -peers set)")
 	)
 	flag.Parse()
 
@@ -76,10 +80,29 @@ func main() {
 	}
 	placer := placement.New(nodes)
 
+	var elector *election.Elector
+	if *flagPeers != "" {
+		if *flagSelfURL == "" {
+			fatal("COORD_SELF_URL required when COORD_PEERS is set")
+		}
+		peerURLs := splitCSV(*flagPeers)
+		peers := make([]election.Peer, 0, len(peerURLs))
+		for _, u := range peerURLs {
+			peers = append(peers, election.Peer{ID: u, URL: u})
+		}
+		elector = election.New(election.Config{
+			SelfID: *flagSelfURL,
+			Peers:  peers,
+			Log:    log,
+		})
+		log.Info("kvfs-coord HA mode (Ep.3)", "self", *flagSelfURL, "peers", len(peers))
+	}
+
 	srv := &coord.Server{
-		Store:  st,
-		Placer: placer,
-		Log:    log,
+		Store:   st,
+		Placer:  placer,
+		Log:     log,
+		Elector: elector,
 	}
 
 	httpSrv := &http.Server{
@@ -90,6 +113,10 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if elector != nil {
+		go elector.Run(ctx)
+	}
 
 	go func() {
 		log.Info("kvfs-coord listening", "addr", *flagAddr, "dns", len(dnAddrs), "data", metaPath)
