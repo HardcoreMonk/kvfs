@@ -41,6 +41,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -506,6 +507,30 @@ func (m *MetaStore) ListRuntimeDNs() ([]string, error) {
 		return nil, err
 	}
 	sort.Strings(out)
+	return out, nil
+}
+
+// ListObjectsByPrefix returns objects whose key begins with prefix, optionally
+// scoped to a bucket. Empty bucket = all buckets. limit ≤ 0 returns all
+// matches. Used by S3-compatible ListBucket endpoint.
+func (m *MetaStore) ListObjectsByPrefix(bucket, prefix string, limit int) ([]*ObjectMeta, error) {
+	all, err := m.ListObjects()
+	if err != nil {
+		return nil, err
+	}
+	var out []*ObjectMeta
+	for _, o := range all {
+		if bucket != "" && o.Bucket != bucket {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(o.Key, prefix) {
+			continue
+		}
+		out = append(out, o)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
 	return out, nil
 }
 

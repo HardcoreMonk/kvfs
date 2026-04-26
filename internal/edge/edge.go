@@ -213,6 +213,103 @@ func (s *Server) chunkSize() int {
 	return s.ChunkSize
 }
 
+// handleHead serves HEAD /v1/o/{bucket}/{key...} — same as GET but no body.
+// Returns Content-Length + Content-Type + X-KVFS-* headers (size, version,
+// chunk count). UrlKey-authenticated like GET. S3-style HeadObject.
+func (s *Server) handleHead(w http.ResponseWriter, r *http.Request) {
+	if err := s.verifyAuth(r); err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	meta, err := s.Store.GetObject(r.PathValue("bucket"), r.PathValue("key"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "", http.StatusNotFound)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", meta.ContentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
+	w.Header().Set("X-KVFS-Version", fmt.Sprintf("%d", meta.Version))
+	if meta.IsEC() {
+		w.Header().Set("X-KVFS-EC", fmt.Sprintf("%d+%d", meta.EC.K, meta.EC.M))
+		w.Header().Set("X-KVFS-Stripes", fmt.Sprintf("%d", len(meta.Stripes)))
+	} else {
+		w.Header().Set("X-KVFS-Chunks", fmt.Sprintf("%d", len(meta.Chunks)))
+	}
+	w.Header().Set("Last-Modified", meta.CreatedAt.Format(time.RFC1123))
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleListBucket serves GET /v1/list/{bucket}?prefix=X&limit=N — JSON
+// equivalent of S3 ListObjectsV2. No XML/SigV4 (those would be a separate
+// translator layer; see ADR-032 §"Option A").
+//
+// Response shape:
+//
+//	{
+//	  "bucket": "...",
+//	  "prefix": "...",
+//	  "count":  N,
+//	  "objects": [
+//	    {"key": "...", "size": ..., "version": ..., "content_type": "...",
+//	     "chunks": ..., "ec": {...}|null, "created_at": "..."}
+//	  ]
+//	}
+//
+// Authentication: requires UrlKey signed for `/v1/list/{bucket}`.
+func (s *Server) handleListBucket(w http.ResponseWriter, r *http.Request) {
+	if err := s.verifyAuth(r); err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	bucket := r.PathValue("bucket")
+	prefix := r.URL.Query().Get("prefix")
+	limit := intQuery(r, "limit", 1000)
+
+	objs, err := s.Store.ListObjectsByPrefix(bucket, prefix, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type briefObj struct {
+		Key         string    `json:"key"`
+		Size        int64     `json:"size"`
+		Version     int64     `json:"version"`
+		ContentType string    `json:"content_type,omitempty"`
+		Chunks      int       `json:"chunks,omitempty"`
+		EC          *string   `json:"ec,omitempty"`
+		Stripes     int       `json:"stripes,omitempty"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+	out := make([]briefObj, 0, len(objs))
+	for _, o := range objs {
+		bo := briefObj{
+			Key:         o.Key,
+			Size:        o.Size,
+			Version:     o.Version,
+			ContentType: o.ContentType,
+			CreatedAt:   o.CreatedAt,
+		}
+		if o.IsEC() {
+			ec := fmt.Sprintf("%d+%d", o.EC.K, o.EC.M)
+			bo.EC = &ec
+			bo.Stripes = len(o.Stripes)
+		} else {
+			bo.Chunks = len(o.Chunks)
+		}
+		out = append(out, bo)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"bucket":  bucket,
+		"prefix":  prefix,
+		"count":   len(out),
+		"objects": out,
+	})
+}
+
 // commitPutMeta is the unified PutObject path that picks transactional
 // (ADR-034) vs informational (ADR-033) replication based on Server config.
 //
@@ -253,6 +350,8 @@ func (s *Server) newPutReader(src io.Reader) pieceReader {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /v1/o/{bucket}/{key...}", s.handlePut)
+	mux.HandleFunc("HEAD /v1/o/{bucket}/{key...}", s.handleHead)
+	mux.HandleFunc("GET /v1/list/{bucket}", s.handleListBucket)
 	mux.HandleFunc("GET /v1/o/{bucket}/{key...}", s.handleGet)
 	mux.HandleFunc("DELETE /v1/o/{bucket}/{key...}", s.handleDelete)
 	mux.HandleFunc("GET /v1/admin/objects", s.handleList)
