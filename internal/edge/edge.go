@@ -231,6 +231,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/dns", s.handleDNs)
 	mux.HandleFunc("POST /v1/admin/dns", s.handleAddDN)
 	mux.HandleFunc("DELETE /v1/admin/dns", s.handleRemoveDN)
+	mux.HandleFunc("PUT /v1/admin/dns/class", s.handleSetDNClass)
 	mux.HandleFunc("GET /v1/admin/urlkey", s.handleListURLKeys)
 	mux.HandleFunc("POST /v1/admin/urlkey/rotate", s.handleRotateURLKey)
 	mux.HandleFunc("DELETE /v1/admin/urlkey", s.handleRemoveURLKey)
@@ -549,6 +550,35 @@ func (s *Server) handleRemoveDN(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"action": "remove", "addr": addr, "dns": s.Coord.DNs(),
+	})
+}
+
+// handleSetDNClass tags a runtime DN with a class label (typically "hot" or
+// "cold") for tiered placement. Empty class clears the label.
+//
+// PUT /v1/admin/dns/class?addr=X&class=hot
+//
+// Future work: edge placement biased by class (placement.PlaceN with class
+// filter). Today the label is recorded + queryable but not yet consumed by
+// write path — operator can use it for monitoring + manual rebalance scope.
+func (s *Server) handleSetDNClass(w http.ResponseWriter, r *http.Request) {
+	addr := r.URL.Query().Get("addr")
+	class := r.URL.Query().Get("class")
+	if addr == "" {
+		writeError(w, http.StatusBadRequest, "missing addr query param")
+		return
+	}
+	if err := s.Store.SetRuntimeDNClass(addr, class); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "DN not in runtime registry: "+addr)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"addr":  addr,
+		"class": class,
 	})
 }
 

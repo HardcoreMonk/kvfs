@@ -493,6 +493,84 @@ func (m *MetaStore) ListRuntimeDNs() ([]string, error) {
 	return out, nil
 }
 
+// SetRuntimeDNClass tags an addr with a class label (typically "hot" or
+// "cold"). Used by tiered placement (Hot/Cold tier ep). Empty class clears
+// the label so the DN goes back to the default pool. Returns ErrNotFound
+// if addr is not in the runtime registry.
+func (m *MetaStore) SetRuntimeDNClass(addr, class string) error {
+	if addr == "" {
+		return errors.New("store: empty addr")
+	}
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketDNsRuntime)
+		raw := b.Get([]byte(addr))
+		if raw == nil {
+			return ErrNotFound
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			entry = map[string]any{"addr": addr}
+		}
+		if class == "" {
+			delete(entry, "class")
+		} else {
+			entry["class"] = class
+		}
+		buf, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(addr), buf)
+	})
+}
+
+// RuntimeDNClass returns the class label of addr (or empty string if
+// unset). ErrNotFound when addr is not in the registry.
+func (m *MetaStore) RuntimeDNClass(addr string) (string, error) {
+	var out string
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		raw := tx.Bucket(bucketDNsRuntime).Get([]byte(addr))
+		if raw == nil {
+			return ErrNotFound
+		}
+		var entry map[string]any
+		if jerr := json.Unmarshal(raw, &entry); jerr != nil {
+			return nil // legacy entry without class — empty
+		}
+		if c, ok := entry["class"].(string); ok {
+			out = c
+		}
+		return nil
+	})
+	return out, err
+}
+
+// ListRuntimeDNsByClass returns addrs whose class label matches `class`.
+// Pass "" to list addrs with no class (default pool). Sorted.
+func (m *MetaStore) ListRuntimeDNsByClass(class string) ([]string, error) {
+	var out []string
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketDNsRuntime).ForEach(func(k, v []byte) error {
+			var entry map[string]any
+			c := ""
+			if err := json.Unmarshal(v, &entry); err == nil {
+				if cc, ok := entry["class"].(string); ok {
+					c = cc
+				}
+			}
+			if c == class {
+				out = append(out, string(k))
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // SeedRuntimeDNs populates the bucket from a list (for first boot from
 // EDGE_DNS env, or for EDGE_DNS_RESET=1 disaster-recovery).
 func (m *MetaStore) SeedRuntimeDNs(addrs []string) error {
