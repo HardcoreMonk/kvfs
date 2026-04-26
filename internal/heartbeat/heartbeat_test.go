@@ -26,9 +26,8 @@ func newFakeProbe() *fakeProbe {
 	}
 }
 
-func (p *fakeProbe) setStatic(addr string, err error)         { p.results[addr] = err }
-func (p *fakeProbe) enqueue(addr string, errs ...error)       { p.queues[addr] = append(p.queues[addr], errs...) }
-func (p *fakeProbe) setDelay(addr string, d time.Duration)    { p.delays[addr] = d }
+func (p *fakeProbe) setStatic(addr string, err error)   { p.results[addr] = err }
+func (p *fakeProbe) enqueue(addr string, errs ...error) { p.queues[addr] = append(p.queues[addr], errs...) }
 
 func (p *fakeProbe) Probe(ctx context.Context, addr string) (time.Duration, error) {
 	p.mu.Lock()

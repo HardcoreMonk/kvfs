@@ -83,13 +83,18 @@ func PoolStats() (int64, int64) {
 // being handed to a small request (e.g. 4 MiB fixed chunk) and pinning
 // extra memory for the request's lifetime. Slabs outside the band are
 // dropped on the floor for GC.
+//
+// Pool entries are *[]byte (pointer, not value) per the well-known
+// staticcheck SA6002 — a bare []byte triggers a slice-header alloc on
+// every Put which defeats the pool's purpose.
 func getScratch(n int) []byte {
 	for i := 0; i < 2; i++ { // try up to twice; if the first slab is wrong-sized, give the pool one more chance.
 		v := scratchPool.Get()
 		if v == nil {
 			break
 		}
-		b := v.([]byte)
+		bp := v.(*[]byte)
+		b := *bp
 		// Slab leaving the pool — debit the running total before checking fit
 		// (matches the credit on Put). If the slab doesn't fit, we drop it
 		// without re-Put, so the debit is the right book-keeping either way.
@@ -115,7 +120,8 @@ func putScratch(b []byte) {
 		return // over cap; let GC reclaim.
 	}
 	scratchPoolBytes.Add(c)
-	scratchPool.Put(b[:0]) //nolint:staticcheck // pool of slices is fine; we restore len at Get.
+	truncated := b[:0]
+	scratchPool.Put(&truncated)
 }
 
 // StreamPiece is a single chunk pulled from a streaming source.

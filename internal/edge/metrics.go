@@ -14,7 +14,6 @@
 //   - kvfs_put_total{mode}     — PUT 호출 수 (replication / ec)
 //   - kvfs_get_total{mode}     — GET 호출 수
 //   - kvfs_delete_total        — DELETE 호출 수
-//   - kvfs_chunk_errors_total  — DN write/read 실패 수
 //   - kvfs_objects             — 메타에 등록된 객체 수 (gauge, callback)
 //   - kvfs_dns_runtime         — runtime DN 등록 수 (gauge)
 //   - kvfs_wal_last_seq        — WAL 마지막 seq (gauge)
@@ -39,7 +38,6 @@ type metricsHandle struct {
 	puts         *metrics.Counter // labels: mode
 	gets         *metrics.Counter // labels: mode
 	deletes      *metrics.Counter
-	chunkErrors  *metrics.Counter // labels: op (put|get|delete)
 	walAppended  *metrics.Counter // labels: op (put_object|delete_object|...)
 	failover     *metrics.Counter // election term changes (informational)
 }
@@ -53,7 +51,6 @@ func (s *Server) SetupMetrics() {
 		puts:        reg.Counter("kvfs_put_total", "Total PUT requests", "mode"),
 		gets:        reg.Counter("kvfs_get_total", "Total GET requests", "mode"),
 		deletes:     reg.Counter("kvfs_delete_total", "Total DELETE requests"),
-		chunkErrors: reg.Counter("kvfs_chunk_errors_total", "Coordinator chunk op failures", "op"),
 		walAppended: reg.Counter("kvfs_wal_appended_total", "WAL entries appended", "op"),
 		failover:    reg.Counter("kvfs_election_term_changes_total", "Election term increments observed"),
 	}
@@ -140,8 +137,3 @@ func (s *Server) recordDelete() {
 	}
 }
 
-func (s *Server) recordChunkError(op string) {
-	if s.Metrics != nil {
-		s.Metrics.chunkErrors.WithLabels(op).Add(1)
-	}
-}
