@@ -95,15 +95,11 @@
 ### ~~[P7-09] Edge in-memory Signer propagation (URLKey 변경 사후 동기화)~~
 - **DONE 2026-04-27**: ADR-049. Polling 채택 (`EDGE_COORD_URLKEY_POLL_INTERVAL`, default 30s). `internal/edge/urlkey_sync.go` 의 `SyncURLKeys` (Add/SetPrimary/Remove diff). `Server.StartURLKeyPolling` background goroutine. 2 unit tests. 데모 demo-nun.sh (히브리 נ 14번째). Lazy 401-refresh 는 미채택 — needs 명확해질 때 ADR-050 후보.
 
-### [P7-07] coord placer + Coord embedded — dual placer 정리
-- **배경**: /simplify (2026-04-27) 발견. coord.Server 의 `Placer` 필드와 `Coord *coordinator.Coordinator` 가 각자 placement.Placer 를 가짐. boot 시 같은 노드 set 으로 동기화되고 refreshDNTopology 가 둘 다 갱신해서 정상 동작하지만, 구조적 redundancy.
-- **스펙**: Coord 가 nil 이 아니면 `s.Placer = s.Coord.placer()` (또는 Coord 가 placer accessor 노출) 로 단일 출처.
-- **우선순위**: 저우선 (현재 동작 정확).
+### ~~[P7-07] coord placer + Coord embedded — dual placer 정리~~
+- **DONE 2026-04-27**: handlePlace 가 Coord != nil 일 때 `s.Coord.PlaceN` 사용. nil 일 때만 raw Placer fallback. drift 가능성 제거.
 
-### [P7-08] CANDIDATE 상태 retry 예산
-- **배경**: /simplify (2026-04-27) 발견. coord 가 election 중 (CANDIDATE) 일 때 mutating RPC 가 503 + 빈 X-COORD-LEADER 헤더 반환. edge.CoordClient + cli 가 무한 retry 가능.
-- **스펙**: CoordClient.MaxRetries 또는 backoff. Election timeout 보다 큰 budget.
-- **우선순위**: 저우선 (운영상 거의 안 일어남, election ~5s).
+### ~~[P7-08] CANDIDATE 상태 retry 예산~~
+- **DONE 2026-04-27**: CoordClient.do() 가 503 + 빈 X-COORD-LEADER 보면 200ms backoff + retry (maxRedirects 가 cap). Election convergence (~3s) 안에 transparent 회복.
 
 ---
 
@@ -113,10 +109,8 @@
 - **위험**: stale read window. version 기반 invalidation 으로 mitigation. 짧은 TTL 이면 multi-edge 불일치 작음.
 - **우선순위**: 운영 측정 후 결정 (실측 RPC rate 가 임계 넘으면 진행).
 
-### [P6-11] up.sh / up-tls.sh → lib/cluster.sh source
-- **배경**: cluster.sh 의 start_dns / start_edge 와 up.sh 의 인라인 docker run 이 중복. /simplify 발견.
-- **스펙**: up.sh 가 `. lib/cluster.sh` + `start_dns 3` + `start_edge edge 8000`. up-tls.sh 는 TLS env 추가가 필요해서 lib 에 `start_edge_tls` 변형 또는 EDGE_TLS_* env override 패턴 확장.
-- **우선순위**: 저우선 (works fine 으로). 다음 demo 가 또 추가될 때 묶어 정리.
+### ~~[P6-11] up.sh → lib/cluster.sh source~~
+- **DONE 2026-04-27**: up.sh 가 `start_dns 3` + `start_edge edge 8000` + `wait_healthz` 사용. ~25 LOC 절약. up-tls.sh 는 TLS env 가 lib 의 surface 를 확장시켜서 그대로 보존 (별도 작업).
 
 ### [P6-08] scripts/lib/cluster.sh 추출
 - **배경**: demo-bet/gimel/dalet 의 docker-build + DN-spawn boilerplate (~50줄) 가 반복. 기존 `scripts/lib/common.sh` 는 sign_url 만 제공. /simplify 가 발견.

@@ -199,10 +199,19 @@ func (s *Server) handlePlace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("key and n>0 required"))
 		return
 	}
-	nodes := s.Placer.Pick(req.Key, req.N)
-	addrs := make([]string, 0, len(nodes))
-	for _, n := range nodes {
-		addrs = append(addrs, n.Addr)
+	// P7-07 cleanup: when Coord is wired (DN-IO mode), route through it
+	// so PlaceN / PlaceChunk all see the same placer instance (apply
+	// uses Coord; plan uses this). Two parallel placers used to drift
+	// silently after refresh — single source of truth.
+	var addrs []string
+	if s.Coord != nil {
+		addrs = s.Coord.PlaceN(req.Key, req.N)
+	} else {
+		nodes := s.Placer.Pick(req.Key, req.N)
+		addrs = make([]string, 0, len(nodes))
+		for _, n := range nodes {
+			addrs = append(addrs, n.Addr)
+		}
 	}
 	writeJSON(w, http.StatusOK, PlaceResponse{Addrs: addrs})
 }

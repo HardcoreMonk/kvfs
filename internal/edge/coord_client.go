@@ -213,13 +213,29 @@ func (c *CoordClient) do(ctx context.Context, method, path string, body []byte) 
 		// HA leader-redirect protocol (ADR-038): 503 + X-COORD-LEADER means
 		// "I'm not the leader; here's who is." Update baseURL so subsequent
 		// calls go straight to the new leader (cheap fast-path) and retry.
+		//
+		// P7-08: 503 with NO header means election in progress (CANDIDATE
+		// state, no leader yet). Bounded sleep + retry once so cli /
+		// edge handlers don't error out during the brief window. The
+		// outer loop's maxRedirects bound caps total retries; this just
+		// inserts a backoff before the next attempt.
 		if resp.StatusCode == http.StatusServiceUnavailable {
-			if leader := resp.Header.Get(coord.HeaderCoordLeader); leader != "" && leader != target {
-				_ = resp.Body.Close()
+			leader := resp.Header.Get(coord.HeaderCoordLeader)
+			_ = resp.Body.Close()
+			if leader != "" && leader != target {
 				c.mu.Lock()
 				c.baseURL = leader
 				c.mu.Unlock()
 				target = leader
+				continue
+			}
+			if leader == "" && attempt < maxRedirects {
+				// CANDIDATE state — typical election ~1-3s, sleep 200ms then retry.
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(200 * time.Millisecond):
+				}
 				continue
 			}
 		}
