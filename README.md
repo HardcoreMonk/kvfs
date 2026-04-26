@@ -13,7 +13,8 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **1** | MVP | ✅ closed | 2-daemon · 3-way replication · UrlKey · CA chunk |
 | **2** | 분산 알고리즘 | ✅ closed | HRW placement · rebalance · GC · chunking · EC |
 | **3** | 운영성 | ✅ closed | auto-trigger · EC repair · meta backup · heartbeat · multi-edge HA |
-| **4** | 성능·효율 | ▶ Ep.4 (WAL) | streaming · CDC chunking · WAL · auto leader election |
+| **4** | 성능·효율 | ✅ closed | streaming · CDC · WAL · election · sync repl · transactional Raft · micro-opts |
+| **5** | coord 분리 | ▶ Ep.1 (skeleton) | ADR-015. coord daemon 분리 — ADR-002 supersede |
 
 이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 목표는 production 이 아니라
 **이해 가능한 레퍼런스**.

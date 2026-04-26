@@ -11,8 +11,9 @@
 - **P2**: 리뷰·개선 권고 — 현재 **0건** (P2-01~09 모두 완료)
 - **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02, OTel 도입 여부)
 - **P5**: post-Season-4 wave 후속 — 현재 **1건** (P5-09 잔여 블로그). P5-01~06 모두 완료
+- **P6**: Season 5 (coord 분리) — 현재 **1건** (P6-01 Ep.1 skeleton)
 
-> ※ P4-* 는 모두 완료. 새 항목은 P5-* 부터.
+> ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
 ---
 
@@ -27,10 +28,8 @@
 
 ## P3 — 사용자 결정
 
-### [P3-02] OTel 통합 여부
-- **현황**: Prometheus `/metrics` 는 P4-09 wave 에서 도입 완료 (ADR-035 미시 옵트 묶음의 일부). 옵션 A (slog + /metrics) 는 사실상 채택됨
-- **남은 결정**: 옵션 B (OTel SDK 풀 통합 — traces·metrics·logs) 갈지 여부
-- **추천**: 현재로 충분하면 close. trace 수집·여러 backend 호환이 필요해질 때 재오픈
+### ~~[P3-02] OTel 통합 여부~~
+- **CLOSED 2026-04-26**: 옵션 A (slog + Prometheus `/metrics`) 채택 확정. OTel 풀 통합은 trace 수집 needs 가 명확해질 때까지 무기한 deferred. 운영 관찰성은 Prometheus + ADR-036 의 WAL gauges + ADR-037 의 pool gauge + 기존 slog 구조화 로그로 충분.
 
 ---
 
@@ -48,11 +47,8 @@
 - **연결**: `getScratch`/`putScratch`. 측정용 카운터 (P5-01 과 묶어 처리 가능)
 - **출처**: ADR-035 본문 "후속" 섹션
 
-### [P5-03] ADR-015 — Coordinator daemon 분리
-- **배경**: 현재 coordinator 는 edge 인라인. 단일 edge 의 single-writer (bbolt) 가 메타 mutation throughput 의 천장
-- **스펙**: ADR-002 supersede. coordinator 가 별도 daemon 으로 떨어져 placement/quorum 책임 전담, edge 는 게이트웨이만
-- **트레이드오프**: 운영 복잡도 ↑ (3종 daemon), HA scope 확장
-- **결정 필요**: Season 5 진입 트리거로 채택할지 여부
+### ~~[P5-03] ADR-015 — Coordinator daemon 분리~~
+- **ACCEPTED 2026-04-26**: ADR-015 Proposed → Accepted. ADR-002 supersede. **Season 5 진입**. 후속 작업은 P6-* 시리즈로 이전.
 
 ### [P5-04] Hot/Cold rebalance 통합
 - **배경**: P4-09 wave 의 hot/cold tier 는 신규 PUT 만 hot 으로 bias. 기존 cold 데이터의 hot→cold 자동 migration 미구현
@@ -63,6 +59,24 @@
 - **배경**: `EDGE_WAL_BATCH_INTERVAL=5ms` + `EDGE_TRANSACTIONAL_RAFT=1` 동시 활성 시 동작 미검증
 - **위험**: transactional Raft 는 `MarshalPutObjectEntry` 로 entry 미리 push 한 뒤 quorum 받으면 commit. group commit 이 그 commit 을 batch 로 묶으면 quorum-then-batch 순서가 어긋날 가능성
 - **스펙**: integration test — 두 옵션 동시 활성으로 PUT × N concurrent → bbolt + 모든 follower bbolt 일치 검증
+
+---
+
+## P6 — Season 5 (coord 분리)
+
+### [P6-01] Season 5 Ep.1 — kvfs-coord skeleton
+- **현황**: ADR-015 Accepted (P5-03). Implementation in progress.
+- **스코프**: `cmd/kvfs-coord/main.go` + `internal/coord/` package + edge → coord HTTP client. backward compat: `EDGE_COORD_URL` 미설정 시 인라인 (현재 동작 유지).
+- **첫 RPC 두 개**: `POST /v1/coord/place`, `POST /v1/coord/commit`. 이후 episode 들이 이 RPC 위에 build.
+- **Demo**: `scripts/demo-aleph.sh` (Hebrew 첫 letter — Greek alpha-omega 소진)
+
+### [P6-02 ~ P6-05] Season 5 후속 episodes
+- Ep.2: coord 자체의 Raft (peer set, election 재사용)
+- Ep.3: coord daemon 간 메타 sync (WAL replication 재사용)
+- Ep.4: edge 의 placement 코드 완전 제거
+- Ep.5: kvfs-cli 가 coord 직접 admin
+
+---
 
 ### [P5-09] 블로그 episode 23~28 (P4-09 wave + ADR-035 잔여)
 - **출처**: P5-06 마무리 시 잔여로 신규 등록

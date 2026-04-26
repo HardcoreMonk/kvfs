@@ -88,14 +88,16 @@ Accepted · YYYY-MM-DD
 | [036](ADR-036-wal-batch-metrics.md) | WAL group commit observability (batch_size + durable_lag gauges) | Accepted · 2026-04-26 | `WAL.LastBatchSize` / `OldestUnsyncedAge` + `internal/edge/metrics.go` |
 | [037](ADR-037-chunker-pool-cap.md) | Chunker scratch-pool soft cap (memory pressure 대응) | Accepted · 2026-04-26 | `chunker.SetPoolCap` + `EDGE_CHUNKER_POOL_CAP_BYTES` |
 
-## Proposed (대기 중)
+## Season 5 — coord 분리 (in progress, Ep.1~)
 
-| # | 제목 | 상태 | 결정 트리거 |
+| # | 제목 | 상태 | 연결 · demo |
 |---|---|---|---|
-| [015](ADR-015-coordinator-daemon-split.md) | Coordinator daemon 분리 (ADR-002 supersede 후보) | **Proposed** · 2026-04-26 | 사용자 Accept + Season 5 진입 |
+| [015](ADR-015-coordinator-daemon-split.md) | Coordinator daemon 분리 (ADR-002 **supersede**) | Accepted · 2026-04-26 | `cmd/kvfs-coord/` + `internal/coord/` · demo-aleph (Ep.1) |
+
+> Greek alpha-omega 가 소진됐으므로 Season 5 demos 는 Hebrew (aleph, bet, gimel ...).
 
 ## 미작성 ADR (예상)
 
-- (현재 비어있음 — ADR-015 가 가장 큰 pending decision)
+- Season 5 Ep.2~5 의 별도 ADR 필요 시 추가 (현재로 ADR-015 이 마스터 결정).
 
 작성 시점: 해당 기능 설계 직전.

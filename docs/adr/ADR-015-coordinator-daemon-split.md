@@ -1,8 +1,8 @@
 # ADR-015 — Coordinator daemon 분리 (Proposed, ADR-002 supersede 후보)
 
-상태: **Proposed** (2026-04-26) — 사용자 결정 + Season 5 진입 트리거. 채택 시 ADR-002 supersede.
+상태: **Accepted** (2026-04-26) — Season 5 진입 트리거 채택 완료. **ADR-002 supersede**.
 
-> 본 ADR 은 **결정 자체** 를 기록하기 위한 문서. Accepted 가 아닌 Proposed 상태로, 구현은 사용자가 채택을 확정한 뒤 시작.
+> Proposed 단계에서 본 ADR 본문이 결정 근거를 기록. 사용자 채택 확정으로 Season 5 (분리 트랙) 시작. 첫 episode = `cmd/kvfs-coord/` skeleton.
 
 ## 배경
 
@@ -69,10 +69,20 @@ Client ─HTTP──▶  edge × N         ─RPC▶  coord (HA, Raft) ─▶  b
 - 기존 `EDGE_*` 환경 변수 일부는 `COORD_*` 로 이전 (placement, rebalance, GC 관련). chunker/HTTP 는 edge 에 잔류.
 - 첫 마이그레이션: 단일 coord = single-edge 와 동등. 점진적 다중화.
 
-## 결정 대기
+## 시작 episode (Season 5 Ep.1)
 
-이 ADR 은 기술적 합의이지만 **시점 결정** 이 미정. 사용자 (또는 Season 5 entry trigger) 가 Accept 로 전환 시점을 정한다. 그 전까지 implementation 시작 안 함.
+`cmd/kvfs-coord/` skeleton — minimal viable separation:
+- coord daemon HTTP server (`:9000`)
+- 첫 RPC 두 개: `POST /v1/coord/place` (chunkID, n → DN list), `POST /v1/coord/commit` (ObjectMeta → ok)
+- edge 가 `EDGE_COORD_URL` 설정되면 RPC, 미설정이면 인라인 (backward compat)
+- 데모 `scripts/demo-aleph.sh` (Hebrew letters for Season 5 — Greek alpha-omega 소진)
+
+이후 episodes:
+- Ep.2 — coord 자체의 Raft (peer set, leader election 재사용)
+- Ep.3 — coord daemon 간 메타 sync (WAL replication 재사용)
+- Ep.4 — edge 의 placement 코드 완전 제거, coord 만 의사결정
+- Ep.5 — kvfs-cli 가 coord 직접 admin
 
 ---
 
-연결: [P5-03](../FOLLOWUP.md) — Season 5 진입 트리거.
+연결: [P5-03](../FOLLOWUP.md) — Accept (2026-04-26). [P6-01](../FOLLOWUP.md) — Season 5 Ep.1 시작.
