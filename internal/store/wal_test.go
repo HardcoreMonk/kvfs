@@ -266,6 +266,41 @@ func TestWALBatchedConcurrentAppends(t *testing.T) {
 	}
 }
 
+// Truncate while a batched-mode Append is parked on cond MUST NOT deadlock.
+// Pre-fix the waiter would re-park forever because durableSeq was reset to 0
+// while its target seq stayed > 0. Post-fix Truncate bumps epoch and the
+// waiter returns an error.
+func TestWALBatchedTruncateUnblocksWaiter(t *testing.T) {
+	dir := t.TempDir()
+	// Long batch interval so the Append parks before the flusher fires.
+	w, err := OpenWALWithBatch(filepath.Join(dir, "wal.log"), 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer w.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := w.Append("put_object", "x")
+		done <- err
+	}()
+	// Give the Append goroutine time to write its line and park on cond.
+	time.Sleep(50 * time.Millisecond)
+
+	if _, err := w.Truncate(); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Errorf("Append should have errored after Truncate, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Append deadlocked after Truncate")
+	}
+}
+
 // Closing a batched WAL with no in-flight appends should not hang or error.
 func TestWALBatchedCleanClose(t *testing.T) {
 	dir := t.TempDir()

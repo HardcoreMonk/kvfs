@@ -123,9 +123,6 @@ func NewCDCReader(src io.Reader, cfg CDCConfig) *CDCReader {
 	if cfg.MaskBitsLoose <= 0 {
 		cfg.MaskBitsLoose = 20
 	}
-	// MaskBitsRelax (3rd region, ADR-035 micro-opt bundle) is optional —
-	// zero means "no third region" and we fall back to the original 2-mask
-	// scheme.
 	if cfg.MaskBitsRelax < 0 {
 		cfg.MaskBitsRelax = 0
 	}

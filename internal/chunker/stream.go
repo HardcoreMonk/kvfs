@@ -47,15 +47,24 @@ import (
 // GC 가 한가할 때만 비운다. 핵심: cap(buf) 가 같아야 의미 있는 재사용이 됨.
 var scratchPool sync.Pool
 
-// getScratch retrieves a []byte with cap >= n from the pool, or allocates a
-// fresh one. Length is set to n.
+// getScratch retrieves a []byte with cap in [n, 2n] from the pool, or
+// allocates a fresh one. Length is set to n.
+//
+// The 2× upper bound prevents a large slab (e.g. 16 MiB CDC MaxSize) from
+// being handed to a small request (e.g. 4 MiB fixed chunk) and pinning
+// extra memory for the request's lifetime. Slabs outside the band are
+// dropped on the floor for GC.
 func getScratch(n int) []byte {
-	if v := scratchPool.Get(); v != nil {
+	for i := 0; i < 2; i++ { // try up to twice; if the first slab is wrong-sized, give the pool one more chance.
+		v := scratchPool.Get()
+		if v == nil {
+			break
+		}
 		b := v.([]byte)
-		if cap(b) >= n {
+		if cap(b) >= n && cap(b) <= 2*n {
 			return b[:n]
 		}
-		// Pool returned a too-small buf (different reader sized it); drop it.
+		// Wrong size band — let it fall to GC.
 	}
 	return make([]byte, n)
 }

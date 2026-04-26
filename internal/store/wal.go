@@ -92,6 +92,10 @@ type WAL struct {
 	closed        bool          // covered by mu
 	closeCh       chan struct{} // closed by Close to signal flusher exit
 	flusherDone   chan struct{} // flusher closes when it returns
+	// epoch bumps on Truncate so cond-waiters from a prior generation can
+	// detect that their seq is no longer reachable and bail instead of
+	// parking forever.
+	epoch uint64
 }
 
 // OpenWAL opens (or creates) the WAL at path with inline fsync (one fsync
@@ -148,22 +152,45 @@ func (w *WAL) flusher() {
 }
 
 // flushOnce performs one flush+fsync cycle if there's pending data.
-// Acquires w.mu so it serializes naturally with Append's write phase.
+//
+// Critical-section discipline:
+//   - Hold mu only long enough to push bufio into the kernel and snapshot
+//     `pending`. The slow part — f.Sync() — runs OUTSIDE mu so the next
+//     batch of Append calls can fill bufio in parallel with the disk fsync.
+//   - Re-acquire mu briefly to publish durableSeq + Broadcast to waiters.
+//
+// Safe because the underlying *os.File is concurrent-safe for write+sync,
+// and bufio.Writer is no longer touched during the fsync window.
 func (w *WAL) flushOnce() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	pending := w.seq.Load()
 	if pending <= w.durableSeq || w.closed {
+		w.mu.Unlock()
 		return
 	}
+	epoch := w.epoch
 	if err := w.w.Flush(); err != nil {
+		w.mu.Unlock()
 		return // leave durableSeq unchanged; next tick retries
 	}
-	if err := w.f.Sync(); err != nil {
+	f := w.f
+	w.mu.Unlock()
+
+	if err := f.Sync(); err != nil {
 		return
 	}
-	w.durableSeq = pending
-	w.cond.Broadcast()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// Drop this fsync's result if Truncate rotated the file under us — the
+	// pending seq we observed no longer means anything.
+	if w.epoch != epoch || w.closed {
+		return
+	}
+	if pending > w.durableSeq {
+		w.durableSeq = pending
+		w.cond.Broadcast()
+	}
 }
 
 // recoverLastSeq scans the existing file to find the highest seq.
@@ -219,7 +246,6 @@ func (w *WAL) Append(op string, args any) (int64, []byte, error) {
 		return 0, nil, fmt.Errorf("wal write nl: %w", err)
 	}
 	if w.batchInterval == 0 {
-		// Inline-fsync mode (default): every Append flushes + fsyncs.
 		if err := w.w.Flush(); err != nil {
 			return 0, nil, fmt.Errorf("wal flush: %w", err)
 		}
@@ -228,13 +254,18 @@ func (w *WAL) Append(op string, args any) (int64, []byte, error) {
 		}
 		return seq, line, nil
 	}
-	// Group-commit mode: wait for background flusher to advance durableSeq
-	// past our seq. cond is bound to mu, so Wait atomically releases + reacquires.
-	for w.durableSeq < seq && !w.closed {
+	// Group-commit: park until flusher fsyncs past our seq, OR Truncate
+	// bumps the epoch out from under us, OR Close fires. cond is bound to
+	// mu so Wait atomically releases + reacquires.
+	myEpoch := w.epoch
+	for w.durableSeq < seq && !w.closed && w.epoch == myEpoch {
 		w.cond.Wait()
 	}
+	if w.epoch != myEpoch {
+		return 0, nil, fmt.Errorf("wal: truncated while waiting for fsync (seq=%d)", seq)
+	}
 	if w.closed && w.durableSeq < seq {
-		return seq, nil, fmt.Errorf("wal: closed before fsync (seq=%d, durable=%d)", seq, w.durableSeq)
+		return 0, nil, fmt.Errorf("wal: closed before fsync (seq=%d, durable=%d)", seq, w.durableSeq)
 	}
 	return seq, line, nil
 }
@@ -343,6 +374,7 @@ func (w *WAL) Truncate() (int64, error) {
 	w.w = bufio.NewWriter(f)
 	w.seq.Store(0)
 	w.durableSeq = 0
+	w.epoch++
 	if w.cond != nil {
 		w.cond.Broadcast()
 	}
