@@ -34,7 +34,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/coord"
@@ -50,22 +52,32 @@ import (
 // hint exactly once per call — caller sees a single transparent retry.
 // MaxLeaderRedirects bounds that loop so a misconfigured cluster can't
 // trap us in a cycle. Default 1 (one redirect = one retry max).
+//
+// baseURL is mutated on each leader-hint follow (so subsequent calls go
+// straight to the new leader). Concurrent edge handlers share one
+// CoordClient, so the field is unexported and gated by mu — exposing it
+// would let one goroutine read it mid-update by another.
 type CoordClient struct {
-	BaseURL            string        // current target — updated when leader hint arrives
 	HTTP               *http.Client  // caller-provided; nil → defaultHTTPClient
 	Timeout            time.Duration // per-call deadline (default 10s)
 	MaxLeaderRedirects int           // 0 → uses default 1
+
+	mu      sync.RWMutex
+	baseURL string
 }
 
-// HeaderCoordLeader names the redirect header the coord uses when a follower
-// rejects a mutating RPC. Mirrors coord.HeaderCoordLeader to avoid an
-// import cycle (edge → coord would be fine but symmetry matters).
-const HeaderCoordLeader = "X-COORD-LEADER"
+// BaseURL returns the current target URL (the one that subsequent calls
+// will hit until a leader-redirect updates it). Read-only diagnostic.
+func (c *CoordClient) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
 
 // NewCoordClient builds a client with a sensible default HTTP client.
 func NewCoordClient(baseURL string) *CoordClient {
 	return &CoordClient{
-		BaseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: strings.TrimRight(baseURL, "/"),
 		HTTP:    &http.Client{Timeout: 30 * time.Second},
 		Timeout: 10 * time.Second,
 	}
@@ -155,7 +167,9 @@ func (c *CoordClient) do(ctx context.Context, method, path string, body []byte) 
 	if maxRedirects <= 0 {
 		maxRedirects = 1
 	}
-	target := c.BaseURL
+	c.mu.RLock()
+	target := c.baseURL
+	c.mu.RUnlock()
 	for attempt := 0; attempt <= maxRedirects; attempt++ {
 		var rdr io.Reader
 		if body != nil {
@@ -173,12 +187,14 @@ func (c *CoordClient) do(ctx context.Context, method, path string, body []byte) 
 			return nil, fmt.Errorf("coord-client: %s %s: %w", method, path, err)
 		}
 		// HA leader-redirect protocol (ADR-038): 503 + X-COORD-LEADER means
-		// "I'm not the leader; here's who is." Update BaseURL so subsequent
+		// "I'm not the leader; here's who is." Update baseURL so subsequent
 		// calls go straight to the new leader (cheap fast-path) and retry.
 		if resp.StatusCode == http.StatusServiceUnavailable {
-			if leader := resp.Header.Get(HeaderCoordLeader); leader != "" && leader != target {
+			if leader := resp.Header.Get(coord.HeaderCoordLeader); leader != "" && leader != target {
 				_ = resp.Body.Close()
-				c.BaseURL = leader
+				c.mu.Lock()
+				c.baseURL = leader
+				c.mu.Unlock()
 				target = leader
 				continue
 			}
@@ -196,12 +212,11 @@ func readErrBody(resp *http.Response) string {
 	return strings.TrimSpace(string(b))
 }
 
-// urlEsc keeps the bucket/key path-safe for the lookup query string. We
-// only worry about /, ?, & — full URL escaping isn't worth importing
-// net/url for one site.
-var urlReplacer = strings.NewReplacer("&", "%26", "?", "%3F", " ", "%20")
-
-func urlEsc(s string) string { return urlReplacer.Replace(s) }
+// urlEsc encodes bucket/key for use as a query-string value. Standard
+// QueryEscape — bucket and key are user-controlled and may contain `+`,
+// `%`, `#`, multibyte UTF-8 etc. that the prior 3-char allowlist
+// silently mangled.
+func urlEsc(s string) string { return url.QueryEscape(s) }
 
 // Sentinel for callers that want to detect "edge has no coord configured".
 var ErrNoCoordClient = errors.New("edge: EDGE_COORD_URL not set")

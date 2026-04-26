@@ -76,6 +76,20 @@
 ### ~~[P6-04] coord 간 메타 sync (WAL replication 재사용)~~
 - **DONE 2026-04-27**: ADR-039 작성 + 구현. coord daemon 이 `COORD_WAL_PATH` 설정 시 `store.OpenWAL` + leader-side `MetaStore.SetWALHook` (Elector.ReplicateEntry 호출) + follower-side `Elector.AppendEntryFn` (MetaStore.ApplyEntry 호출). `coord.Server.Routes()` 가 `/v1/election/append-wal` 마운트. 새 메커니즘 0 — ADR-031 follow-up (Ep.8) 의 패턴 그대로 location 만 이동. ~50 LOC + ADR + demo-dalet.sh (히브리 ד) — pre-failover write 가 새 leader 에서 200 으로 복원 (gimel 의 404 갭 메움). 146 tests PASS.
 
+### [P6-07] coord transactional commit (ADR-034 port)
+- **배경**: ADR-039 의 walHook 패턴은 best-effort. coord 가 commit 도중 leadership 잃으면 phantom write 가능 (옛 leader 의 bbolt 에만 존재, peers 에 미도달). /simplify (2026-04-27) 발견.
+- **스펙**: ADR-034 의 `MarshalPutObjectEntry → ReplicateEntry → PutObjectAfterReplicate` 를 coord 에 port. coord.handleCommit 이 transactional path 사용. `COORD_TRANSACTIONAL_RAFT=1` opt-in.
+- **참조**: ADR-039 본문 "Leader-loss-mid-write divergence" 섹션.
+
+### [P6-08] scripts/lib/cluster.sh 추출
+- **배경**: demo-bet/gimel/dalet 의 docker-build + DN-spawn boilerplate (~50줄) 가 반복. 기존 `scripts/lib/common.sh` 는 sign_url 만 제공. /simplify 가 발견.
+- **스펙**: `start_dns N`, `start_coord <name> <port> [peers]`, `start_edge <coord_url>`, `wait_healthz <url>` helpers. S5 demos + 향후 S6 demos 에서 source.
+- **부수 작업**: S5 demos 가 `lib/common.sh` 의 `sign_url` 사용 (현재는 `docker run kvfs-cli sign` 호출 — 무거움).
+
+### [P6-09] internal/{cliutil,httputil} 추출 (저우선)
+- **배경**: cmd/kvfs-{edge,coord}/main.go 의 envOr/splitCSV/fatal 중복 + internal/coord/coord.go 와 internal/edge/edge.go 의 writeJSON/writeError 중복. /simplify 발견.
+- **스펙**: 5+ 바이너리 또는 4+ HTTP 패키지 가 생기면 진행. 현재 (4 binaries / 2 HTTP packages) 는 자체 보유가 더 readable. 트리거 조건 만족 시 진행.
+
 ### [P6-05] edge 의 placement 코드 완전 제거
 - **다음 단계**: `internal/coordinator/` 의 placement 부분이 coord client wrapper 만 남음. ADR-002 기존 paragraph deprecate.
 

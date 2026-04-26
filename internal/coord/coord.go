@@ -34,7 +34,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -217,8 +216,21 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleHealthz returns liveness + (when election is configured) the
+// coord's current role and known leader URL. Demos use the role field
+// to find the current leader without a side-effecting probe write.
+//
+//	{"status":"ok"}                                        — single-coord mode
+//	{"status":"ok","role":"leader","leader_url":"..."}    — HA mode
+//	{"status":"ok","role":"follower","leader_url":"..."}
+//	{"status":"ok","role":"candidate","leader_url":""}
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	body := map[string]string{"status": "ok"}
+	if s.Elector != nil {
+		body["role"] = s.Elector.State().String()
+		body["leader_url"] = s.Elector.LeaderURL()
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -233,10 +245,3 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
-// readBody is a small helper for tests/clients that want raw bytes.
-func readBody(r *http.Request) ([]byte, error) {
-	defer r.Body.Close()
-	return io.ReadAll(r.Body)
-}
-
-var _ = readBody // currently unused; kept for the test helper to call.

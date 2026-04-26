@@ -64,6 +64,7 @@ Client → edge → CoordClient.CommitObject → leader coord
 + **메커니즘 reuse 의 가치 입증**: ADR-031 + ADR-031 follow-up 의 코드가 별 수정 없이 새 위치에서 작동 — 좋은 abstraction 의 증거.
 - **opt-in**: WAL 미설정 시 sync 안 함 (Ep.3 동작). 운영자가 명시적으로 켜야.
 - **strict 모드 미구현**: ADR-033 informational strict + ADR-034 transactional Raft 의 coord 버전이 후속 과제 (별도 ADR 또는 본 ADR 의 follow-up).
+- **Leader-loss-mid-write divergence (알려진 갭, P6-07)**: 현재 walHook 은 `wal.Append` 직후 = 즉 **bbolt commit 이 끝난 후** 호출. PutObject 호출 시점에 leader 였던 coord 가 commit 도중 leadership 잃으면, hook 안의 `IsLeader()` 체크가 false 라 push 안 됨. 결과: 옛 leader 의 bbolt + WAL 에는 entry 가 있지만 peers 에 도달 못 함 → 새 leader 가 모름 → 일종의 phantom write. ADR-034 의 transactional path (`MarshalPutObjectEntry → ReplicateEntry → PutObjectAfterReplicate`) 를 coord 에 port 하면 해결. P6-07 로 follow-up 예정 (best-effort 모드의 잘 알려진 한계 — quorum 받기 전엔 commit 안 함 패턴).
 
 ## 호환성
 

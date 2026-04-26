@@ -61,13 +61,12 @@ sleep 4
 
 # Find leader by probing each coord — leader returns 200 on commit, follower 503.
 find_leader() {
+  # /v1/coord/healthz reports {"role":"leader|follower|candidate"} when
+  # election is configured — side-effect-free probe.
   for i in 1 2 3; do
     port=$((9000 + i - 1))
-    body='{"meta":{"bucket":"_probe","key":"_","size":0,"chunks":[{"chunk_id":"x","size":0,"replicas":["dn1:8080"]}]}}'
-    code=$(curl -s -o /dev/null -w '%{http_code}' \
-      -X POST -H "Content-Type: application/json" -d "$body" \
-      "http://localhost:${port}/v1/coord/commit")
-    if [ "$code" = "200" ]; then
+    role=$(curl -fs "http://localhost:${port}/v1/coord/healthz" 2>/dev/null | jq -r .role 2>/dev/null || echo "")
+    if [ "$role" = "leader" ]; then
       echo "coord${i}:${port}"
       return 0
     fi
