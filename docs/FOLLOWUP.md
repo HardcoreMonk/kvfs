@@ -99,9 +99,13 @@
 ### ~~[P7-05] Season 6 Ep.5 — DN registry mutation on coord~~
 - **DONE 2026-04-27**: ADR-047. `/v1/coord/admin/dns` POST/DELETE + `/v1/coord/admin/dns/class` PUT. 모두 requireLeader gate. cli `dns add/remove/class --coord`. urlkey rotation 은 본 ADR 비포함 (별도 ep). 1 unit test. demo-lamed (히브리 ל).
 
-### [P7-06] coord-side URLKey rotation
-- **다음**: coord 가 urlkey.Signer 를 owner 로 가져감. 현재 (ADR-028) edge-side. cli `urlkey rotate --coord URL`. 별도 ADR.
-- **우선순위**: 중간. ADR-042/047 의 cli admin 트랙 마무리.
+### ~~[P7-06] coord-side URLKey rotation~~
+- **DONE 2026-04-27**: ADR-048. coord `/v1/coord/admin/urlkey` (list/rotate/remove). cli `urlkey --coord` 모든 subcommand 지원. `RotateURLKeyRequest` 에 `is_primary` 필드 (cli default true). 1 unit test (rotate v1 → rotate v2 demotes v1 → remove v1 → remove unknown 404). 데모 demo-mem.sh (히브리 מ). **명시적 비포함**: edge in-memory Signer 의 propagation (다음 작업 P7-09 대기).
+
+### [P7-09] Edge in-memory Signer propagation (URLKey 변경 사후 동기화)
+- **배경**: ADR-048 가 registry mutation 만 coord 로 옮김. coord-proxy 모드에서 edge 의 `urlkey.Signer` 는 boot 시 로드된 키 set 그대로 — coord 의 새 kid 는 edge 가 모름.
+- **옵션**: (a) 30s polling (b) WAL replication 에 URLKey op 추가 — follower edge auto-ApplyEntry (c) 401 시 lazy refresh + retry.
+- **결정 필요**: 운영 use case 에 따라.
 
 ### [P7-07] coord placer + Coord embedded — dual placer 정리
 - **배경**: /simplify (2026-04-27) 발견. coord.Server 의 `Placer` 필드와 `Coord *coordinator.Coordinator` 가 각자 placement.Placer 를 가짐. boot 시 같은 노드 set 으로 동기화되고 refreshDNTopology 가 둘 다 갱신해서 정상 동작하지만, 구조적 redundancy.

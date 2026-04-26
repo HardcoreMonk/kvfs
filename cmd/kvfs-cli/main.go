@@ -1016,15 +1016,20 @@ func cmdURLKey(args []string) {
 	sub := args[0]
 	fs := flag.NewFlagSet("urlkey "+sub, flag.ExitOnError)
 	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	coordURL := fs.String("coord", "", "ADR-048 (Season 6 Ep.6): route via coord directly. Edge path used otherwise.")
 	flagKid := fs.String("kid", "", "kid for rotate/remove")
 	flagSecret := fs.String("secret-hex", "", "hex-encoded secret for rotate (auto-gen if empty)")
+	flagPrimary := fs.Bool("primary", true, "rotate: mark new kid as primary (default true; --primary=false to add as secondary)")
 	fs.Parse(args[1:])
 
-	base := strings.TrimRight(*edge, "/")
 	switch sub {
 	case "list":
-		body := mustGet(base + "/v1/admin/urlkey")
-		var resp struct {
+		base, path := pickRoute(*edge, *coordURL,
+			"/v1/admin/urlkey", "/v1/coord/admin/urlkey")
+		body := mustGet(base + path)
+		// edge wraps in {kids, primary}; coord returns []URLKeyEntry raw.
+		// Try the rich shape first, fall back to flat list.
+		var rich struct {
 			Kids []struct {
 				Kid       string    `json:"kid"`
 				IsPrimary bool      `json:"is_primary"`
@@ -1032,11 +1037,28 @@ func cmdURLKey(args []string) {
 			} `json:"kids"`
 			Primary string `json:"primary"`
 		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			fail(err)
+		if err := json.Unmarshal(body, &rich); err == nil && rich.Kids != nil {
+			fmt.Printf("%d kid(s)  primary=%s\n", len(rich.Kids), rich.Primary)
+			for _, k := range rich.Kids {
+				marker := " "
+				if k.IsPrimary {
+					marker = "*"
+				}
+				fmt.Printf("  %s %-12s  created=%s\n", marker, k.Kid, k.CreatedAt.Format(time.RFC3339))
+			}
+			return
 		}
-		fmt.Printf("%d kid(s)  primary=%s\n", len(resp.Kids), resp.Primary)
-		for _, k := range resp.Kids {
+		var flat []struct {
+			Kid       string    `json:"kid"`
+			SecretHex string    `json:"secret_hex"`
+			IsPrimary bool      `json:"is_primary"`
+			CreatedAt time.Time `json:"created_at"`
+		}
+		if err := json.Unmarshal(body, &flat); err != nil {
+			fail(fmt.Errorf("decode urlkey list: %w", err))
+		}
+		fmt.Printf("%d kid(s) (via coord)\n", len(flat))
+		for _, k := range flat {
 			marker := " "
 			if k.IsPrimary {
 				marker = "*"
@@ -1057,16 +1079,20 @@ func cmdURLKey(args []string) {
 			secret = hex.EncodeToString(buf)
 			fmt.Printf("ℹ️  generated random 32-byte secret\n")
 		}
-		payload := fmt.Sprintf(`{"kid":%q,"secret_hex":%q}`, kid, secret)
-		body := mustHTTPJSON(http.MethodPost, base+"/v1/admin/urlkey/rotate", payload)
-		fmt.Printf("✅ rotated; primary=%s\n", kid)
+		base, path := pickRoute(*edge, *coordURL,
+			"/v1/admin/urlkey/rotate", "/v1/coord/admin/urlkey/rotate")
+		payload := fmt.Sprintf(`{"kid":%q,"secret_hex":%q,"is_primary":%t}`, kid, secret, *flagPrimary)
+		body := mustHTTPJSON(http.MethodPost, base+path, payload)
+		fmt.Printf("✅ rotated; kid=%s primary=%t\n", kid, *flagPrimary)
 		fmt.Println(string(body))
 	case "remove":
 		if *flagKid == "" {
 			fmt.Fprintln(os.Stderr, "urlkey remove: --kid required")
 			os.Exit(2)
 		}
-		body := mustHTTPJSON(http.MethodDelete, base+"/v1/admin/urlkey?kid="+*flagKid, "")
+		base, path := pickRoute(*edge, *coordURL,
+			"/v1/admin/urlkey", "/v1/coord/admin/urlkey")
+		body := mustHTTPJSON(http.MethodDelete, base+path+"?kid="+*flagKid, "")
 		fmt.Printf("✅ removed kid=%s\n", *flagKid)
 		fmt.Println(string(body))
 	default:

@@ -108,6 +108,7 @@ Accepted · YYYY-MM-DD
 | [045](ADR-045-coord-gc.md) | GC plan + apply on coord | Accepted · 2026-04-27 | `/v1/coord/admin/gc/{plan,apply}` + cli `gc --coord` · demo-yod (Ep.3) |
 | [046](ADR-046-coord-repair.md) | EC repair on coord | Accepted · 2026-04-27 | `/v1/coord/admin/repair/{plan,apply}` + cli `repair --coord` · demo-kaf (Ep.4) |
 | [047](ADR-047-coord-dns-admin.md) | DN registry mutation on coord (add/remove/class) | Accepted · 2026-04-27 | `/v1/coord/admin/dns{,/class}` (POST/DELETE/PUT) + cli `dns --coord` · demo-lamed (Ep.5) |
+| [048](ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord (rotate/list/remove) | Accepted · 2026-04-27 | `/v1/coord/admin/urlkey{,/rotate}` + cli `urlkey --coord` · demo-mem (Ep.6) |
 
 > Hebrew letters continue (chet = ח, 8th letter).
 

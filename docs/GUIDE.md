@@ -590,7 +590,8 @@ Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을
 - Ep.2: rebalance apply on coord (ADR-044). `COORD_DN_IO=1` → coord 가 DN HTTP I/O 보유. cli `rebalance --apply --coord`. 데모 demo-tet (ט).
 - Ep.3: GC plan + apply on coord (ADR-045). `/v1/coord/admin/gc/{plan,apply}`. cli `gc --coord`. 데모 demo-yod (י).
 - Ep.4: EC repair on coord (ADR-046). K survivors → RS Reconstruct → 누락 shard 재배포. cli `repair --coord`. 데모 demo-kaf (כ).
-- Ep.5 (현재): DN registry mutation on coord (ADR-047). add/remove/class. cli `dns --coord {add|remove|class}`. urlkey rotation 은 후속 ep. 데모 demo-lamed (히브리 ל).
+- Ep.5: DN registry mutation on coord (ADR-047). add/remove/class. cli `dns --coord {add|remove|class}`. 데모 demo-lamed (ל).
+- Ep.6 (현재): URLKey kid registry on coord (ADR-048). list/rotate/remove. cli `urlkey --coord`. **edge 의 in-memory Signer propagation 은 후속 작업** (P7-09 대기). 데모 demo-mem (히브리 מ).
 
 ## 13. 다음에 읽을 것
 

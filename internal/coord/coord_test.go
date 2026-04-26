@@ -408,6 +408,84 @@ func TestAdminMutateDNRegistry(t *testing.T) {
 	}
 }
 
+// ADR-048 (Season 6 Ep.6): URLKey rotation on coord. Round-trip the
+// rotate/list/remove endpoints. Verifies primary-flag handling (a fresh
+// rotate should clear the previous primary) and the not-found delete
+// path returns ErrNotFound (404).
+func TestAdminURLKeyRotateListRemove(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	srv := &Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}})}
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+
+	// rotate v1 (primary)
+	body, _ := json.Marshal(RotateURLKeyRequest{Kid: "v1", SecretHex: "deadbeef00", IsPrimary: true})
+	resp, err := http.Post(hs.URL+"/v1/coord/admin/urlkey/rotate", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("rotate v1: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("rotate v1 status %d", resp.StatusCode)
+	}
+
+	// rotate v2 (primary) — store should clear v1's primary flag
+	body, _ = json.Marshal(RotateURLKeyRequest{Kid: "v2", SecretHex: "feedface00", IsPrimary: true})
+	resp, err = http.Post(hs.URL+"/v1/coord/admin/urlkey/rotate", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("rotate v2: %v", err)
+	}
+	resp.Body.Close()
+
+	// list — should show 2 kids, only v2 primary
+	resp, _ = http.Get(hs.URL + "/v1/coord/admin/urlkey")
+	var keys []store.URLKeyEntry
+	if err := json.NewDecoder(resp.Body).Decode(&keys); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	resp.Body.Close()
+	if len(keys) != 2 {
+		t.Fatalf("list = %d kids, want 2", len(keys))
+	}
+	primaries := 0
+	for _, k := range keys {
+		if k.IsPrimary {
+			primaries++
+		}
+	}
+	if primaries != 1 {
+		t.Errorf("primaries = %d, want exactly 1", primaries)
+	}
+
+	// remove v1 (was primary, now secondary)
+	req, _ := http.NewRequest(http.MethodDelete, hs.URL+"/v1/coord/admin/urlkey?kid=v1", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("remove v1: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("remove v1 status %d", resp.StatusCode)
+	}
+
+	// remove unknown kid → 404
+	req, _ = http.NewRequest(http.MethodDelete, hs.URL+"/v1/coord/admin/urlkey?kid=v99", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("remove v99: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Errorf("remove unknown kid status %d, want 404", resp.StatusCode)
+	}
+}
+
 // /simplify regression: dns add MUST refresh the in-memory Placer (and
 // Coord.UpdateNodes when wired). Without this fix, all subsequent
 // placement decisions used the boot-time DN set forever — adding a
