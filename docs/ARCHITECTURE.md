@@ -1,6 +1,6 @@
 # kvfs 아키텍처
 
-> Season 1 MVP → Season 2 (분산 알고리즘) → Season 3 (운영성) 까지 누적 설계.
+> 짧은 reference. 처음 읽는다면 [`GUIDE.md`](GUIDE.md) (또는 [`guide.html`](guide.html)) 의 walkthrough 부터.
 > 각 결정의 상세 근거는 `docs/adr/`. 환경변수 전체는 `../README.md` § "환경 변수".
 
 ## 한 장 요약

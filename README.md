@@ -49,7 +49,8 @@ cd kvfs
                             └─ bbolt meta (object → chunk[s] / shards)
 ```
 
-상세: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- 처음 읽기: [`docs/GUIDE.md`](docs/GUIDE.md) (또는 브라우저용 [`docs/guide.html`](docs/guide.html)) — 13개 챕터 walkthrough
+- 짧은 reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 ## 설계 결정 (ADR 전문)
 

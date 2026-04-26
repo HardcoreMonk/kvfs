@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kvfs 아키텍처 가이드</title>
+<style>
+:root {
+  --fg: #1a1a1a;
+  --fg-muted: #555;
+  --bg: #fafaf7;
+  --bg-code: #f0eee5;
+  --bg-pre: #2b2b2b;
+  --fg-pre: #e8e8e0;
+  --accent: #b3541e;
+  --accent-soft: #e8d5c2;
+  --rule: #d8d3c4;
+  --link: #8a3712;
+  --table-stripe: #f3f0e6;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font: 16px/1.7 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", system-ui, "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+.layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  max-width: 1180px;
+  margin: 0 auto;
+  gap: 40px;
+  padding: 32px 24px 80px;
+}
+nav.toc {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  font-size: 14px;
+  border-left: 2px solid var(--rule);
+  padding: 4px 0 4px 14px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+nav.toc h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+nav.toc ol {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: toc;
+}
+nav.toc li {
+  counter-increment: toc;
+  margin: 2px 0;
+}
+nav.toc li::before {
+  content: counter(toc) ". ";
+  color: var(--fg-muted);
+  margin-right: 4px;
+}
+nav.toc a {
+  color: var(--fg);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+nav.toc a:hover { border-bottom-color: var(--accent); }
+
+main { min-width: 0; }
+
+h1 {
+  font-size: 32px;
+  margin: 0 0 4px;
+  letter-spacing: -0.02em;
+}
+.subtitle {
+  color: var(--fg-muted);
+  font-style: italic;
+  margin: 0 0 32px;
+  border-left: 3px solid var(--accent);
+  padding-left: 14px;
+}
+h2 {
+  font-size: 26px;
+  margin: 56px 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+  letter-spacing: -0.01em;
+  scroll-margin-top: 24px;
+}
+h2 .num {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  margin-right: 10px;
+}
+h3 {
+  font-size: 19px;
+  margin: 32px 0 10px;
+}
+h4 {
+  font-size: 16px;
+  margin: 24px 0 8px;
+  color: var(--fg-muted);
+}
+p { margin: 12px 0; }
+strong { color: var(--accent); font-weight: 700; }
+em { color: var(--fg-muted); }
+a { color: var(--link); }
+code {
+  font: 14px/1.5 "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  background: var(--bg-code);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+pre {
+  background: var(--bg-pre);
+  color: var(--fg-pre);
+  padding: 16px 18px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font: 13px/1.55 "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+blockquote {
+  margin: 16px 0;
+  padding: 12px 18px;
+  background: var(--accent-soft);
+  border-left: 4px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  color: var(--fg);
+}
+blockquote p:first-child { margin-top: 0; }
+blockquote p:last-child { margin-bottom: 0; }
+hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 48px 0;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+  font-size: 14px;
+}
+th, td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+th {
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+tr:nth-child(even) td { background: var(--table-stripe); }
+
+.mermaid {
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 16px 0;
+  text-align: center;
+  overflow-x: auto;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-right: 6px;
+}
+
+@media (max-width: 800px) {
+  .layout { grid-template-columns: 1fr; gap: 0; }
+  nav.toc {
+    position: static;
+    max-height: none;
+    margin-bottom: 32px;
+    border-left: none;
+    border-top: 2px solid var(--rule);
+    padding: 16px 0 0;
+  }
+}
+
+@media print {
+  nav.toc { display: none; }
+  .layout { grid-template-columns: 1fr; }
+  pre { white-space: pre-wrap; }
+  body { background: white; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <h2>목차</h2>
+  <ol>
+    <li><a href="#s0">누구를 위한가</a></li>
+    <li><a href="#s1">한 장 요약</a></li>
+    <li><a href="#s2">기본 구조</a></li>
+    <li><a href="#s3">핵심 컨셉 5개</a></li>
+    <li><a href="#s4">객체 라이프사이클</a></li>
+    <li><a href="#s5">알고리즘 깊이</a></li>
+    <li><a href="#s6">운영성 (S3)</a></li>
+    <li><a href="#s7">HA 와 일관성</a></li>
+    <li><a href="#s8">성능·효율 (S4)</a></li>
+    <li><a href="#s9">데이터 모델</a></li>
+    <li><a href="#s10">환경 변수</a></li>
+    <li><a href="#s11">모드 선택 가이드</a></li>
+    <li><a href="#s12">한계와 비목표</a></li>
+    <li><a href="#s13">다음에 읽을 것</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<h1>kvfs 아키텍처 가이드</h1>
+<p class="subtitle">분산 object storage 가 <strong>작동하는 원리</strong>를 따라가는 가이드. 짧은 reference 가 필요하면 <a href="ARCHITECTURE.html">ARCHITECTURE.md</a> — 이 문서는 <strong>읽으며 따라가는 walkthrough</strong>.</p>
+
+<h2 id="s0"><span class="num">0</span>누구를 위한 문서인가</h2>
+<ul>
+  <li>분산 storage 가 어떻게 만들어지는지 <strong>코드를 읽으며</strong> 이해하고 싶은 개발자</li>
+  <li>Ceph · MinIO · S3 의 동작을 작은 모델로 <strong>재현</strong>해보고 싶은 학생</li>
+  <li>오너십·일관성·운영성의 트레이드오프를 <strong>체감</strong>하고 싶은 SRE</li>
+</ul>
+<p>전제 지식: HTTP, hash 함수, goroutine, <code>bbolt</code>/SQLite 같은 KV 저장소가 무엇인지.<br>
+필요 없는 것: Ceph CRUSH, Raft 논문 정독, Reed-Solomon 수학.</p>
+
+<h2 id="s1"><span class="num">1</span>한 장 요약</h2>
+
+<div class="mermaid">
+flowchart LR
+  C[Client] -->|HTTP + UrlKey| E[kvfs-edge<br/>×1 또는 N]
+  E -->|HTTP REST| D1[(kvfs-dn 1)]
+  E -->|HTTP REST| D2[(kvfs-dn 2)]
+  E -->|HTTP REST| D3[(kvfs-dn 3)]
+  E -->|HTTP REST| Dn[(kvfs-dn N)]
+  E -.metadata.-> M[(bbolt<br/>objects · dns · keys)]
+  E -.optional.-> W[(WAL)]
+  E -.optional.-> S[(snapshot dir)]
+</div>
+
+<ul>
+  <li><strong>2 종류의 daemon</strong>: <code>kvfs-edge</code> (게이트웨이 + 인라인 coordinator) · <code>kvfs-dn</code> (스토리지 노드).</li>
+  <li><strong>객체 모델</strong>: replication (default 3-way) <strong>또는</strong> Reed-Solomon EC — <code>X-KVFS-EC: K+M</code> 헤더로 PUT 마다 선택.</li>
+  <li><strong>메타데이터</strong>: <code>bbolt</code> 단일 파일. <code>objects</code> 버킷이 single source of truth.</li>
+  <li><strong>HA</strong>: 멀티 edge — primary 1 + read-replica N (snapshot pull) 또는 Raft-style auto-elected leader.</li>
+  <li><strong>운영성</strong>: edge 가 자기 cluster 의 정렬·청소·복구·snapshot·heartbeat 를 <strong>스스로</strong> 한다.</li>
+</ul>
+
+<h2 id="s2"><span class="num">2</span>기본 구조</h2>
+
+<h3>kvfs-edge — 게이트웨이</h3>
+<ul>
+  <li>포트: <code>:8000</code> (HTTP 또는 HTTPS, ADR-029).</li>
+  <li>역할: 클라이언트 요청 받음 → URL 서명 검증 → chunker/EC 처리 → placement → DN fanout → 메타 저장.</li>
+  <li>상태 파일: <code>&lt;EDGE_DATA_DIR&gt;/edge.db</code> (bbolt) + 선택적 <code>&lt;EDGE_SNAPSHOT_DIR&gt;/</code> + 선택적 WAL 파일.</li>
+  <li>외부 의존: DN 들. 그 외 0 (no etcd, no zookeeper, no DB).</li>
+</ul>
+
+<h3>kvfs-dn — 스토리지 노드</h3>
+<ul>
+  <li>포트: <code>:8080</code> (HTTP 또는 HTTPS).</li>
+  <li>역할: chunk 단위 PUT/GET/DELETE. 한 chunk = 한 파일.</li>
+  <li>상태 파일 경로: <code>&lt;DN_DATA_DIR&gt;/chunks/&lt;sha256[0:2]&gt;/&lt;rest-of-sha&gt;</code>. 첫 2자리 prefix 로 디렉토리 분산.</li>
+  <li>외부 의존: 0. DN 끼리 서로 모름.</li>
+</ul>
+
+<h3>데이터 비대칭</h3>
+<blockquote>
+<p><strong>edge 가 똑똑하고, dn 은 멍청하다.</strong> dn 은 자기가 어느 object 의 일부인지 모르고, 어느 DN 들과 한 stripe 인지도 모른다. 모든 의사결정은 edge 가 한다.</p>
+</blockquote>
+<p>이 비대칭이 kvfs 단순함의 핵심이다. dn 이 "self-organizing" 이 아니라, edge 가 placement 알고리즘으로 <strong>결정</strong> 하고 dn 은 byte container 일 뿐.</p>
+
+<h2 id="s3"><span class="num">3</span>핵심 컨셉 5개</h2>
+
+<h3>3.1 Content-addressable chunk <span class="tag">ADR-005</span></h3>
+<pre><code>chunk_id = hex(sha256(chunk_bytes))</code></pre>
+<ul>
+  <li>chunk 의 <strong>내용</strong> 이 곧 <strong>주소</strong>. 같은 byte 는 어디서 나와도 같은 chunk_id.</li>
+  <li><strong>무료 dedup</strong>: 두 객체가 같은 chunk 를 공유하면 disk 위에 하나만 존재.</li>
+  <li><strong>무료 integrity</strong>: GET 시 sha256 다시 계산해서 ID 와 비교 (<code>chunker.Join</code>).</li>
+  <li>DN 은 ID → byte 를 저장만 한다. ID 가 어떻게 생겼는지 모른다.</li>
+</ul>
+
+<h3>3.2 Rendezvous Hashing (HRW) <span class="tag">ADR-009</span></h3>
+<blockquote><p>같은 chunk 는 항상 <strong>같은 DN 3개</strong> 에 가야 한다 (재현 가능 + 메타 절약). DN 이 추가/제거되어도 <strong>대부분의 chunk 는 그 자리</strong> (consistent).</p></blockquote>
+<p>알고리즘:</p>
+<pre><code>for each DN:
+  score = hash(chunk_id || "|" || dn_id)
+choose top R by score</code></pre>
+<ul>
+  <li>N 개 DN 중 어느 R 개로 갈지 — 어디서나 동일한 결정.</li>
+  <li>DN N → N+1 시 평균 R/(N+1) chunk 만 이동.</li>
+  <li>Cassandra/DynamoDB 의 ring 기반 일관성 해싱과 같은 목표, 다른 알고리즘. 코드 ~30 줄.</li>
+</ul>
+
+<h3>3.3 Reed-Solomon Erasure Coding <span class="tag">ADR-008</span></h3>
+<pre><code>K data shards + M parity shards = K+M 개 shards 가 stripe 하나</code></pre>
+<ul>
+  <li>디스크 사용량: replication 3× → EC (10+4) 1.4×. 같은 내구도, <strong>2배 효율</strong>.</li>
+  <li>어떤 K 개 shards 만 살아있어도 원본 복구 가능 (Reconstruct).</li>
+  <li>GF(2^8) 위에서 Vandermonde 행렬 + Gauss-Jordan 으로 from-scratch 구현.</li>
+  <li>per-PUT 옵션: <code>X-KVFS-EC: 4+2</code> 헤더 있으면 EC, 없으면 replication.</li>
+</ul>
+
+<h3>3.4 Content-defined Chunking (FastCDC) <span class="tag">ADR-018</span></h3>
+<blockquote><p>고정 4 MiB 로 자르면 1 byte 만 끼워넣어도 모든 chunk_id 가 달라져 dedup 0%. CDC 는 chunk 경계를 <strong>content</strong> 로 결정해서 shift 에 강하다.</p></blockquote>
+<pre><code>fp = 0
+for each byte b in stream:
+  fp = (fp &lt;&lt; 1) + GearTable[b]
+  if fp &amp; mask == 0:  cut here.</code></pre>
+<ul>
+  <li>rolling hash → 같은 32-byte window 가 들어오면 같은 fp → 같은 cut.</li>
+  <li>99% 동일 + 1% 달라진 두 객체가 ~99% chunk 를 공유 (Borg/Restic 핵심 기법).</li>
+  <li>옵션: <code>EDGE_CHUNK_MODE=cdc</code>. 기본은 fixed (Season 2 호환).</li>
+</ul>
+
+<h3>3.5 HMAC Presigned URL <span class="tag">ADR-007</span></h3>
+<pre><code>signature = hex(HMAC-SHA256(secret, "GET\nbucket/key\nexpiry"))
+URL: /v1/o/bucket/key?sig=&lt;hex&gt;&amp;exp=&lt;unix-ts&gt;</code></pre>
+<ul>
+  <li>서명 1번 발급 → 만료까지 Client 가 직접 GET, edge 로 매번 인증 안 옴.</li>
+  <li>S3 presigned URL 과 같은 패턴. ~90 줄 코드.</li>
+  <li><code>kid</code> 회전 (ADR-028) 으로 키 노출 시 무중단 교체.</li>
+</ul>
+
+<h2 id="s4"><span class="num">4</span>객체 라이프사이클</h2>
+
+<h3>4.1 PUT (replication, default)</h3>
+<div class="mermaid">
+sequenceDiagram
+  participant C as Client
+  participant E as edge
+  participant D as DN ×R
+  participant B as bbolt
+  C->>E: PUT /v1/o/b/k?sig=...
+  E->>E: verify HMAC
+  E->>E: chunker.Split(body) → chunks
+  loop 각 chunk
+    E->>E: id = sha256(chunk)
+    E->>E: targets = HRW.Pick(id, R)
+    E->>D: parallel PUT (×R)
+    D-->>E: ack
+    Note over E,D: R/2+1 ack 시 success
+  end
+  E->>B: objects[b/k] = ObjectMeta
+  E-->>C: 201 Created
+</div>
+<p>핵심:</p>
+<ul>
+  <li><strong>Quorum</strong>: R=3 일 때 2 ack 시 성공. 3번째는 background.</li>
+  <li><strong>Streaming</strong> (ADR-017): body 를 메모리에 다 안 받고 <code>chunker.Reader</code> 로 한 chunk 씩 읽고 보내고 버린다 → edge RAM = chunkSize 와 무관.</li>
+</ul>
+
+<h3>4.2 PUT (EC) <span class="tag">ADR-008</span></h3>
+<div class="mermaid">
+sequenceDiagram
+  participant C as Client
+  participant E as edge
+  participant D as DN ×(K+M)
+  C->>E: PUT ... + X-KVFS-EC: K+M
+  loop 각 stripe
+    E->>E: split → K data shards
+    E->>E: RS Encode → +M parity
+    E->>E: HRW.PlaceN(stripe_id, K+M)
+    E->>D: parallel PUT K+M shards
+    D-->>E: ack
+  end
+  E->>E: bbolt: ObjectMeta{EC, Stripes}
+  E-->>C: 201 Created
+</div>
+
+<h3>4.3 GET (replication / EC 공통 형태)</h3>
+<pre><code>edge: bbolt[b/k] → ObjectMeta
+  ├─ replication: for each chunk → replicas[0] 시도 → 실패시 [1] → ...
+  │              성공 byte → sha256 재계산 → ID 매치 확인 → write
+  │
+  └─ EC: for each stripe →
+         alive shards 에서 K 개 fetch (replicas[0] 우선)
+         → RS Reconstruct → data shards K 개 복원
+         → chunker.Join → write</code></pre>
+<p>GET 는 자가 치유 안 함 — 손상 chunk 발견하면 그냥 다음 replica 로 fallback. 영속 복구는 별도 worker (ADR-025 EC repair).</p>
+
+<h3>4.4 DELETE</h3>
+<pre><code>edge: bbolt[b/k] → ObjectMeta → replicas/shards DN 들에 DELETE 병렬
+      bbolt 에서 (b/k) 제거</code></pre>
+<p>이미 안 사는 chunk 가 디스크에 남으면 ⇒ surplus chunk → GC 가 청소 (ADR-012).</p>
+
+<h2 id="s5"><span class="num">5</span>알고리즘 깊이</h2>
+
+<h3>5.1 Quorum 정확히</h3>
+<ul>
+  <li>replicas R = 3 (default) → write quorum = ⌊R/2⌋+1 = 2.</li>
+  <li>2 DN 에 PUT 성공 → edge 가 200 응답 후 3번째 DN 은 best-effort.</li>
+  <li>3번째가 실패해도 데이터는 2개에 안전. rebalance worker (ADR-010) 이 나중에 R 회복.</li>
+  <li>read quorum = 1 — 한 DN 만 살아있어도 GET 성공.</li>
+</ul>
+
+<h3>5.2 Reed-Solomon 직관</h3>
+<blockquote><p>"K shards 로 K+M shards 를 만들고, 어떤 K shards 만 있어도 원본 복원."</p></blockquote>
+<ul>
+  <li>generator matrix G = [I_K | V] — 위 K×K 는 단위행렬 (=data 그대로), 아래 M×K 는 Vandermonde (=parity 계산).</li>
+  <li>shard 손실 N 개 → G 에서 그 row 들 빼고 K×K 정방행렬 G' → Gauss-Jordan 으로 G'⁻¹ 구함 → 원본 복원.</li>
+  <li>GF(2^8) = 1 byte 단위 산술. 곱셈은 log/exp 표 lookup, 덧셈은 XOR.</li>
+</ul>
+
+<h3>5.3 FastCDC 3-region scan</h3>
+<pre><code>0       MinSize        NormalSize       (Normal+Max)/2       MaxSize
+├──skip──┼──maskS──────┼──maskL─────────┼──maskR (옵션)─────┤
+        warm-up    (strict)         (loose)            (very loose)</code></pre>
+<ul>
+  <li>3 region: Min 까지 fingerprint 만 굴리고 cut 비교 안 함 → 너무 작은 chunk 방지.</li>
+  <li>Normal 까지 strict mask → 평균 길이가 NormalSize 근처로 모임.</li>
+  <li>그 이후 looser mask → MaxSize 도달 전 cut.</li>
+  <li>옵션 (ADR-035) 4번째 region: MaxSize 직전 더 약한 mask → MaxSize cap 빈도 ↓ → variance ↓.</li>
+</ul>
+
+<h3>5.4 HRW 의 "consistent" 증명 직관</h3>
+<p>DN N → N+1 추가 시:</p>
+<ul>
+  <li>새 DN 의 점수가 기존 top-R 안에 들어가는 chunk 만 영향 받음.</li>
+  <li>chunk 별로 점수 분포는 균등 → 새 DN 이 top-R 일 확률 = R/(N+1).</li>
+  <li>영향 받은 chunk 는 1개 이동 (가장 낮았던 기존 DN 1개 밀려남).</li>
+  <li>기댓값 이동량 = 전체 chunk × R/(N+1) — 균형점.</li>
+</ul>
+
+<h2 id="s6"><span class="num">6</span>운영성 (Season 3)</h2>
+<blockquote><p><strong>edge 가 스스로 자기 cluster 를 돌본다.</strong> 외부 cron, 외부 controller 없음.</p></blockquote>
+
+<h3>6.1 Auto-trigger <span class="tag">ADR-013</span></h3>
+<pre><code>StartAuto(ctx):
+  go ticker(EDGE_AUTO_REBALANCE_INTERVAL) → executeRebalance()
+  go ticker(EDGE_AUTO_GC_INTERVAL)        → executeGC()</code></pre>
+<p>두 ticker 가 같은 mutex 공유 → 동시 실행 금지. 수동 admin call 도 같은 mutex 으로 직렬화. Ring buffer (size 32) 에 결과 저장 → <code>/v1/admin/auto/status</code> 로 조회.</p>
+
+<h3>6.2 Rebalance worker <span class="tag">ADR-010 · ADR-024</span></h3>
+<ul>
+  <li><strong>Replicated chunk</strong>: ChunkRef.replicas 가 placement.Pick 결과와 다르면 → 누락 DN 으로 copy → 메타 업데이트 → 잉여 DN 의 chunk 는 GC 대상.</li>
+  <li><strong>EC stripe</strong> (ADR-024): set-based 비교. 현재 shard 위치 set vs 이상적 set. 차집합으로 최소 이동만.</li>
+</ul>
+
+<h3>6.3 GC <span class="tag">ADR-012</span></h3>
+<blockquote><p>surplus chunk = 메타에서 참조 안 되는데 DN 디스크에 남은 chunk.</p></blockquote>
+<p>두 안전망:</p>
+<ol>
+  <li><strong>claimed-set</strong>: edge 가 살아있는 모든 chunk_id 를 set 으로 만들어 DN 에 보냄. 거기 없으면 candidate.</li>
+  <li><strong>min-age</strong>: 그 chunk 가 disk 에 N 분 미만으로 있으면 보호 (PUT 직후 메타 commit 직전의 race 방지).</li>
+</ol>
+<p>두 조건 모두 통과한 것만 삭제.</p>
+
+<h3>6.4 EC repair <span class="tag">ADR-025</span></h3>
+<ul>
+  <li>메타에 있는 stripe 마다 alive shard 수 점검.</li>
+  <li>K 미만이면 unrecoverable, K 이상이면 → K 개 fetch → Reed-Solomon Reconstruct → 누락 shard 다시 PUT.</li>
+  <li>큐 기반: worker goroutine 이 큐에서 stripe 하나씩 처리.</li>
+</ul>
+
+<h3>6.5 Snapshot + Restore <span class="tag">ADR-014 · ADR-016</span></h3>
+<ul>
+  <li><strong>Hot snapshot</strong>: bbolt <code>tx.WriteTo</code> — read-only tx 동안 snapshot 파일에 직접 stream. 운영 중 가능.</li>
+  <li><strong>Auto scheduler</strong> (ADR-016): ticker 로 주기 snapshot, 보관 정책 (<code>EDGE_SNAPSHOT_KEEP=N</code>) 으로 가장 오래된 것부터 prune.</li>
+  <li><strong>Restore</strong>: edge 정지 → snapshot 파일을 edge.db 로 교체 → 재기동. <strong>offline-only</strong>.</li>
+</ul>
+
+<h3>6.6 WAL <span class="tag">ADR-019</span></h3>
+<ul>
+  <li>매 mutation 마다 JSON 한 줄 append → fsync.</li>
+  <li>snapshot interval 이 1h 여도 WAL pull 을 1s 로 돌리면 RPO ≈ pull interval.</li>
+  <li><strong>group commit</strong> (ADR-035): <code>EDGE_WAL_BATCH_INTERVAL=5ms</code> — 다수의 동시 Append 가 한 번의 fsync 를 공유. throughput ~15× ↑, latency 5ms ↑.</li>
+</ul>
+
+<h3>6.7 Heartbeat <span class="tag">ADR-030</span></h3>
+<pre><code>goroutine: tickerLoop(EDGE_HEARTBEAT_INTERVAL) {
+  for each DN: GET /healthz with timeout
+  consec_fails ≥ threshold ⇒ Healthy = false
+}</code></pre>
+<ul>
+  <li>pull-based — DN 은 자기가 죽었다고 알리지 않는다.</li>
+  <li><code>Healthy</code> 는 placement 결정에 직접 안 쓰임. 운영자에게 시그널.</li>
+</ul>
+
+<h3>6.8 Dynamic DN registry <span class="tag">ADR-027</span></h3>
+<ul>
+  <li>시작 시 <code>EDGE_DNS=dn1:8080,dn2:8080,...</code> 로 부트.</li>
+  <li>이후 admin <code>POST /v1/admin/dns?addr=dn4:8080</code> 로 추가, <code>DELETE</code> 로 제거.</li>
+  <li>bbolt <code>dns_runtime</code> 버킷에 영속 → edge 재시작해도 보존.</li>
+</ul>
+
+<h2 id="s7"><span class="num">7</span>HA 와 일관성</h2>
+
+<h3>7.1 Multi-edge read-replica <span class="tag">ADR-022</span></h3>
+<div class="mermaid">
+flowchart LR
+  C[Client] -->|GET| P[edge primary]
+  C -->|GET| F1[edge follower 1]
+  C -->|GET| F2[edge follower 2]
+  C -.write.-> P
+  F1 -.snapshot pull.-> P
+  F2 -.snapshot pull.-> P
+  C -.write to F1.-> X[503 + X-KVFS-Primary]
+</div>
+<ul>
+  <li>follower 의 <code>Store.Reload(path)</code> → <code>atomic.Pointer.Swap(newDB)</code> → in-flight read 무중단.</li>
+  <li>이전 DB 핸들은 background 로 close (Linux unlink-while-open 으로 inode 살아있음).</li>
+  <li>WAL auto-pull (Ep.5 follow-up): snapshot 전에 WAL since lastSeq 시도 → snapshot fallback. RPO ≤ pull interval.</li>
+</ul>
+
+<h3>7.2 Auto leader election <span class="tag">ADR-031</span></h3>
+<div class="mermaid">
+stateDiagram-v2
+  [*] --> Follower
+  Follower --> Candidate: election timeout
+  Candidate --> Leader: quorum votes
+  Candidate --> Follower: 더 높은 term 발견
+  Leader --> Follower: 더 높은 term 발견
+  Candidate --> Candidate: split vote → 새 election
+</div>
+<ul>
+  <li>Raft 의 election 부분만 차용. log replication 은 별도 (ADR-034).</li>
+  <li>HTTP RPC 2개: <code>POST /v1/election/vote</code>, <code>POST /v1/election/heartbeat</code>.</li>
+  <li><code>EDGE_PEERS=edge1:8000,edge2:8000,edge3:8000</code> 으로 활성. 기본은 single-edge.</li>
+</ul>
+
+<h3>7.3 Synchronous replication (Ep.8 follow-up)</h3>
+<ul>
+  <li>leader 가 매 WAL Append 마다 peers 에 <code>POST /v1/election/append-wal</code> push.</li>
+  <li>follower 가 즉시 <code>ApplyEntry</code> → 메타 동기화. RPO 0 (best-effort).</li>
+</ul>
+
+<h3>7.4 Transactional Raft <span class="tag">ADR-034</span></h3>
+<blockquote><p>"best-effort sync replication" 은 commit 후에 push → leader crash 시 commit 됐지만 followers 못 받은 entry 가 손실 가능.</p></blockquote>
+<p>해결:</p>
+<ol>
+  <li><code>MarshalPutObjectEntry(meta)</code> — 미리 entry serialize.</li>
+  <li><code>Elector.ReplicateEntry(body)</code> — peers 에 push, <strong>quorum ack 대기</strong>.</li>
+  <li>quorum 받으면 → <code>PutObjectAfterReplicate(meta)</code> 로 local commit.</li>
+  <li>quorum 못 받으면 → 503, local 도 commit 안 함.</li>
+</ol>
+<p><code>EDGE_TRANSACTIONAL_RAFT=1</code> 로 활성. PutObject 만 적용 (다른 mutation 은 best-effort).</p>
+
+<h3>7.5 일관성 모델 정리</h3>
+<table>
+<thead><tr><th>모드</th><th>RPO</th><th>Write 가용성</th><th>Read</th></tr></thead>
+<tbody>
+<tr><td>single edge</td><td>0 (snapshot interval 까지)</td><td>leader = self</td><td>linearizable</td></tr>
+<tr><td>multi-edge read-replica</td><td>≤ pull_interval</td><td>primary 만</td><td>follower = stale</td></tr>
+<tr><td>election + best-effort sync</td><td>0 (대부분), drift 가능</td><td>leader 1개</td><td>leader fresh, follower stale</td></tr>
+<tr><td>transactional Raft</td><td>0 (write loss 없음)</td><td>quorum 필요</td><td>leader fresh, follower quorum 후</td></tr>
+</tbody>
+</table>
+
+<h2 id="s8"><span class="num">8</span>성능·효율 (Season 4 + post-wave)</h2>
+
+<h3>8.1 Streaming PUT/GET <span class="tag">ADR-017</span></h3>
+<ul>
+  <li>1 GiB PUT 이 와도 edge RAM ≈ chunkSize (4 MiB).</li>
+  <li><code>chunker.Reader</code> / <code>CDCReader</code> 가 io.Reader 위에서 한 chunk 씩 emit.</li>
+  <li>EC 도 같은 패턴 (Ep.6): stripe 단위 pump.</li>
+</ul>
+
+<h3>8.2 CDC + EC (Ep.7 follow-up)</h3>
+<ul>
+  <li>variable-size stripe → <code>Stripe.DataLen</code> 에 실제 byte 수 기록 → GET 시 padding trim.</li>
+  <li>shift-invariant dedup + EC 효율 둘 다 얻음.</li>
+</ul>
+
+<h3>8.3 WAL group commit <span class="tag">ADR-035</span></h3>
+<ul>
+  <li><code>EDGE_WAL_BATCH_INTERVAL=5ms</code> — 동시 Append 들이 한 fsync 공유.</li>
+  <li>background flusher: <code>time.NewTicker(interval)</code> → flush + fsync → <code>cond.Broadcast</code>.</li>
+  <li>Append 측: write line under mu → <code>cond.Wait</code> → durable 확인 후 return.</li>
+  <li>mu 는 fsync 동안 release (다음 batch 가 bufio 채울 수 있게).</li>
+</ul>
+
+<h3>8.4 Hot/cold tier (ADR-035 follow-up)</h3>
+<ul>
+  <li>DN 마다 class 라벨 (<code>hot</code> / <code>cold</code>) — admin endpoint 로 등록.</li>
+  <li><code>EDGE_PLACEMENT_PREFER=hot</code> → 신규 PUT 은 hot DN 들로 우선 placement.</li>
+  <li>배치 변경 없음 — placement 알고리즘은 동일, <strong>노드 부분집합</strong> 만 바꾼다.</li>
+</ul>
+
+<h3>8.5 sync.Pool 버퍼 재사용</h3>
+<ul>
+  <li>chunker 내부 scratch buffer 를 pool 화 → 초당 수백 PUT 시 GC 압력 해소.</li>
+  <li>pool slab 의 cap 이 요청보다 2× 초과면 reject (메모리 낭비 방지).</li>
+</ul>
+
+<h3>8.6 Reed-Solomon 최적화</h3>
+<ul>
+  <li><code>mul-by-constant</code> table + 8-byte loop unrolling.</li>
+  <li>(4+2) 64KiB encode: 515 → 1174 MB/s (2.3× ↑). SIMD 없이.</li>
+</ul>
+
+<h3>8.7 Metrics (<code>/metrics</code>)</h3>
+<ul>
+  <li>Prometheus text format, stdlib only (외부 client lib 없음).</li>
+  <li>Counter / Gauge 만. Histogram 은 없음 (overkill).</li>
+  <li><code>EDGE_METRICS=1</code> (default on).</li>
+</ul>
+
+<h2 id="s9"><span class="num">9</span>데이터 모델</h2>
+
+<h3>9.1 bbolt 버킷</h3>
+<table>
+<thead><tr><th>버킷</th><th>key</th><th>value</th><th>용도</th></tr></thead>
+<tbody>
+<tr><td><code>objects</code></td><td><code>bucket/key</code></td><td>JSON <code>ObjectMeta</code></td><td>객체 메타 (single source of truth)</td></tr>
+<tr><td><code>dns_runtime</code></td><td>DN addr</td><td>JSON <code>{registered_at, class}</code></td><td>동적 DN registry + class 라벨</td></tr>
+<tr><td><code>urlkey_secrets</code></td><td><code>kid</code></td><td>JSON <code>{secret, is_primary}</code></td><td>UrlKey rotation</td></tr>
+</tbody>
+</table>
+
+<h3>9.2 ObjectMeta (replication)</h3>
+<pre><code>type ObjectMeta struct {
+    Bucket, Key  string
+    Size         int64
+    ContentType  string
+    CreatedAt    time.Time
+    Chunks       []ChunkRef    // replication mode
+    EC           *ECParams     // nil = replication; non-nil = EC
+    Stripes      []Stripe      // EC mode
+}
+
+type ChunkRef struct {
+    ChunkID  string   // hex(sha256(chunk_bytes))
+    Size     int64
+    Replicas []string // DN addrs (placement.Pick 결과)
+}</code></pre>
+
+<h3>9.3 EC stripe</h3>
+<pre><code>type ECParams struct {
+    K, M     int   // K data + M parity
+    ShardSize int  // padded shard size in bytes
+    DataSize  int64 // total raw data size (for trimming)
+}
+type Stripe struct {
+    StripeID string      // hex(sha256(K data shards concat))
+    Shards   []ChunkRef  // length K+M
+    DataLen  int64       // CDC mode: actual data length
+}</code></pre>
+
+<h3>9.4 WAL entry</h3>
+<pre><code>{"seq": 42, "ts": "2026-04-26T12:34:56Z", "op": "put_object", "args": {...ObjectMeta...}}</code></pre>
+<ul>
+  <li>4가지 op: <code>put_object</code>, <code>delete_object</code>, <code>add_runtime_dn</code>, <code>remove_runtime_dn</code>.</li>
+  <li><code>seq</code> 단조 증가, snapshot 으로 rotate (truncate + epoch bump).</li>
+</ul>
+
+<h2 id="s10"><span class="num">10</span>환경 변수 (간략)</h2>
+<blockquote><p>전체 표는 <code>README.md</code> § "환경 변수". 여기는 <strong>모드 결정에 영향</strong> 주는 것만.</p></blockquote>
+<table>
+<thead><tr><th>변수</th><th>기본</th><th>영향</th></tr></thead>
+<tbody>
+<tr><td><code>EDGE_REPLICATION_FACTOR</code></td><td>3</td><td>replication 모드의 R</td></tr>
+<tr><td><code>EDGE_CHUNK_SIZE</code></td><td>4 MiB</td><td>fixed chunk size</td></tr>
+<tr><td><code>EDGE_CHUNK_MODE</code></td><td><code>fixed</code></td><td><code>cdc</code> 로 설정 시 FastCDC 활성</td></tr>
+<tr><td><code>EDGE_WAL_PATH</code></td><td>(off)</td><td>설정 시 WAL 활성</td></tr>
+<tr><td><code>EDGE_WAL_BATCH_INTERVAL</code></td><td>(off)</td><td>설정 시 group commit 활성</td></tr>
+<tr><td><code>EDGE_PEERS</code></td><td>(off)</td><td>설정 시 leader election 활성</td></tr>
+<tr><td><code>EDGE_TRANSACTIONAL_RAFT</code></td><td>0</td><td>1 = ADR-034 commit-before-quorum</td></tr>
+<tr><td><code>EDGE_PLACEMENT_PREFER</code></td><td>(off)</td><td>DN class 라벨 bias</td></tr>
+<tr><td><code>EDGE_METRICS</code></td><td>1</td><td><code>/metrics</code> Prometheus endpoint</td></tr>
+<tr><td><code>EDGE_AUTO_REBALANCE_INTERVAL</code></td><td>(off)</td><td>auto-rebalance ticker</td></tr>
+<tr><td><code>EDGE_AUTO_GC_INTERVAL</code></td><td>(off)</td><td>auto-GC ticker</td></tr>
+<tr><td><code>EDGE_SNAPSHOT_DIR / INTERVAL / KEEP</code></td><td>(off)</td><td>auto-snapshot scheduler</td></tr>
+<tr><td><code>EDGE_HEARTBEAT_INTERVAL</code></td><td>(off)</td><td>DN heartbeat</td></tr>
+<tr><td><code>EDGE_ROLE</code></td><td><code>primary</code></td><td><code>follower</code> 면 read-only + snapshot pull</td></tr>
+</tbody>
+</table>
+
+<h2 id="s11"><span class="num">11</span>모드 선택 가이드</h2>
+
+<h3>11.1 replication vs EC</h3>
+<table>
+<thead><tr><th>기준</th><th>replication (R=3)</th><th>EC (K=4, M=2)</th></tr></thead>
+<tbody>
+<tr><td>디스크 사용량</td><td>3.0×</td><td>1.5×</td></tr>
+<tr><td>같은 내구도</td><td>DN 2개 손실 견딤</td><td>DN 2개 손실 견딤</td></tr>
+<tr><td>GET latency</td><td>replicas[0] = 1 RTT</td><td>K shards = 1 RTT (병렬)</td></tr>
+<tr><td>GET CPU</td><td>sha256 검증</td><td>RS Reconstruct (손실 시)</td></tr>
+<tr><td>PUT latency</td><td>R/2+1 ack</td><td>K+M ack (병렬)</td></tr>
+<tr><td>PUT CPU</td><td>0</td><td>encode ~1 GB/s</td></tr>
+<tr><td>dedup</td><td>per-chunk 가능</td><td>per-stripe (실용성 ↓)</td></tr>
+<tr><td><strong>언제 쓰나</strong></td><td>핫 데이터, dedup</td><td>콜드 데이터, 디스크 절약</td></tr>
+</tbody>
+</table>
+
+<h3>11.2 fixed vs CDC chunking</h3>
+<table>
+<thead><tr><th>기준</th><th>fixed</th><th>CDC</th></tr></thead>
+<tbody>
+<tr><td>chunk 경계</td><td>4 MiB offset 고정</td><td>content-driven</td></tr>
+<tr><td>dedup (수정 후)</td><td>0% (1 byte shift 시)</td><td>~99%</td></tr>
+<tr><td>chunker CPU</td><td>거의 없음</td><td>gear hash per byte</td></tr>
+<tr><td>코드 복잡도</td><td>30 줄</td><td>120 줄</td></tr>
+<tr><td><strong>언제 쓰나</strong></td><td>append-only 데이터</td><td>backup, 버전 관리</td></tr>
+</tbody>
+</table>
+
+<h3>11.3 inline fsync vs group commit</h3>
+<table>
+<thead><tr><th>기준</th><th>inline (default)</th><th>group commit (5ms)</th></tr></thead>
+<tbody>
+<tr><td>단일 PUT latency</td><td>~1 ms</td><td>~5-10 ms</td></tr>
+<tr><td>동시 PUT throughput</td><td>~480/s</td><td>~7400/s (15× ↑)</td></tr>
+<tr><td>RPO</td><td>0</td><td>≤ batch interval</td></tr>
+<tr><td>코드 위험</td><td>단순</td><td>cond/Broadcast/epoch</td></tr>
+<tr><td><strong>언제 쓰나</strong></td><td>RPO 0 필요</td><td>동시 write 많을 때</td></tr>
+</tbody>
+</table>
+
+<h3>11.4 single edge vs multi-edge HA</h3>
+<table>
+<thead><tr><th>기준</th><th>single</th><th>replica</th><th>election + sync</th><th>txn Raft</th></tr></thead>
+<tbody>
+<tr><td>HA</td><td>0</td><td>read-replica</td><td>full</td><td>full</td></tr>
+<tr><td>Write loss window</td><td>snap interval</td><td>0</td><td>very small</td><td>0</td></tr>
+<tr><td>운영 복잡도</td><td>낮음</td><td>중</td><td>중</td><td>높음</td></tr>
+<tr><td>신규 사용자</td><td>✅</td><td></td><td></td><td></td></tr>
+<tr><td>운영 트래픽</td><td></td><td>✅</td><td>✅</td><td></td></tr>
+<tr><td>금융·결제</td><td></td><td></td><td></td><td>✅</td></tr>
+</tbody>
+</table>
+
+<h2 id="s12"><span class="num">12</span>한계와 비목표</h2>
+
+<h3>12.1 한계</h3>
+<ul>
+  <li><strong>단일 edge = SPOF</strong> (multi-edge HA 안 쓸 때). 메타 손실 시 chunks 는 살아있어도 객체 list 손실.</li>
+  <li><strong>edge 메모리 = 활성 PUT 의 chunk size 합</strong>. streaming 으로 object size 와는 무관해졌지만 동시 PUT × chunk size 는 든다.</li>
+  <li><strong>bbolt single-writer</strong>. 모든 mutation 직렬화. 1 edge 가 처리할 수 있는 메타 mutation/sec 한계 (~10k 인라인, ~100k batched).</li>
+  <li><strong>DN 간 통신 없음</strong>. cross-DN replication, DN 자가 치유 불가. 모든 복구는 edge 가 주도.</li>
+  <li><strong>버킷 = 단순 prefix</strong>. ACL, 정책, lifecycle 없음.</li>
+</ul>
+
+<h3>12.2 명시적 비목표</h3>
+<ul>
+  <li><strong>production replacement</strong> for S3/MinIO/Ceph. kvfs 는 reference, 그쪽은 운영.</li>
+  <li><strong>multi-region</strong>. 단일 cluster 만.</li>
+  <li><strong>encryption at rest</strong>. dn 디스크는 평문 (운영자가 LUKS 등으로 처리).</li>
+  <li><strong>versioning, MFA delete, lifecycle policy</strong>. S3 의 그 features 들은 없음.</li>
+</ul>
+
+<h2 id="s13"><span class="num">13</span>다음에 읽을 것</h2>
+
+<h3>13.1 코드 진입점 (추천 순서)</h3>
+<ol>
+  <li><code>cmd/kvfs-edge/main.go</code> — 모든 wiring 의 출발점.</li>
+  <li><code>internal/edge/edge.go</code> — HTTP handlers (<code>handlePut</code>, <code>handleGet</code> 부터).</li>
+  <li><code>internal/coordinator/coordinator.go</code> — fanout / quorum.</li>
+  <li><code>internal/placement/placement.go</code> — HRW 30 줄.</li>
+  <li><code>internal/store/store.go</code> + <code>wal.go</code> — bbolt 래퍼 + WAL.</li>
+  <li><code>internal/reedsolomon/rs.go</code> — EC 수학.</li>
+</ol>
+
+<h3>13.2 시즌별 walkthrough — blog episode</h3>
+<ul>
+  <li>Ep.1~6 (Season 1~2): MVP 부터 EC 까지 — <code>blog/01..06</code>.</li>
+  <li>Ep.7~13 (Season 3): 운영성 7개 — <code>blog/07..13</code>.</li>
+  <li>Ep.14~17 (Season 4): 성능·효율 + Raft — <code>blog/14..17</code>.</li>
+</ul>
+
+<h3>13.3 ADR</h3>
+<p><a href="adr/README.md"><code>docs/adr/README.md</code></a> — 35 ADR, 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.</p>
+
+<h3>13.4 라이브 데모</h3>
+<p><code>./scripts/demo-*.sh</code> — α 부터 ω 까지 21개. ADR README 의 시즌 표에서 episode → 데모 매핑 확인.</p>
+
+<hr>
+
+<blockquote>
+<p><strong>이 문서는 살아있는 가이드.</strong> 새 ADR/episode 추가 시 §3·§6·§7·§8 에 한 줄 갱신.<br>
+결정의 디테일은 ADR 본문, 동작의 증명은 demo, 해석은 blog. 이 문서는 그 셋을 <strong>잇는 다리</strong>.</p>
+</blockquote>
+
+</main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'neutral',
+    themeVariables: {
+      primaryColor: '#e8d5c2',
+      primaryBorderColor: '#b3541e',
+      primaryTextColor: '#1a1a1a',
+      lineColor: '#8a3712',
+      fontFamily: '-apple-system, system-ui, sans-serif',
+      fontSize: '14px'
+    },
+    sequence: { actorMargin: 50, messageFontSize: 13 },
+    flowchart: { htmlLabels: true }
+  });
+</script>
+</body>
+</html>
