@@ -495,6 +495,8 @@ type Stripe struct {
 | `COORD_PEERS` / `COORD_SELF_URL` | (off) | Season 5 Ep.3 (ADR-038): coord-side election. 설정 시 coord 가 HA cluster 일원이 됨 |
 | `COORD_WAL_PATH` | (off) | Season 5 Ep.4 (ADR-039): coord-to-coord WAL sync 활성. peer 들 간 메타 일관성 보장 |
 | `COORD_TRANSACTIONAL_RAFT` | 0 | Season 5 Ep.5 (ADR-040): replicate-then-commit. quorum 실패 시 503 + leader bbolt 무변화 (Elector + WAL 필수) |
+| `COORD_DN_IO` | 0 | Season 6 Ep.2 (ADR-044): coord 가 chunk I/O — rebalance/gc/repair apply paths runnable on coord |
+| `EDGE_COORD_URLKEY_POLL_INTERVAL` | 30s | Season 6 Ep.7 (ADR-049): edge 가 coord 의 urlkey 변경을 polling 주기로 sync |
 
 > 운영 디테일 (election timing, DN-side TLS CA 등) 은 `README.md` § "환경 변수" 의 전체 표.
 
@@ -591,7 +593,8 @@ Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을
 - Ep.3: GC plan + apply on coord (ADR-045). `/v1/coord/admin/gc/{plan,apply}`. cli `gc --coord`. 데모 demo-yod (י).
 - Ep.4: EC repair on coord (ADR-046). K survivors → RS Reconstruct → 누락 shard 재배포. cli `repair --coord`. 데모 demo-kaf (כ).
 - Ep.5: DN registry mutation on coord (ADR-047). add/remove/class. cli `dns --coord {add|remove|class}`. 데모 demo-lamed (ל).
-- Ep.6 (현재): URLKey kid registry on coord (ADR-048). list/rotate/remove. cli `urlkey --coord`. **edge 의 in-memory Signer propagation 은 후속 작업** (P7-09 대기). 데모 demo-mem (히브리 מ).
+- Ep.6: URLKey kid registry on coord (ADR-048). cli `urlkey --coord`. 데모 demo-mem (מ).
+- Ep.7 (현재): Edge urlkey.Signer propagation from coord (ADR-049). polling (`EDGE_COORD_URLKEY_POLL_INTERVAL`, default 30s). edge 가 coord 의 새 kid 를 자동 반영. 데모 demo-nun (히브리 נ).
 
 ## 13. 다음에 읽을 것
 

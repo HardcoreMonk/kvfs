@@ -169,6 +169,18 @@ func (c *CoordClient) Healthz(ctx context.Context) error {
 	return c.call(ctx, "GET", "/v1/coord/healthz", "healthz", nil, nil, false)
 }
 
+// ListURLKeys fetches the kid registry from coord (Season 6 Ep.7,
+// ADR-049). Used by the edge poll loop to keep its in-memory
+// urlkey.Signer in sync with mutations applied via cli rotate --coord.
+func (c *CoordClient) ListURLKeys(ctx context.Context) ([]store.URLKeyEntry, error) {
+	var keys []store.URLKeyEntry
+	if err := c.call(ctx, "GET", "/v1/coord/admin/urlkey", "list-urlkey",
+		nil, &keys, false); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
 func (c *CoordClient) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	if c.Timeout > 0 {
 		var cancel context.CancelFunc

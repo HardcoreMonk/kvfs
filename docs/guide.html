@@ -697,7 +697,9 @@ type Stripe struct {
 <tr><td><code>EDGE_COORD_URL</code></td><td>(off)</td><td>Season 5 Ep.2: 설정 시 edge 가 메타 RPC 를 coord 로 위임 (proxy mode)</td></tr>
 <tr><td><code>COORD_PEERS</code> / <code>COORD_SELF_URL</code></td><td>(off)</td><td>Season 5 Ep.3 (ADR-038): coord-side election. 설정 시 coord 가 HA cluster 일원이 됨</td></tr>
 <tr><td><code>COORD_WAL_PATH</code></td><td>(off)</td><td>Season 5 Ep.4 (ADR-039): coord-to-coord WAL sync 활성. peer 들 간 메타 일관성 보장</td></tr>
-<tr><td><code>COORD_TRANSACTIONAL_RAFT</code></td><td>0</td><td>Season 5 Ep.5 (ADR-040): replicate-then-commit. quorum 실패 시 503 + leader bbolt 무변화 (Elector + WAL 필수)</td></tr>
+<tr><td><code>COORD_TRANSACTIONAL_RAFT</code></td><td>0</td><td>Season 5 Ep.5 (ADR-040): replicate-then-commit. quorum 실패 시 503 + leader bbolt 무변화</td></tr>
+<tr><td><code>COORD_DN_IO</code></td><td>0</td><td>Season 6 Ep.2 (ADR-044): coord 가 chunk I/O — rebalance/gc/repair apply on coord</td></tr>
+<tr><td><code>EDGE_COORD_URLKEY_POLL_INTERVAL</code></td><td>30s</td><td>Season 6 Ep.7 (ADR-049): edge 가 coord 의 urlkey 변경 polling sync</td></tr>
 </tbody>
 </table>
 <blockquote><p>운영 디테일 (election timing, DN-side TLS CA 등) 은 <code>README.md</code> § "환경 변수" 의 전체 표.</p></blockquote>
@@ -797,7 +799,8 @@ type Stripe struct {
   <li>Ep.3: GC on coord (ADR-045). cli <code>gc --coord</code>. 데모 demo-yod (י).</li>
   <li>Ep.4: EC repair on coord (ADR-046). K survivors → RS Reconstruct. cli <code>repair --coord</code>. 데모 demo-kaf (כ).</li>
   <li>Ep.5: DN registry mutation on coord (ADR-047). add/remove/class. cli <code>dns --coord</code>. 데모 demo-lamed (ל).</li>
-  <li>Ep.6 (현재): URLKey kid registry on coord (ADR-048). list/rotate/remove. cli <code>urlkey --coord</code>. <strong>edge in-memory Signer propagation 후속 작업</strong> (P7-09). 데모 demo-mem (히브리 מ).</li>
+  <li>Ep.6: URLKey kid registry on coord (ADR-048). cli <code>urlkey --coord</code>. 데모 demo-mem (מ).</li>
+  <li>Ep.7 (현재): Edge urlkey.Signer propagation from coord (ADR-049). polling (<code>EDGE_COORD_URLKEY_POLL_INTERVAL</code>, default 30s). edge 가 coord 의 새 kid 를 자동 반영. 데모 demo-nun (히브리 נ).</li>
 </ul>
 
 <h2 id="s13"><span class="num">13</span>다음에 읽을 것</h2>

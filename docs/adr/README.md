@@ -109,6 +109,7 @@ Accepted · YYYY-MM-DD
 | [046](ADR-046-coord-repair.md) | EC repair on coord | Accepted · 2026-04-27 | `/v1/coord/admin/repair/{plan,apply}` + cli `repair --coord` · demo-kaf (Ep.4) |
 | [047](ADR-047-coord-dns-admin.md) | DN registry mutation on coord (add/remove/class) | Accepted · 2026-04-27 | `/v1/coord/admin/dns{,/class}` (POST/DELETE/PUT) + cli `dns --coord` · demo-lamed (Ep.5) |
 | [048](ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord (rotate/list/remove) | Accepted · 2026-04-27 | `/v1/coord/admin/urlkey{,/rotate}` + cli `urlkey --coord` · demo-mem (Ep.6) |
+| [049](ADR-049-edge-urlkey-propagation.md) | Edge urlkey.Signer propagation from coord (polling) | Accepted · 2026-04-27 | `EDGE_COORD_URLKEY_POLL_INTERVAL` + `Server.StartURLKeyPolling` + `SyncURLKeys` · demo-nun (Ep.7) |
 
 > Hebrew letters continue (chet = ח, 8th letter).
 
