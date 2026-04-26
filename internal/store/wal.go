@@ -61,6 +61,22 @@ type WALEntry struct {
 }
 
 // WAL is an append-only mutation log.
+//
+// Two write modes:
+//   - Inline (default): every Append flushes + fsyncs before returning.
+//     Lowest possible RPO; throughput limited by ~1 fsync per write.
+//   - Batched (ADR-035): set batchInterval > 0. Append writes bytes under
+//     the same mu (preserving on-disk order), then waits on a cond for a
+//     background flusher to issue a single fsync covering many writes.
+//     Throughput scales with concurrency at the cost of up to batchInterval
+//     additional latency per write.
+//
+// 비전공자용 해설 (group commit)
+// ─────────────────────────────
+// 매 PUT 마다 fsync 하면 NVMe 라도 ~10 µs ~ 수 ms (디바이스에 따라). PUT 이
+// 100 개 동시 들어오면 100 번 fsync — 직렬화. group commit 은 "5 ms 동안 들어온
+// PUT 을 모아 한 번만 fsync" — write throughput ↑, 개별 latency 는 batchInterval
+// 만큼 살짝 ↑. PostgreSQL · MySQL · etcd 등 모든 DB 가 사용하는 표준 기법.
 type WAL struct {
 	path string
 
@@ -68,23 +84,86 @@ type WAL struct {
 	f   *os.File
 	w   *bufio.Writer
 	seq atomic.Int64 // monotonic; last written entry's seq
+
+	// Group-commit state (active only when batchInterval > 0).
+	batchInterval time.Duration
+	cond          *sync.Cond    // tied to mu; broadcast when durableSeq advances or closed
+	durableSeq    int64         // covered by mu; highest seq known fsynced
+	closed        bool          // covered by mu
+	closeCh       chan struct{} // closed by Close to signal flusher exit
+	flusherDone   chan struct{} // flusher closes when it returns
 }
 
-// OpenWAL opens (or creates) the WAL at path. Recovers the highest seq from
-// the existing file so subsequent Appends continue monotonically.
+// OpenWAL opens (or creates) the WAL at path with inline fsync (one fsync
+// per Append). Recovers the highest seq from the existing file so subsequent
+// Appends continue monotonically.
 func OpenWAL(path string) (*WAL, error) {
+	return OpenWALWithBatch(path, 0)
+}
+
+// OpenWALWithBatch opens (or creates) the WAL with optional group-commit
+// batching. batchInterval == 0 → inline fsync (same as OpenWAL). >0 spawns
+// a background flusher that fsyncs every batchInterval ms; Append waits for
+// the next fsync covering its seq before returning.
+//
+// Recommended values: 1ms~10ms. Below 1ms the timer overhead eats the
+// savings; above 10ms the per-write latency penalty is noticeable.
+func OpenWALWithBatch(path string, batchInterval time.Duration) (*WAL, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("wal open %s: %w", path, err)
 	}
-	w := &WAL{path: path, f: f, w: bufio.NewWriter(f)}
+	w := &WAL{path: path, f: f, w: bufio.NewWriter(f), batchInterval: batchInterval}
+	w.cond = sync.NewCond(&w.mu)
 	last, err := w.recoverLastSeq()
 	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}
 	w.seq.Store(last)
+	w.durableSeq = last
+	if batchInterval > 0 {
+		w.closeCh = make(chan struct{})
+		w.flusherDone = make(chan struct{})
+		go w.flusher()
+	}
 	return w, nil
+}
+
+// flusher is the background group-commit goroutine. Wakes every
+// batchInterval, flushes any buffered bytes + fsyncs once, then advances
+// durableSeq and broadcasts to waiters. Runs only when batchInterval > 0.
+func (w *WAL) flusher() {
+	defer close(w.flusherDone)
+	t := time.NewTicker(w.batchInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-w.closeCh:
+			return
+		case <-t.C:
+			w.flushOnce()
+		}
+	}
+}
+
+// flushOnce performs one flush+fsync cycle if there's pending data.
+// Acquires w.mu so it serializes naturally with Append's write phase.
+func (w *WAL) flushOnce() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	pending := w.seq.Load()
+	if pending <= w.durableSeq || w.closed {
+		return
+	}
+	if err := w.w.Flush(); err != nil {
+		return // leave durableSeq unchanged; next tick retries
+	}
+	if err := w.f.Sync(); err != nil {
+		return
+	}
+	w.durableSeq = pending
+	w.cond.Broadcast()
 }
 
 // recoverLastSeq scans the existing file to find the highest seq.
@@ -139,11 +218,23 @@ func (w *WAL) Append(op string, args any) (int64, []byte, error) {
 	if err := w.w.WriteByte('\n'); err != nil {
 		return 0, nil, fmt.Errorf("wal write nl: %w", err)
 	}
-	if err := w.w.Flush(); err != nil {
-		return 0, nil, fmt.Errorf("wal flush: %w", err)
+	if w.batchInterval == 0 {
+		// Inline-fsync mode (default): every Append flushes + fsyncs.
+		if err := w.w.Flush(); err != nil {
+			return 0, nil, fmt.Errorf("wal flush: %w", err)
+		}
+		if err := w.f.Sync(); err != nil {
+			return 0, nil, fmt.Errorf("wal fsync: %w", err)
+		}
+		return seq, line, nil
 	}
-	if err := w.f.Sync(); err != nil {
-		return 0, nil, fmt.Errorf("wal fsync: %w", err)
+	// Group-commit mode: wait for background flusher to advance durableSeq
+	// past our seq. cond is bound to mu, so Wait atomically releases + reacquires.
+	for w.durableSeq < seq && !w.closed {
+		w.cond.Wait()
+	}
+	if w.closed && w.durableSeq < seq {
+		return seq, nil, fmt.Errorf("wal: closed before fsync (seq=%d, durable=%d)", seq, w.durableSeq)
 	}
 	return seq, line, nil
 }
@@ -251,19 +342,54 @@ func (w *WAL) Truncate() (int64, error) {
 	w.f = f
 	w.w = bufio.NewWriter(f)
 	w.seq.Store(0)
+	w.durableSeq = 0
+	if w.cond != nil {
+		w.cond.Broadcast()
+	}
 	return prev, nil
 }
 
-// Close flushes pending writes and closes the file handle.
+// Close flushes pending writes, signals the flusher (if any) to stop, and
+// closes the file handle. Safe to call multiple times.
+//
+// Group-commit mode: a final inline flush+fsync runs so any Append goroutines
+// still waiting on cond can return success rather than seeing the "closed
+// before fsync" error.
 func (w *WAL) Close() error {
 	if w == nil {
 		return nil
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	if w.closed {
+		w.mu.Unlock()
+		return nil
+	}
+	w.closed = true
+	// Final flush+fsync covers any in-flight Appends.
 	if w.w != nil {
 		_ = w.w.Flush()
 	}
+	if w.f != nil {
+		_ = w.f.Sync()
+	}
+	if pending := w.seq.Load(); pending > w.durableSeq {
+		w.durableSeq = pending
+	}
+	if w.cond != nil {
+		w.cond.Broadcast()
+	}
+	closeCh := w.closeCh
+	flusherDone := w.flusherDone
+	w.mu.Unlock()
+
+	// Wait for the flusher to exit (it may be parked on its ticker).
+	if closeCh != nil {
+		close(closeCh)
+		<-flusherDone
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.f != nil {
 		return w.f.Close()
 	}

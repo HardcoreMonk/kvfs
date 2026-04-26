@@ -6,7 +6,9 @@ package store
 import (
 	"bytes"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestWALAppendAndSince(t *testing.T) {
@@ -205,6 +207,84 @@ func TestApplyEntryRoundTrip(t *testing.T) {
 	dns, _ := dst.ListRuntimeDNs()
 	if len(dns) != 2 {
 		t.Errorf("dst dns=%d want 2", len(dns))
+	}
+}
+
+// ADR-035: batched fsync — concurrent Appends should all return success
+// with monotonic seqs, and Since(0) should see them all in order.
+func TestWALBatchedConcurrentAppends(t *testing.T) {
+	dir := t.TempDir()
+	w, err := OpenWALWithBatch(filepath.Join(dir, "wal.log"), 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer w.Close()
+
+	const N = 50
+	var wg sync.WaitGroup
+	seqs := make([]int64, N)
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			seq, _, err := w.Append("put_object", map[string]int{"i": i})
+			seqs[i] = seq
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < N; i++ {
+		if errs[i] != nil {
+			t.Errorf("append %d: %v", i, errs[i])
+		}
+	}
+	// All seqs must be unique and within [1, N].
+	seen := map[int64]bool{}
+	for _, s := range seqs {
+		if s < 1 || s > N {
+			t.Errorf("seq %d out of range [1,%d]", s, N)
+		}
+		if seen[s] {
+			t.Errorf("duplicate seq %d", s)
+		}
+		seen[s] = true
+	}
+
+	entries, err := w.Since(0)
+	if err != nil {
+		t.Fatalf("since: %v", err)
+	}
+	if len(entries) != N {
+		t.Errorf("Since(0)=%d want %d", len(entries), N)
+	}
+	for i, e := range entries {
+		if int(e.Seq) != i+1 {
+			t.Errorf("on-disk seq order: entry %d has seq %d, want %d", i, e.Seq, i+1)
+		}
+	}
+}
+
+// Closing a batched WAL with no in-flight appends should not hang or error.
+func TestWALBatchedCleanClose(t *testing.T) {
+	dir := t.TempDir()
+	w, err := OpenWALWithBatch(filepath.Join(dir, "wal.log"), 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, _, err := w.Append("put_object", "x"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- w.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Close hung")
 	}
 }
 

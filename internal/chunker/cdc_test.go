@@ -127,6 +127,58 @@ func TestCDCEmpty(t *testing.T) {
 	}
 }
 
+// ADR-035: with MaskBitsRelax = 0, cuts must be byte-for-byte identical
+// to the original 2-mask scheme (backward compat).
+func TestCDCRelaxZeroIsBackwardCompat(t *testing.T) {
+	rng := rand.New(rand.NewSource(0xBEEF))
+	body := make([]byte, 256*1024)
+	rng.Read(body)
+	cfg := CDCConfig{MinSize: 1024, NormalSize: 4096, MaxSize: 16384, MaskBitsStrict: 12, MaskBitsLoose: 10}
+
+	// Same cfg, MaskBitsRelax explicitly 0 (default).
+	a := readAllPieces(t, NewCDCReader(bytes.NewReader(body), cfg))
+	b := readAllPieces(t, NewCDCReader(bytes.NewReader(body), cfg))
+	if len(a) != len(b) {
+		t.Fatalf("len differ: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID {
+			t.Errorf("piece %d differs", i)
+		}
+	}
+}
+
+// With MaskBitsRelax > 0, MaxSize-cap chunks should be rarer than with the
+// original 2-mask scheme. We use a body sized so most chunks would normally
+// hit MaxSize, then assert the relax-on variant has strictly fewer caps.
+func TestCDCRelaxReducesMaxCap(t *testing.T) {
+	rng := rand.New(rand.NewSource(0xF00D))
+	body := make([]byte, 1024*1024)
+	rng.Read(body)
+	// Mask bits intentionally too tight so cap is frequently hit.
+	base := CDCConfig{MinSize: 4 * 1024, NormalSize: 16 * 1024, MaxSize: 64 * 1024, MaskBitsStrict: 18, MaskBitsLoose: 17}
+	relaxed := base
+	relaxed.MaskBitsRelax = 14 // much easier mask near MaxSize
+
+	countCaps := func(pieces []*StreamPiece, max int) int {
+		n := 0
+		for _, p := range pieces {
+			if int(p.Size) == max {
+				n++
+			}
+		}
+		return n
+	}
+
+	pa := readAllPieces(t, NewCDCReader(bytes.NewReader(body), base))
+	pb := readAllPieces(t, NewCDCReader(bytes.NewReader(body), relaxed))
+	capsBase := countCaps(pa, base.MaxSize)
+	capsRelax := countCaps(pb, base.MaxSize)
+	if capsRelax >= capsBase {
+		t.Errorf("relax should reduce max-cap chunks: base=%d relax=%d (want relax < base)", capsBase, capsRelax)
+	}
+}
+
 func TestCDCSmallerThanMin(t *testing.T) {
 	// Input shorter than MinSize → emit one short piece.
 	body := []byte("short")

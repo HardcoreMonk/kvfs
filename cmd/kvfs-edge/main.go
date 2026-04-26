@@ -87,6 +87,7 @@ func main() {
 		flagElectMin = flag.String("election-timeout-min", envOr("EDGE_ELECTION_TIMEOUT_MIN", "1500ms"), "follower → candidate timeout (min)")
 		flagElectMax = flag.String("election-timeout-max", envOr("EDGE_ELECTION_TIMEOUT_MAX", "3000ms"), "follower → candidate timeout (max)")
 		flagWALPath  = flag.String("wal-path", envOr("EDGE_WAL_PATH", ""), "ADR-019 WAL file path (empty disables WAL)")
+		flagWALBatch = flag.String("wal-batch-interval", envOr("EDGE_WAL_BATCH_INTERVAL", ""), "ADR-035 WAL group commit: batch fsync interval (e.g. 5ms). Empty = inline fsync per Append (default).")
 		flagMetrics  = flag.Bool("metrics", envOr("EDGE_METRICS", "1") == "1", "expose /metrics Prometheus endpoint (default on)")
 		flagStrict   = flag.Bool("strict-repl", envOr("EDGE_STRICT_REPL", "") == "1", "ADR-033: surface quorum-replication failure as 503 to client (informational; bbolt commits regardless)")
 		flagTxnRaft  = flag.Bool("transactional-raft", envOr("EDGE_TRANSACTIONAL_RAFT", "") == "1", "ADR-034: replicate-then-commit semantics for PutObject (true Raft-style; rejects writes when quorum unavailable)")
@@ -118,13 +119,21 @@ func main() {
 	defer ms.Close()
 
 	if *flagWALPath != "" {
-		wal, werr := store.OpenWAL(*flagWALPath)
+		var batch time.Duration
+		if *flagWALBatch != "" {
+			b, perr := time.ParseDuration(*flagWALBatch)
+			if perr != nil {
+				fatal("EDGE_WAL_BATCH_INTERVAL parse: " + perr.Error())
+			}
+			batch = b
+		}
+		wal, werr := store.OpenWALWithBatch(*flagWALPath, batch)
 		if werr != nil {
 			fatal("WAL open: " + werr.Error())
 		}
 		ms.SetWAL(wal)
 		defer wal.Close()
-		log.Info("WAL enabled", "path", *flagWALPath, "last_seq", wal.LastSeq())
+		log.Info("WAL enabled", "path", *flagWALPath, "last_seq", wal.LastSeq(), "batch_interval", batch)
 	}
 
 	// ADR-031 follow-up — synchronous Raft-style replication: when election

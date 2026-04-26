@@ -47,12 +47,27 @@ import (
 //   - MinSize 1 MiB · NormalSize 4 MiB · MaxSize 16 MiB
 //   - MaskBitsStrict 22 (≈ 1/4M chance per byte before NormalSize)
 //   - MaskBitsLoose  20 (4× easier hit after NormalSize)
+//   - MaskBitsRelax   0 (disabled by default; set >0 to enable 3rd "very
+//     loose" region near MaxSize for tighter upper-tail size variance)
+//
+// 비전공자용 해설 (MaskBitsRelax)
+// ─────────────────────────────
+// 표준 2-mask FastCDC 는 NormalSize 통과 후 maskL (예: 20-bit) 로 컷.
+// MaxSize 까지 끝내 컷이 안 나오면 hard cap → 그 chunk 가 "MaxSize" 길이.
+// 결과적으로 length 분포 상단이 MaxSize 에 살짝 누적된다.
+//
+// Relax mask 는 (NormalSize + MaxSize) / 2 지점부터 더 쉬운 마스크 (예: 18-bit
+// = 4× 더 자주 hit) 로 전환해 MaxSize 도달 직전에 거의 확실히 컷이 나도록 유도.
+// 평균 chunk 크기는 NormalSize 근처로 유지되면서 MaxSize 캡 빈도만 줄어든다.
+// dedup 효율은 약간 좋아지고 (size variance ↓), 동일 콘텐츠는 여전히 동일하게
+// 컷되므로 shift-invariance 도 보존됨.
 type CDCConfig struct {
-	MinSize        int    // 절대 그보다 작게 자르지 않음
-	NormalSize     int    // target average; switches mask hardness
-	MaxSize        int    // 절대 그보다 크게 자르지 않음
-	MaskBitsStrict int    // bits in maskS (strict; pre-NormalSize)
-	MaskBitsLoose  int    // bits in maskL (loose; post-NormalSize)
+	MinSize        int // 절대 그보다 작게 자르지 않음
+	NormalSize     int // target average; switches mask hardness
+	MaxSize        int // 절대 그보다 크게 자르지 않음
+	MaskBitsStrict int // bits in maskS (strict; pre-NormalSize)
+	MaskBitsLoose  int // bits in maskL (loose; post-NormalSize)
+	MaskBitsRelax  int // bits in maskR (relax; post-(Normal+Max)/2). 0 = disabled.
 }
 
 // DefaultCDCConfig returns parameters tuned for ~4 MiB average chunks
@@ -87,6 +102,7 @@ type CDCReader struct {
 	cfg   CDCConfig
 	maskS uint64
 	maskL uint64
+	maskR uint64 // 0 if MaskBitsRelax disabled
 
 	buf  []byte
 	done bool
@@ -107,12 +123,32 @@ func NewCDCReader(src io.Reader, cfg CDCConfig) *CDCReader {
 	if cfg.MaskBitsLoose <= 0 {
 		cfg.MaskBitsLoose = 20
 	}
-	return &CDCReader{
+	// MaskBitsRelax (3rd region, ADR-035 micro-opt bundle) is optional —
+	// zero means "no third region" and we fall back to the original 2-mask
+	// scheme.
+	if cfg.MaskBitsRelax < 0 {
+		cfg.MaskBitsRelax = 0
+	}
+	r := &CDCReader{
 		src:   src,
 		cfg:   cfg,
 		maskS: (uint64(1) << cfg.MaskBitsStrict) - 1,
 		maskL: (uint64(1) << cfg.MaskBitsLoose) - 1,
 	}
+	if cfg.MaskBitsRelax > 0 {
+		r.maskR = (uint64(1) << cfg.MaskBitsRelax) - 1
+	}
+	return r
+}
+
+// Close returns the internal scratch buffer to the pool. Safe to call
+// multiple times. Subsequent Next() calls return io.EOF.
+func (c *CDCReader) Close() {
+	if c.buf != nil {
+		putScratch(c.buf)
+		c.buf = nil
+	}
+	c.done = true
 }
 
 // Next returns the next CDC-cut chunk or io.EOF when the source is exhausted.
@@ -140,8 +176,12 @@ func (c *CDCReader) Next() (*StreamPiece, error) {
 // Returns io.EOF when src is fully drained.
 func (c *CDCReader) fillBuf() error {
 	if cap(c.buf) < c.cfg.MaxSize {
-		nb := make([]byte, len(c.buf), c.cfg.MaxSize)
+		nb := getScratch(c.cfg.MaxSize)
 		copy(nb, c.buf)
+		nb = nb[:len(c.buf)]
+		if c.buf != nil {
+			putScratch(c.buf)
+		}
 		c.buf = nb
 	}
 	for !c.done && len(c.buf) < c.cfg.MaxSize {
@@ -166,8 +206,18 @@ func (c *CDCReader) fillBuf() error {
 }
 
 // cutpoint returns the offset (1-indexed length) of the next chunk in data.
-// Implements FastCDC's three-region scan: skip up to MinSize, strict mask
-// up to NormalSize, loose mask up to MaxSize, hard cap at MaxSize.
+// Implements FastCDC's region-scan with an optional 4th "relax" region:
+//
+//	Phase 1: 0..MinSize          → no test (warm fp)
+//	Phase 2: MinSize..NormalSize → strict mask (maskS)
+//	Phase 3: NormalSize..relax   → loose mask  (maskL)
+//	Phase 4: relax..limit        → very-loose mask (maskR), only if enabled
+//	hard cap at limit.
+//
+// "relax" boundary = (NormalSize + MaxSize) / 2 — past the average we want
+// to bias more aggressively toward cutting before MaxSize cap. When
+// MaskBitsRelax = 0 (default), Phases 3 and 4 collapse into one (= original
+// behavior, byte-for-byte same cuts as before).
 func (c *CDCReader) cutpoint(data []byte) int {
 	n := len(data)
 	if n <= c.cfg.MinSize {
@@ -180,6 +230,18 @@ func (c *CDCReader) cutpoint(data []byte) int {
 	normal := c.cfg.NormalSize
 	if normal > limit {
 		normal = limit
+	}
+	// relax kicks in halfway between NormalSize and MaxSize. If MaskBitsRelax
+	// is zero we set relax = limit so Phase 4 never executes.
+	relax := limit
+	if c.maskR != 0 {
+		relax = (c.cfg.NormalSize + c.cfg.MaxSize) / 2
+		if relax > limit {
+			relax = limit
+		}
+		if relax < normal {
+			relax = normal
+		}
 	}
 
 	var fp uint64
@@ -194,10 +256,18 @@ func (c *CDCReader) cutpoint(data []byte) int {
 			return i + 1
 		}
 	}
-	// Phase 3: NormalSize..limit with loose mask.
-	for i := normal; i < limit; i++ {
+	// Phase 3: NormalSize..relax with loose mask.
+	for i := normal; i < relax; i++ {
 		fp = (fp << 1) + gearTable[data[i]]
 		if fp&c.maskL == 0 {
+			return i + 1
+		}
+	}
+	// Phase 4: relax..limit with very-loose mask (skipped when maskR == 0,
+	// since relax == limit in that case).
+	for i := relax; i < limit; i++ {
+		fp = (fp << 1) + gearTable[data[i]]
+		if fp&c.maskR == 0 {
 			return i + 1
 		}
 	}

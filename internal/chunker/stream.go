@@ -30,7 +30,43 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"sync"
 )
+
+// scratchPool recycles per-Reader scratch buffers across PUTs so back-to-back
+// uploads don't churn the allocator. Buffers are bucketed by size at the call
+// site (small files vs default-size vs CDC-MaxSize), and entries are returned
+// only when callers invoke Close — Next() must keep its buffer alive between
+// calls.
+//
+// 비전공자용 해설
+// ──────────────
+// 매 PUT 마다 NewReader → make([]byte, chunkSize) → 한 번 쓰고 GC 대상.
+// 4 MiB 짜리 슬라이스가 초당 수백 개 만들어지면 GC 압력 + RSS 흔들림.
+// sync.Pool 은 "재사용 가능한 슬랩" 을 keep — Get 해서 쓰고 Put 으로 반납,
+// GC 가 한가할 때만 비운다. 핵심: cap(buf) 가 같아야 의미 있는 재사용이 됨.
+var scratchPool sync.Pool
+
+// getScratch retrieves a []byte with cap >= n from the pool, or allocates a
+// fresh one. Length is set to n.
+func getScratch(n int) []byte {
+	if v := scratchPool.Get(); v != nil {
+		b := v.([]byte)
+		if cap(b) >= n {
+			return b[:n]
+		}
+		// Pool returned a too-small buf (different reader sized it); drop it.
+	}
+	return make([]byte, n)
+}
+
+// putScratch returns the buffer to the pool. Caller must not retain b.
+func putScratch(b []byte) {
+	if b == nil {
+		return
+	}
+	scratchPool.Put(b[:0]) //nolint:staticcheck // pool of slices is fine; we restore len at Get.
+}
 
 // StreamPiece is a single chunk pulled from a streaming source.
 //
@@ -64,8 +100,10 @@ type Reader struct {
 }
 
 // NewReader returns a streaming chunker. chunkSize ≤ 0 falls back to
-// DefaultChunkSize. The internal scratch buffer is chunkSize bytes; pieces
-// returned by Next() are independently allocated copies.
+// DefaultChunkSize. The internal scratch buffer is chunkSize bytes (drawn
+// from a sync.Pool when possible); pieces returned by Next() are
+// independently allocated copies. Call Close() when done to return the
+// scratch buffer to the pool.
 func NewReader(src io.Reader, chunkSize int) *Reader {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
@@ -73,8 +111,18 @@ func NewReader(src io.Reader, chunkSize int) *Reader {
 	return &Reader{
 		src:       src,
 		chunkSize: chunkSize,
-		buf:       make([]byte, chunkSize),
+		buf:       getScratch(chunkSize),
 	}
+}
+
+// Close returns the scratch buffer to the pool. Safe to call multiple times.
+// Subsequent Next() calls return io.EOF.
+func (r *Reader) Close() {
+	if r.buf != nil {
+		putScratch(r.buf)
+		r.buf = nil
+	}
+	r.done = true
 }
 
 // Next returns the next chunk or io.EOF when the source is exhausted.
