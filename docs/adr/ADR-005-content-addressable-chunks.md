@@ -13,8 +13,6 @@ chunk ID 체계 선택. 대안:
 | UUID v7 | 시간순 정렬 쉬움 | dedup 불가, integrity 별도 |
 | 중앙 시퀀스 ID | 단순 | 중앙 allocator 필요, dedup 불가 |
 
-기존 reference(legacy DFS) 평가 `KEEP-04` (VER+STATUS CAS) 와 정신적으로 정합 — 동일 content는 동일 ID로 수렴.
-
 산업 레퍼런스: git (blob), IPFS, Restic, Borg — 전부 content-addressable.
 
 ## 결정

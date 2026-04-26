@@ -162,7 +162,6 @@ DN disk after 4 PUTs (hello + sign-test + dup-a + dup-b):
 
 - 전체 아키텍처: [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)
 - ADR 전체: [`docs/adr/`](../docs/adr/)
-- kvfs가 파생된 과거 운영 사례에서 분산 시스템 분석: [`NAMING.md`](../NAMING.md) 의 "기원" 섹션
 
 ---
 

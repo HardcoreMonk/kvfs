@@ -17,7 +17,7 @@ kvfs에는 두 가지 통신 경로:
 | Raw TCP + 자체 binary | 최고 성능 | decoder 없음, 디버그 지옥 | 🔴 |
 | HTTP/2 + msgpack | 효율+semantics | 라이브러리 의존, 직관성↓ | 🟡 |
 
-기존 reference(legacy DFS)의 **커스텀 바이너리 프로토콜**은 Wireshark decoder 부재로 디버깅 난관이었음 — 평가 매트릭스 KILL 대상(ARCH_NOTES §2.1 KILL-02 참조).
+사전 연구에서, 커스텀 바이너리 프로토콜은 Wireshark decoder 부재 시 디버깅 비용이 폭증하는 패턴이 반복적으로 관찰되었다.
 
 데모 목적에선 **보이는 프로토콜**이 우선.
 

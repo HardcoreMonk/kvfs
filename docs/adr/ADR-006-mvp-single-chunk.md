@@ -19,7 +19,7 @@ MVP 목적(공개 데모)에서 chunking 가치:
 - ε 데모 (UrlKey)에 무관
 - 블로그 시리즈 시즌 1 3편 분량을 넘김
 
-기존 reference(legacy DFS) 평가 `KEEP-06` (IOD POLICY — SMALL_PIECE·MED_PIECE·LARGE_PIECE 등 워크로드 튜닝)이 풍부한 아이디어 제공 — 별도 에피소드 감.
+워크로드별 chunk 정책(작은 메타 vs 대형 객체)은 별도 에피소드 감.
 
 ## 결정
 

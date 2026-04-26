@@ -12,14 +12,10 @@ Accepted · 2026-04-25
 - Cloudflare signed URL — HMAC-SHA256
 - JWT — RS256/ES256/HS256
 
-기존 reference(legacy DFS) 의 **legacy URL signature** 방식:
-- APR1-MD5 + Base62 + LuaJIT int64 FFI
-- 평가 매트릭스 `INHERIT-06` — 아이디어는 계승, **구현은 현대화**
-
-legacy URL signature의 실제 버그 경험:
-- LuaJIT `int64_t` FFI가 signed/unsigned 변환에서 플랫폼 차이
-- APR1-MD5는 MD5 기반 — 추가적 선택 이유 없음 (2026 기준)
-- Base62 encoding은 URL-safe 이유였으나 hex 대비 이득 미미
+대안 — APR1-MD5 + Base62 + LuaJIT int64 FFI 기반 서명:
+- APR1-MD5는 MD5 기반 — 2026 기준 추가 선택 이유 없음
+- LuaJIT `int64_t` FFI는 signed/unsigned 변환에서 플랫폼 차이 발생 가능
+- Base62 encoding은 URL-safe 이점이었으나 hex 대비 이득 미미
 
 ## 결정
 
@@ -31,7 +27,7 @@ legacy URL signature의 실제 버그 경험:
 - secret: 16+ bytes 랜덤 (프로덕션), 데모는 `EDGE_URLKEY_SECRET` env 고정값
 - 검증: `hmac.Equal([]byte(expected), []byte(got))` — 상수 시간 비교
 
-원 legacy URL signature와 **비트 호환 불필요** — kvfs는 clean slate (ADR-001).
+기존 형식과의 **비트 호환 불필요** — kvfs는 clean slate (ADR-001).
 
 ## 결과
 

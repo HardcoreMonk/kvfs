@@ -8,10 +8,10 @@
 //   - Signature output: hex(HMAC-SHA256(secret, input))
 //   - URL form:         <path>?sig=<hex>&exp=<unix-seconds>
 //
-// Why HMAC-SHA256 over Base62+APR1-MD5 (original system's legacy URL signature):
+// Why HMAC-SHA256 over Base62+APR1-MD5:
 //   - Same security guarantee, simpler primitives
 //   - Standard library only (crypto/hmac + crypto/sha256)
-//   - No LuaJIT int64 FFI bug class (original system had this)
+//   - No LuaJIT int64 FFI bug class
 package urlkey
 
 import (

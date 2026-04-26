@@ -7,7 +7,7 @@ claude-zone L3 체인 상속. 여기는 **kvfs 고유**만.
 ## 프로젝트 정체성
 
 - **이름**: kvfs — Key-Value File System (공개 오픈소스 데모)
-- **정체성 전환**: 2026-04-25, legacy DFS 사전 연구에서 독자 프로젝트로 분리. 상세: `NAMING.md`, `docs/adr/ADR-001-independent-identity.md`
+- **출범**: 2026-04-25, clean-slate 독립 프로젝트로 출발. 상세: `docs/adr/ADR-001-independent-identity.md`
 - **라이선스**: Apache 2.0
 - **목적**: 분산 object storage 설계 원리를 **살아있는 데모**로 시연. 프로덕션 아님
 - **성공 기준**: 학습성·재현성·명료함 (TPS·SLA 아님)
@@ -110,10 +110,4 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26-alpine \
 
 - 🚫 `EDGE_SKIP_AUTH=1` 프로덕션 배포 (README·코드에 경고 있음)
 - 🚫 `EDGE_URLKEY_SECRET` 하드코딩 repo 커밋 (현재 `demo-secret-change-me-in-production` 은 demo 전용임을 이름으로 명시)
-- 🚫 `source-analysis/` 또는 `legacy-*` 관련 파일 복사 import — kvfs는 깨끗한 derivative (NAMING.md 매핑만 참조)
 - ⚠️ `chunk_id` 는 **content-addressable** (sha256) — 변경하면 ADR-005 supersede
-
-## 관계 프로젝트
-
-- `/data/projects/claude-zone/100.legacy DFS/legacy-modernized/` — **기존 reference 평가서** (kvfs의 기원). 분석 문서 참조용, **코드 import 금지**
-- 기존 reference 이름 매핑: `NAMING.md`

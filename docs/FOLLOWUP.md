@@ -78,11 +78,6 @@
 - **옵션 C**: 외부 stack 없이 현재 구조 유지 (최소 변경)
 - **개인 프로젝트 고려**: A 가 ADR-013 의 slog 흐름과 자연 연결. B 는 별도 Season 3 episode 감
 
-### [P3-03] 100.legacy DFS/legacy-modernized 의 legacy_client_py3 라이브 검증
-- **배경**: 평가 레포 `/data/projects/claude-zone/100.legacy DFS/legacy-modernized/installer/legacy-coke-nn/script/legacy_client_py3.py` 는 mock server 단위 테스트 14개 PASS. 라이브 legacy meta tier NN 상대 tcpdump 검증은 미완
-- **결정 필요**: 별도 작업 트랙으로 할지, kvfs 에 집중해 평가 레포는 동결 유지할지
-- **현 추세**: 동결 방향. 이 항목은 **completeness 목록** 용
-
 ### [P3-04] Public 전환 타이밍
 - **현**: 아직 GitHub 발행 안 됨 (P1-01 대기 중). private 으로 만든 후 public 전환할지, 처음부터 public 으로 만들지 결정 필요
 - **public 전환 기준** (사용자 결정 필요):
@@ -121,7 +116,7 @@
 
 | 완료일 | 작업 | 결과 |
 |---|---|---|
-| 2026-04-25 | 기존 reference 평가 + 독자 프로젝트 identity | 17 KEEP/INHERIT 확정, `NAMING.md` 매핑 · ADR-001 |
+| 2026-04-25 | 독자 프로젝트 identity 출범 | clean-slate 정의 · ADR-001 |
 | 2026-04-25 | Season 1 MVP 스캐폴딩 | 2-daemon · 22 파일 · 1,367 LOC · Apache 2.0 |
 | 2026-04-25 | Season 1 α + ε 데모 라이브 통과 | 3-way replication 내구성 · UrlKey TTL 검증 |
 | 2026-04-25 | Season 1 dedup 가설 검증 | 4 objects → 3 unique chunks (content-addressable 증명) |
