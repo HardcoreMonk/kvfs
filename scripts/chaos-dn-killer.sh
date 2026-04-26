@@ -30,6 +30,28 @@ BUCKET="chaos"
 KEY="seed.bin"
 SIZE=$((64 * 1024))   # 64 KiB seed
 
+usage() {
+  cat <<'EOF'
+chaos-dn-killer.sh — periodically stop a random DN, restart it, and verify
+GET still returns the correct sha256 throughout. Catches regressions in
+quorum reads, EC reconstruction, and edge timeout handling.
+
+Prereq: cluster running (./scripts/up.sh or any demo tail) with >= 3 DNs.
+
+Flags:
+  --duration <s>   total runtime (default 60)
+  --interval <s>   seconds between kill events (default 10)
+  --get-rate <n>   GET requests per second (default 2)
+  --downtime <s>   seconds a killed DN stays down (default 3)
+  --dns "<list>"   DN container names (default: auto-detect via docker ps)
+
+Examples:
+  ./scripts/chaos-dn-killer.sh
+  ./scripts/chaos-dn-killer.sh --duration 300 --interval 5 --get-rate 5
+  ./scripts/chaos-dn-killer.sh --dns "dn1 dn2 dn3 dn4"
+EOF
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --duration)  DURATION="$2"; shift 2 ;;
@@ -37,13 +59,13 @@ while [ $# -gt 0 ]; do
     --get-rate)  GET_RATE="$2"; shift 2 ;;
     --downtime)  DOWNTIME="$2"; shift 2 ;;
     --dns)       DNS="$2"; shift 2 ;;
-    -h|--help)
-      sed -n '2,15p' "$0"; exit 0 ;;
-    *) echo "unknown flag: $1"; exit 2 ;;
+    -h|--help)   usage; exit 0 ;;
+    *) echo "unknown flag: $1"; usage; exit 2 ;;
   esac
 done
 
-need() { command -v "$1" >/dev/null || { echo "missing: $1"; exit 2; }; }
+. "$(dirname "$0")/lib/common.sh"
+
 need curl; need python3; need docker
 
 if [ -z "$DNS" ]; then
@@ -72,15 +94,6 @@ echo "   get-rate:  ${GET_RATE}/s on chaos/seed.bin"
 echo "   DN pool:   ${DN_ARR[*]}"
 echo
 
-sign_url() {
-  SECRET="$SECRET" python3 -c '
-import hmac, hashlib, time, sys, os
-secret=os.environ["SECRET"].encode(); method=sys.argv[1]; path=sys.argv[2]; ttl=int(sys.argv[3])
-exp=int(time.time())+ttl
-sig=hmac.new(secret,f"{method}:{path}:{exp}".encode(),hashlib.sha256).hexdigest()
-print(f"{path}?sig={sig}&exp={exp}")
-' "$1" "$2" "$3"
-}
 
 TMP_BODY=$(mktemp)
 TMP_GOT=$(mktemp)
@@ -111,7 +124,7 @@ restore_due() {
   for name in "${!DOWN_DNS[@]}"; do
     if [ "$now" -ge "${DOWN_DNS[$name]}" ]; then
       docker start "$name" >/dev/null 2>&1 || true
-      unset 'DOWN_DNS[$name]'
+      unset "DOWN_DNS[$name]"
       printf "       [%4ds] ↑ restored %s\n" "$((now - START))" "$name"
     fi
   done

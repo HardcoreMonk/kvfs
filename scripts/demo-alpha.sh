@@ -12,22 +12,14 @@ BODY="Hello from kvfs — 3-way replication demo at $(date -u +%FT%TZ)"
 
 echo "=== α demo: 3-way replication durability ==="
 
-need() { command -v "$1" >/dev/null || { echo "missing: $1"; exit 2; }; }
+. "$(dirname "$0")/lib/common.sh"
+
 need curl; need python3; need docker
 if ! command -v jq >/dev/null; then
   echo "warning: jq missing, output will be less pretty"
 fi
 pp() { if command -v jq >/dev/null; then jq .; else cat; fi; }
 
-sign_url() {
-  SECRET="$SECRET" python3 -c '
-import hmac, hashlib, time, sys, os
-secret=os.environ["SECRET"].encode(); method=sys.argv[1]; path=sys.argv[2]; ttl=int(sys.argv[3])
-exp=int(time.time())+ttl
-sig=hmac.new(secret,f"{method}:{path}:{exp}".encode(),hashlib.sha256).hexdigest()
-print(f"{path}?sig={sig}&exp={exp}")
-' "$1" "$2" "$3"
-}
 
 path="/v1/o/${BUCKET}/${KEY}"
 
