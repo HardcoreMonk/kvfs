@@ -35,13 +35,13 @@ import (
 	"time"
 
 	"crypto/tls"
-	"crypto/x509"
 
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/edge"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/store"
+	"github.com/HardcoreMonk/kvfs/internal/tlsutil"
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
 )
 
@@ -284,24 +284,25 @@ func fatal(msg string) {
 // (ADR-029). Returns (nil, "http", nil) when TLS is not opted in.
 //
 // CA env enables HTTPS to DNs. Optional client cert env adds mTLS.
+// CLIENT_CERT and CLIENT_KEY must be set together — XOR is rejected to avoid
+// silent downgrades.
 func buildDNTLSConfig(log *slog.Logger) (*tls.Config, string, error) {
 	caPath := envOr("EDGE_DN_TLS_CA", "")
 	if caPath == "" {
 		return nil, "http", nil
 	}
-	caBytes, err := os.ReadFile(caPath)
+	pool, err := tlsutil.LoadCertPool(caPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("read CA %s: %w", caPath, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caBytes) {
-		return nil, "", fmt.Errorf("CA %s: no PEM blocks", caPath)
+		return nil, "", err
 	}
 	cfg := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 
 	clientCert := envOr("EDGE_DN_TLS_CLIENT_CERT", "")
 	clientKey := envOr("EDGE_DN_TLS_CLIENT_KEY", "")
-	if clientCert != "" && clientKey != "" {
+	if (clientCert == "") != (clientKey == "") {
+		return nil, "", fmt.Errorf("EDGE_DN_TLS_CLIENT_CERT and EDGE_DN_TLS_CLIENT_KEY must be set together (or neither)")
+	}
+	if clientCert != "" {
 		cert, err := tls.LoadX509KeyPair(clientCert, clientKey)
 		if err != nil {
 			return nil, "", fmt.Errorf("load client cert: %w", err)

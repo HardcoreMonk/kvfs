@@ -15,7 +15,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -26,6 +25,7 @@ import (
 	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/dn"
+	"github.com/HardcoreMonk/kvfs/internal/tlsutil"
 )
 
 func main() {
@@ -110,13 +110,9 @@ func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
 	if clientCAPath == "" {
 		return nil, nil
 	}
-	caBytes, err := os.ReadFile(clientCAPath)
+	pool, err := tlsutil.LoadCertPool(clientCAPath)
 	if err != nil {
-		return nil, fmt.Errorf("read client CA %s: %w", clientCAPath, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caBytes) {
-		return nil, fmt.Errorf("client CA %s: no PEM blocks", clientCAPath)
+		return nil, err
 	}
 	log.Info("kvfs-dn mTLS enabled (verifying edge client cert)", "client_ca", clientCAPath)
 	return &tls.Config{
