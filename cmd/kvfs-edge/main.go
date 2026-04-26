@@ -52,6 +52,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/edge"
+	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/heartbeat"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/store"
@@ -78,7 +79,12 @@ func main() {
 		flagSnapDir = flag.String("snapshot-dir", envOr("EDGE_SNAPSHOT_DIR", ""), "auto-snapshot output directory (ADR-016); empty disables")
 		flagSnapInt = flag.String("snapshot-interval", envOr("EDGE_SNAPSHOT_INTERVAL", "1h"), "auto-snapshot ticker interval")
 		flagSnapKp  = flag.Int("snapshot-keep", atoiOr(envOr("EDGE_SNAPSHOT_KEEP", "7"), 7), "how many recent snapshots to retain")
-		flagChunkMd = flag.String("chunk-mode", envOr("EDGE_CHUNK_MODE", "fixed"), "PUT chunker mode (ADR-018): fixed | cdc")
+		flagChunkMd  = flag.String("chunk-mode", envOr("EDGE_CHUNK_MODE", "fixed"), "PUT chunker mode (ADR-018): fixed | cdc")
+		flagPeers    = flag.String("peers", envOr("EDGE_PEERS", ""), "ADR-031 election: comma-sep peer URLs (incl. self), e.g. 'http://edge1:8000,http://edge2:8000'; empty disables election")
+		flagSelfURL  = flag.String("self-url", envOr("EDGE_SELF_URL", ""), "ADR-031 election: this edge's own peer URL; required when -peers set")
+		flagElectHB  = flag.String("election-heartbeat-interval", envOr("EDGE_ELECTION_HB_INTERVAL", "500ms"), "leader heartbeat cadence (election mode)")
+		flagElectMin = flag.String("election-timeout-min", envOr("EDGE_ELECTION_TIMEOUT_MIN", "1500ms"), "follower → candidate timeout (min)")
+		flagElectMax = flag.String("election-timeout-max", envOr("EDGE_ELECTION_TIMEOUT_MAX", "3000ms"), "follower → candidate timeout (max)")
 		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
 		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
 		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
@@ -238,6 +244,41 @@ func main() {
 		fatal("EDGE_CHUNK_MODE must be 'fixed' or 'cdc' (got " + *flagChunkMd + ")")
 	}
 
+	// ADR-031 election (opt-in via EDGE_PEERS).
+	var elector *election.Elector
+	if *flagPeers != "" {
+		if *flagSelfURL == "" {
+			fatal("EDGE_PEERS set but EDGE_SELF_URL missing — election needs to know self's URL")
+		}
+		peerURLs := splitTrim(*flagPeers)
+		peers := make([]election.Peer, 0, len(peerURLs))
+		for _, u := range peerURLs {
+			peers = append(peers, election.Peer{ID: u, URL: u})
+		}
+		hbInt, perr := time.ParseDuration(*flagElectHB)
+		if perr != nil {
+			fatal("invalid EDGE_ELECTION_HB_INTERVAL: " + perr.Error())
+		}
+		etMin, perr := time.ParseDuration(*flagElectMin)
+		if perr != nil {
+			fatal("invalid EDGE_ELECTION_TIMEOUT_MIN: " + perr.Error())
+		}
+		etMax, perr := time.ParseDuration(*flagElectMax)
+		if perr != nil {
+			fatal("invalid EDGE_ELECTION_TIMEOUT_MAX: " + perr.Error())
+		}
+		elector = election.New(election.Config{
+			SelfID:             *flagSelfURL,
+			Peers:              peers,
+			HeartbeatInterval:  hbInt,
+			ElectionTimeoutMin: etMin,
+			ElectionTimeoutMax: etMax,
+			Log:                log,
+		})
+		log.Info("election enabled", "self", *flagSelfURL, "peers", len(peers),
+			"hb", hbInt, "timeout_min", etMin, "timeout_max", etMax)
+	}
+
 	srv := &edge.Server{
 		Store:             ms,
 		Coord:             coord,
@@ -249,27 +290,39 @@ func main() {
 		Heartbeat:         hbMon,
 		SnapshotScheduler: snapSched,
 		CDCEnabled:        cdcEnabled,
+		Elector:           elector,
 	}
 
-	switch edge.Role(*flagRole) {
-	case edge.RolePrimary:
-		// default; nothing extra
-	case edge.RoleFollower:
-		if *flagPrim == "" {
-			fatal("EDGE_PRIMARY_URL required when EDGE_ROLE=follower")
-		}
+	if elector != nil {
+		// Election mode: every edge runs the snapshot-pull loop. The sync
+		// function self-skips when this edge is currently leader.
 		pullDur, perr := time.ParseDuration(*flagPullInt)
 		if perr != nil {
 			fatal("invalid EDGE_FOLLOWER_PULL_INTERVAL: " + perr.Error())
 		}
-		srv.SetFollowerConfig(edge.FollowerConfig{
-			PrimaryURL:   *flagPrim,
-			DataDir:      *flagDataDir,
-			PullInterval: pullDur,
-		})
-		log.Info("kvfs-edge in follower role", "primary", *flagPrim, "pull_interval", pullDur)
-	default:
-		fatal("EDGE_ROLE must be 'primary' or 'follower' (got " + *flagRole + ")")
+		srv.SetElectionFollowerSync(*flagDataDir, pullDur)
+	} else {
+		// Manual mode (ADR-022): operator picks primary/follower via env.
+		switch edge.Role(*flagRole) {
+		case edge.RolePrimary:
+			// default; nothing extra
+		case edge.RoleFollower:
+			if *flagPrim == "" {
+				fatal("EDGE_PRIMARY_URL required when EDGE_ROLE=follower")
+			}
+			pullDur, perr := time.ParseDuration(*flagPullInt)
+			if perr != nil {
+				fatal("invalid EDGE_FOLLOWER_PULL_INTERVAL: " + perr.Error())
+			}
+			srv.SetFollowerConfig(edge.FollowerConfig{
+				PrimaryURL:   *flagPrim,
+				DataDir:      *flagDataDir,
+				PullInterval: pullDur,
+			})
+			log.Info("kvfs-edge in follower role", "primary", *flagPrim, "pull_interval", pullDur)
+		default:
+			fatal("EDGE_ROLE must be 'primary' or 'follower' (got " + *flagRole + ")")
+		}
 	}
 
 	log.Info("kvfs-edge starting",
@@ -304,8 +357,12 @@ func main() {
 	// Start auto-snapshot scheduler (ADR-016). No-op if SnapshotScheduler is nil.
 	srv.StartSnapshotScheduler(ctx)
 
-	// Start follower snapshot pull (ADR-022). No-op if Role != follower.
+	// Start follower snapshot pull (ADR-022 manual / ADR-031 election).
+	// No-op if neither mode configured a followerSt.
 	srv.StartFollowerSync(ctx)
+
+	// Start election state machine (ADR-031). No-op if Elector is nil.
+	srv.StartElector(ctx)
 
 	errCh := make(chan error, 1)
 	tlsCert := envOr("EDGE_TLS_CERT", "")

@@ -52,6 +52,7 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `internal/edge/replica.go` | Multi-edge HA — read-replica follower (ADR-022, Season 3 Ep.7). EDGE_ROLE/PRIMARY_URL/PULL_INTERVAL, snapshot-pull + atomic.Pointer hot-swap, write reject 503+X-KVFS-Primary |
 | `internal/chunker/stream.go` | Streaming PUT/GET (ADR-017, Season 4 Ep.1). io.Reader 기반 chunker.Reader, edge handler 메모리 = chunkSize 와 무관 (object size 무관) |
 | `internal/chunker/cdc.go` | Content-defined chunking (ADR-018, Season 4 Ep.2). FastCDC + GearTable, EDGE_CHUNK_MODE=cdc 로 활성, shift-invariant dedup |
+| `internal/election/` | Auto leader election (ADR-031, Season 4 Ep.3). Raft-style 3-state machine, term + voting invariants, HTTP vote/heartbeat RPC. EDGE_PEERS opt-in |
 | `scripts/` | 클러스터 lifecycle + 데모 (bash, curl, docker, python3만) |
 | `docs/adr/` | 아키텍처 의사결정 기록 (불변) |
 | `docs/FOLLOWUP.md` | 우선순위별 pending 작업 단일 소스 |
@@ -83,6 +84,7 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `./scripts/demo-rho.sh` | Multi-edge HA (read-replica) 라이브 데모 (Season 3 Ep.7, Season 3 close) |
 | `./scripts/demo-sigma.sh` | Streaming PUT/GET 라이브 데모 (Season 4 Ep.1) — 64 MiB / edge mem 22 MiB |
 | `./scripts/demo-tau.sh` | CDC chunking dedup 라이브 데모 (Season 4 Ep.2) — fixed 0% vs CDC 40% |
+| `./scripts/demo-upsilon.sh` | Auto leader election 라이브 데모 (Season 4 Ep.3) — 3 edge, kill leader, ~4s 후 새 leader 자동 등극 |
 | `./scripts/chaos-dn-killer.sh` | 주기적 random DN kill + GET 검증 (회귀 catch) |
 | `./scripts/down.sh` | 정리 (dn1~dn8 + edge 포함) |
 

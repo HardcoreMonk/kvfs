@@ -129,7 +129,19 @@ func (s *Server) runFollowerSync(ctx context.Context) {
 }
 
 func (s *Server) followerSyncOnce(ctx context.Context, client *http.Client, cfg FollowerConfig) error {
-	url := strings.TrimRight(cfg.PrimaryURL, "/") + "/v1/admin/meta/snapshot"
+	primaryURL := cfg.PrimaryURL
+	if s.Elector != nil {
+		// Election mode: short-circuit if we are the leader (no one to pull from).
+		if s.Elector.IsLeader() {
+			return nil
+		}
+		primaryURL = s.Elector.LeaderURL()
+		if primaryURL == "" {
+			// No leader known yet (just-started cluster).
+			return nil
+		}
+	}
+	url := strings.TrimRight(primaryURL, "/") + "/v1/admin/meta/snapshot"
 	pctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(pctx, http.MethodGet, url, nil)
@@ -191,10 +203,17 @@ func (s *Server) followerSyncOnce(ctx context.Context, client *http.Client, cfg 
 
 // roleStatus returns the current role + (follower) sync stats.
 func (s *Server) roleStatus() roleSnapshot {
-	if s.Role == RoleFollower && s.followerSt != nil {
-		return s.followerSt.snapshot()
+	role := s.effectiveRole()
+	var snap roleSnapshot
+	if role == RoleFollower && s.followerSt != nil {
+		snap = s.followerSt.snapshot()
 	}
-	return roleSnapshot{Role: RolePrimary}
+	snap.Role = role
+	if s.Elector != nil {
+		// Override PrimaryURL with the dynamically-elected leader's URL.
+		snap.PrimaryURL = s.Elector.LeaderURL()
+	}
+	return snap
 }
 
 // snapshot returns the follower's current sync stats. Holds RLock for the
@@ -214,16 +233,42 @@ func (st *followerState) snapshot() roleSnapshot {
 	}
 }
 
+// effectiveRole returns the runtime role, consulting Elector when present
+// (ADR-031 election mode) or falling back to the static Role field
+// (ADR-022 manual mode).
+func (s *Server) effectiveRole() Role {
+	if s.Elector != nil {
+		if s.Elector.IsLeader() {
+			return RolePrimary
+		}
+		return RoleFollower
+	}
+	return s.Role
+}
+
+// effectivePrimaryURL returns the URL of the current primary (or "" if
+// unknown / self-is-primary). Election mode dynamically queries Elector;
+// manual mode reads the static FollowerConfig.
+func (s *Server) effectivePrimaryURL() string {
+	if s.Elector != nil {
+		return s.Elector.LeaderURL()
+	}
+	if s.followerSt != nil {
+		return s.followerSt.cfg.PrimaryURL
+	}
+	return ""
+}
+
 // rejectIfFollowerWrite is the middleware-style guard mounted on the PUT and
 // DELETE data-path handlers. The handlers themselves are bound to those
 // methods and the /v1/o/ prefix, so we only need the role check here.
 // Returns true if it wrote a 503 response.
 func (s *Server) rejectIfFollowerWrite(w http.ResponseWriter, r *http.Request) bool {
-	if s.Role != RoleFollower {
+	if s.effectiveRole() != RoleFollower {
 		return false
 	}
-	if s.followerSt != nil && s.followerSt.cfg.PrimaryURL != "" {
-		w.Header().Set("X-KVFS-Primary", s.followerSt.cfg.PrimaryURL)
+	if url := s.effectivePrimaryURL(); url != "" {
+		w.Header().Set("X-KVFS-Primary", url)
 	}
 	writeError(w, http.StatusServiceUnavailable, "edge is in follower role; route writes to primary (see X-KVFS-Primary header)")
 	return true

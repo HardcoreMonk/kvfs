@@ -44,6 +44,7 @@ import (
 
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
+	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/gc"
 	"github.com/HardcoreMonk/kvfs/internal/heartbeat"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
@@ -151,21 +152,40 @@ type Server struct {
 	// disables it. StartSnapshotScheduler wires up the loop.
 	SnapshotScheduler *store.SnapshotScheduler
 
-	// Role is "primary" (default) or "follower" (ADR-022). Followers reject
-	// /v1/o/ writes with 503 + X-KVFS-Primary header and periodically pull
-	// snapshot from primary.
+	// Role is "primary" (default) or "follower" (ADR-022 manual mode).
+	// When Elector != nil (ADR-031 election mode), this field is ignored —
+	// effectiveRole() consults the elector instead.
 	Role Role
 
 	// followerSt holds follower mode state. Initialized when Role == follower
 	// via SetFollowerConfig. Nil otherwise.
 	followerSt *followerState
+
+	// Elector enables automatic leader election (ADR-031). When non-nil,
+	// effectiveRole() returns Primary when Elector.IsLeader(), else Follower.
+	// The follower sync loop, when present, queries Elector.LeaderURL()
+	// dynamically so failover automatically rewires snapshot-pull source.
+	Elector *election.Elector
 }
 
 // SetFollowerConfig switches Role to follower and registers the sync config.
-// Call once before StartFollowerSync.
+// Call once before StartFollowerSync (ADR-022 manual mode).
 func (s *Server) SetFollowerConfig(cfg FollowerConfig) {
 	s.Role = RoleFollower
 	s.followerSt = &followerState{cfg: cfg}
+}
+
+// SetElectionFollowerSync configures the follower sync loop for election
+// mode (ADR-031). PrimaryURL is intentionally empty — it's queried from the
+// Elector at each tick so leader changes propagate automatically.
+func (s *Server) SetElectionFollowerSync(dataDir string, pullInterval time.Duration) {
+	if pullInterval <= 0 {
+		pullInterval = 30 * time.Second
+	}
+	s.followerSt = &followerState{cfg: FollowerConfig{
+		DataDir:      dataDir,
+		PullInterval: pullInterval,
+	}}
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -222,6 +242,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("GET /v1/admin/snapshot/history", s.handleSnapshotHistory)
 	mux.HandleFunc("GET /v1/admin/role", s.handleRole)
+	if s.Elector != nil {
+		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
+		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
+		mux.HandleFunc("GET /v1/election/state", s.Elector.HandleState)
+	}
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }
@@ -1191,13 +1216,23 @@ func (s *Server) handleRole(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.roleStatus())
 }
 
-// StartFollowerSync runs the follower-only snapshot pull loop in a goroutine.
-// No-op if Role != RoleFollower. Stops on ctx.Done.
+// StartFollowerSync runs the snapshot-pull loop in a goroutine. Runs when
+// either ADR-022 manual follower (Role == RoleFollower) or ADR-031 election
+// mode is configured (followerSt is set in either case). The sync function
+// itself short-circuits when self-is-leader.
 func (s *Server) StartFollowerSync(ctx context.Context) {
-	if s.Role != RoleFollower {
+	if s.followerSt == nil {
 		return
 	}
 	go s.runFollowerSync(ctx)
+}
+
+// StartElector runs the election state machine. No-op if Elector is nil.
+func (s *Server) StartElector(ctx context.Context) {
+	if s.Elector == nil {
+		return
+	}
+	go s.Elector.Run(ctx)
 }
 
 // StartHeartbeat runs a goroutine that probes all runtime DNs every

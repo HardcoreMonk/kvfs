@@ -72,11 +72,12 @@ Accepted · YYYY-MM-DD
 |---|---|---|---|
 | [017](ADR-017-streaming-put-get.md) | Streaming PUT/GET (io.Reader 기반, replication mode) | Accepted · 2026-04-26 | `internal/chunker/stream.go` + handlePut/handleGet 리팩토링 |
 | [018](ADR-018-content-defined-chunking.md) | Content-defined chunking (FastCDC, opt-in) | Accepted · 2026-04-26 | `internal/chunker/cdc.go` + `EDGE_CHUNK_MODE=cdc` |
+| [031](ADR-031-auto-leader-election.md) | Auto leader election (Raft-style, multi-edge HA) | Accepted · 2026-04-26 | `internal/election/` + `EDGE_PEERS` |
 
 ## Season 3+ 예상 ADR (pending)
 - ADR-015: Coordinator daemon 분리 + Raft HA
 - ADR-019: WAL / incremental backup (분 단위 RPO, ADR-016 후속)
-- ADR-031: 자동 leader election (Raft / etcd, ADR-022 후속)
+- 진짜 Raft log replication (ADR-031 후속, write loss window 제거)
 - EC streaming (ADR-017 후속) · EC + CDC (ADR-018 후속)
 
 작성 시점: 해당 기능 설계 직전.
