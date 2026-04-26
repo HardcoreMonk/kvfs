@@ -83,6 +83,31 @@ func NewCoordClient(baseURL string) *CoordClient {
 	}
 }
 
+// PlaceN asks coord to pick n DNs for the given key (chunk_id or stripe_id).
+// Coord runs the same HRW algorithm as edge would but against its own DN
+// list — the authoritative one. ADR-041 (Season 5 Ep.6) makes this the
+// single point of placement decision so divergence between edge instances
+// and topology drift can't produce different placements for the same key.
+func (c *CoordClient) PlaceN(ctx context.Context, key string, n int) ([]string, error) {
+	body, err := json.Marshal(coord.PlaceRequest{Key: key, N: n})
+	if err != nil {
+		return nil, fmt.Errorf("coord-client: marshal place: %w", err)
+	}
+	resp, err := c.do(ctx, "POST", "/v1/coord/place", body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("coord-client: place status %d: %s", resp.StatusCode, readErrBody(resp))
+	}
+	var pr coord.PlaceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return nil, fmt.Errorf("coord-client: decode place: %w", err)
+	}
+	return pr.Addrs, nil
+}
+
 // CommitObject ships an ObjectMeta to coord for persistence. coord owns the
 // bbolt write and assigns the version. Returns error on quorum/network/coord
 // failure — caller (handlePut) should surface to client as 5xx.

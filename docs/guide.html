@@ -783,8 +783,9 @@ type Stripe struct {
   <li>Ep.2: edge → coord client 통합. <code>EDGE_COORD_URL</code> 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임. 데모 demo-bet (히브리 ב).</li>
   <li>Ep.3: coord HA via Raft (ADR-038). election + leader-redirect. 데모 demo-gimel.</li>
   <li>Ep.4: coord-to-coord WAL replication (ADR-039). <code>COORD_WAL_PATH</code> 설정 시 best-effort sync. 데모 demo-dalet (ד).</li>
-  <li>Ep.5 (현재): coord transactional commit (ADR-040). <code>COORD_TRANSACTIONAL_RAFT=1</code> 설정 시 replicate-then-commit — quorum 실패 시 503 + leader bbolt 무변화. ADR-034 패턴을 coord 에 port. ADR-039 의 phantom-write window 닫음. 데모 demo-he (히브리 ה).</li>
-  <li>후속: Ep.6 edge 의 placement 코드 제거.</li>
+  <li>Ep.5: coord transactional commit (ADR-040). <code>COORD_TRANSACTIONAL_RAFT=1</code>, replicate-then-commit. 데모 demo-he (ה).</li>
+  <li>Ep.6 (현재): edge → coord placement RPC (ADR-041). <code>CoordClient.PlaceN</code> + <code>Server.placeN</code>. EDGE_COORD_URL 설정 시 모든 chunk/stripe placement 결정이 coord 에서 — coord 가 single source of truth. 데모 demo-vav (히브리 ו) — coord 가 dn1/2/3 만 알 때 edge 의 dn4 가 placement 에 절대 등장 안 함.</li>
+  <li>후속: kvfs-cli 가 coord 에 직접 admin RPC.</li>
 </ul>
 <p>이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.</p>
 

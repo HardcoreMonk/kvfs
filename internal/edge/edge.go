@@ -328,20 +328,45 @@ func (s *Server) handleListBucket(w http.ResponseWriter, r *http.Request) {
 // full DN set when the class subset can't satisfy quorum.
 //
 // Bias semantics:
-//  1. If PlacementPreferClass == "" → coord.WriteChunk (legacy, full set).
+//  1. If PlacementPreferClass == "" → placeN (coord-driven if CoordClient,
+//     else local) → WriteChunkToAddrs.
 //  2. Else: query Store.ListRuntimeDNsByClass(class). If subset satisfies
-//     ReplicationFactor → place there only. Otherwise fall back to full
-//     coord.WriteChunk (so a sparse hot tier doesn't reject writes).
+//     ReplicationFactor → place there only (local subset HRW). Otherwise
+//     fall back to (1).
 func (s *Server) writeChunkPreferClass(ctx context.Context, chunkID string, data []byte) ([]string, error) {
+	r := s.Coord.ReplicationFactor()
 	if s.PlacementPreferClass == "" {
-		return s.Coord.WriteChunk(ctx, chunkID, data)
+		targets, err := s.placeN(ctx, chunkID, r)
+		if err != nil {
+			return nil, err
+		}
+		return s.Coord.WriteChunkToAddrs(ctx, chunkID, data, targets)
 	}
 	classDNs, err := s.Store.ListRuntimeDNsByClass(s.PlacementPreferClass)
-	if err != nil || len(classDNs) < s.Coord.ReplicationFactor() {
-		return s.Coord.WriteChunk(ctx, chunkID, data)
+	if err != nil || len(classDNs) < r {
+		targets, perr := s.placeN(ctx, chunkID, r)
+		if perr != nil {
+			return nil, perr
+		}
+		return s.Coord.WriteChunkToAddrs(ctx, chunkID, data, targets)
 	}
-	targets := s.Coord.PlaceNFromAddrs(chunkID, s.Coord.ReplicationFactor(), classDNs)
+	// Class subset path stays local — coord doesn't yet expose a
+	// PlaceFromAddrs RPC and the class label set lives on the local
+	// store anyway. Future ep can move it to coord if class becomes a
+	// coord-side responsibility.
+	targets := s.Coord.PlaceNFromAddrs(chunkID, r, classDNs)
 	return s.Coord.WriteChunkToAddrs(ctx, chunkID, data, targets)
+}
+
+// placeN picks n DN addrs for the given key. Routes through coord when
+// CoordClient is set (ADR-041 single-source-of-truth placement), else
+// uses the local Coord.PlaceN. Network/coord error → caller propagates
+// to client as 5xx.
+func (s *Server) placeN(ctx context.Context, key string, n int) ([]string, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.PlaceN(ctx, key, n)
+	}
+	return s.Coord.PlaceN(key, n), nil
 }
 
 // commitPutMeta is the unified PutObject path that picks transactional
@@ -1660,7 +1685,12 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 		}
 		stripeID := hex.EncodeToString(hsh.Sum(nil))
 
-		dnAddrs := s.Coord.PlaceN(stripeID, k+m)
+		dnAddrs, perr := s.placeN(ctx, stripeID, k+m)
+		if perr != nil {
+			writeError(w, http.StatusBadGateway,
+				fmt.Sprintf("stripe %d: place: %v", stripeIdx, perr))
+			return
+		}
 		if len(dnAddrs) < k+m {
 			writeError(w, http.StatusBadGateway,
 				fmt.Sprintf("stripe %d: only %d DNs available for %d shards", stripeIdx, len(dnAddrs), k+m))

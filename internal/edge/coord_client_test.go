@@ -82,6 +82,58 @@ func TestCoordClient_RoundTripAgainstRealCoord(t *testing.T) {
 	}
 }
 
+// ADR-041 (S5 Ep.6): edge routes placement decisions through coord. The
+// PlaceN RPC returns coord's HRW result against ITS DN list — which may
+// differ from edge's local DN list. This test wires a coord with a DN
+// subset distinct from what edge would pick locally; PlaceN must return
+// only coord's subset, proving the call hit coord.
+func TestCoordClient_PlaceN_ReturnsCoordsView(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// Coord knows only dn1, dn2, dn3. Edge calling PlaceN through this
+	// client must NEVER receive any other addr.
+	cs := &coord.Server{
+		Store:  st,
+		Placer: placement.New([]placement.Node{
+			{ID: "dn1:8080", Addr: "dn1:8080"},
+			{ID: "dn2:8080", Addr: "dn2:8080"},
+			{ID: "dn3:8080", Addr: "dn3:8080"},
+		}),
+	}
+	ts := httptest.NewServer(cs.Routes())
+	defer ts.Close()
+
+	cc := NewCoordClient(ts.URL)
+	cc.Timeout = 2 * time.Second
+
+	addrs, err := cc.PlaceN(context.Background(), "any-chunk-id", 3)
+	if err != nil {
+		t.Fatalf("PlaceN: %v", err)
+	}
+	if len(addrs) != 3 {
+		t.Errorf("got %d addrs, want 3", len(addrs))
+	}
+	allowed := map[string]bool{"dn1:8080": true, "dn2:8080": true, "dn3:8080": true}
+	for _, a := range addrs {
+		if !allowed[a] {
+			t.Errorf("got addr %q which coord doesn't know about", a)
+		}
+	}
+
+	// Determinism — same key/n → same answer.
+	addrs2, _ := cc.PlaceN(context.Background(), "any-chunk-id", 3)
+	for i := range addrs {
+		if addrs[i] != addrs2[i] {
+			t.Errorf("PlaceN non-deterministic at %d: %q vs %q", i, addrs[i], addrs2[i])
+		}
+	}
+}
+
 // Healthz against an unreachable coord must return a non-nil error within
 // the per-call timeout — used by edge boot to fail fast on misconfig.
 func TestCoordClient_HealthzFailsFastOnUnreachable(t *testing.T) {

@@ -576,8 +576,9 @@ ADR-015 Accept (2026-04-26). `kvfs-coord` daemon 신설 — placement + 메타 o
 - Ep.2: edge → coord client 통합. `EDGE_COORD_URL` 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임. 데모 demo-bet (히브리 ב).
 - Ep.3: coord HA via Raft (ADR-038). election + leader-redirect. 데모 demo-gimel.
 - Ep.4: coord-to-coord WAL replication (ADR-039). `COORD_WAL_PATH` 설정 시 best-effort sync. 데모 demo-dalet (히브리 ד).
-- Ep.5 (현재): coord transactional commit (ADR-040). `COORD_TRANSACTIONAL_RAFT=1` 설정 시 replicate-then-commit — quorum 실패 시 503 + leader bbolt 무변화. ADR-034 의 패턴을 coord 에 port. ADR-039 의 phantom-write window 닫음. 데모 demo-he (히브리 ה).
-- 후속: Ep.6 edge 의 placement 코드 제거.
+- Ep.5: coord transactional commit (ADR-040). `COORD_TRANSACTIONAL_RAFT=1` 설정 시 replicate-then-commit — quorum 실패 시 503 + leader bbolt 무변화. 데모 demo-he (히브리 ה).
+- Ep.6 (현재): edge → coord placement RPC (ADR-041). `CoordClient.PlaceN` + `Server.placeN` helper. EDGE_COORD_URL set 시 모든 chunk/stripe placement 결정이 coord 에서. coord 가 placement 의 single source of truth. 데모 demo-vav (히브리 ו) — coord 가 dn1/2/3 만 알 때 edge 의 dn4 가 placement 에 절대 안 등장.
+- 후속: kvfs-cli 가 coord 에 직접 admin RPC.
 
 이 트랙이 완료되면 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.
 

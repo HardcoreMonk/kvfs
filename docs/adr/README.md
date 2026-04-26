@@ -96,6 +96,7 @@ Accepted · YYYY-MM-DD
 | [038](ADR-038-coord-ha-via-raft.md) | Coord HA via Raft (election + leader-redirect, ADR-031 reuse) | Accepted · 2026-04-27 | `coord.Server.Elector` + `X-COORD-LEADER` redirect · demo-gimel (Ep.3) |
 | [039](ADR-039-coord-wal-replication.md) | Coord-to-coord WAL replication (ADR-038 gap closer) | Accepted · 2026-04-27 | `COORD_WAL_PATH` + leader push hook + follower ApplyEntry · demo-dalet (Ep.4) |
 | [040](ADR-040-coord-transactional-commit.md) | Coord transactional commit (ADR-034 port; closes phantom-write window) | Accepted · 2026-04-27 | `COORD_TRANSACTIONAL_RAFT` + commit() helper · demo-he (Ep.5) |
+| [041](ADR-041-edge-placement-via-coord.md) | Edge routes placement decisions through coord (single source of truth) | Accepted · 2026-04-27 | `CoordClient.PlaceN` + `Server.placeN` helper · demo-vav (Ep.6) |
 
 > Greek alpha-omega 가 소진됐으므로 Season 5 demos 는 Hebrew (aleph, bet, gimel ...).
 

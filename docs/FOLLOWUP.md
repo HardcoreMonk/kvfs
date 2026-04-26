@@ -88,8 +88,8 @@
 - **배경**: cmd/kvfs-{edge,coord}/main.go 의 envOr/splitCSV/fatal 중복 + internal/coord/coord.go 와 internal/edge/edge.go 의 writeJSON/writeError 중복. /simplify 발견.
 - **스펙**: 5+ 바이너리 또는 4+ HTTP 패키지 가 생기면 진행. 현재 (4 binaries / 2 HTTP packages) 는 자체 보유가 더 readable. 트리거 조건 만족 시 진행.
 
-### [P6-05] edge 의 placement 코드 완전 제거
-- **다음 단계**: `internal/coordinator/` 의 placement 부분이 coord client wrapper 만 남음. ADR-002 기존 paragraph deprecate.
+### ~~[P6-05] edge 의 placement 코드 완전 제거~~
+- **DONE 2026-04-27**: ADR-041 작성 + 구현. `CoordClient.PlaceN` 추가, `Server.placeN` helper 분기, `writeChunkPreferClass` 와 `handlePutECStream` 모두 placeN 경유. 1 unit test (TestCoordClient_PlaceN_ReturnsCoordsView). 데모 demo-vav.sh (히브리 ו) — coord 가 dn1/2/3 만, edge 가 dn1/2/3/4 알 때 chunks 가 dn4 에 절대 안 감 (proof of routing). 149 tests PASS. `internal/coordinator/` 의 placement 부분은 fallback 용 그대로 (CoordClient nil 일 때). 완전 제거는 후속 정리.
 
 ### [P6-06] kvfs-cli 가 coord 직접 admin
 - **다음 단계**: `kvfs-cli coord-* ...` subcommand. admin 작업이 edge 통과 안 함.
