@@ -1,0 +1,37 @@
+name: doc-drift
+
+# Detects when docs/GUIDE.md / docs/guide.html fall out of sync with the
+# actual ADR list, env vars, and internal/ packages. Script lives at
+# scripts/check-doc-drift.sh so local devs can run the same check.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/GUIDE.md'
+      - 'docs/guide.html'
+      - 'docs/adr/**'
+      - 'cmd/kvfs-edge/main.go'
+      - 'internal/**'
+      - 'scripts/check-doc-drift.sh'
+  pull_request:
+    paths:
+      - 'docs/GUIDE.md'
+      - 'docs/guide.html'
+      - 'docs/adr/**'
+      - 'cmd/kvfs-edge/main.go'
+      - 'internal/**'
+      - 'scripts/check-doc-drift.sh'
+  schedule:
+    # Monthly catch-all: 1st of every month at 09:13 UTC. Off-minute on
+    # purpose (avoids the cron-fleet's :00 spike).
+    - cron: '13 9 1 * *'
+
+jobs:
+  drift:
+    name: docs-vs-code drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run drift script
+        run: bash scripts/check-doc-drift.sh

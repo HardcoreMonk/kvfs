@@ -325,7 +325,7 @@ choose top R by score</code></pre>
 </ul>
 
 <h3>3.4 Content-defined Chunking (FastCDC) <span class="tag">ADR-018</span></h3>
-<blockquote><p>고정 4 MiB 로 자르면 1 byte 만 끼워넣어도 모든 chunk_id 가 달라져 dedup 0%. CDC 는 chunk 경계를 <strong>content</strong> 로 결정해서 shift 에 강하다.</p></blockquote>
+<blockquote><p>고정 4 MiB chunking (ADR-011) 으로 자르면 1 byte 만 끼워넣어도 모든 chunk_id 가 달라져 dedup 0%. CDC 는 chunk 경계를 <strong>content</strong> 로 결정해서 shift 에 강하다.</p></blockquote>
 <pre><code>fp = 0
 for each byte b in stream:
   fp = (fp &lt;&lt; 1) + GearTable[b]
@@ -542,10 +542,11 @@ stateDiagram-v2
   <li><code>EDGE_PEERS=edge1:8000,edge2:8000,edge3:8000</code> 으로 활성. 기본은 single-edge.</li>
 </ul>
 
-<h3>7.3 Synchronous replication (Ep.8 follow-up)</h3>
+<h3>7.3 Synchronous replication (Ep.8 follow-up) · informational strict <span class="tag">ADR-033</span></h3>
 <ul>
   <li>leader 가 매 WAL Append 마다 peers 에 <code>POST /v1/election/append-wal</code> push.</li>
   <li>follower 가 즉시 <code>ApplyEntry</code> → 메타 동기화. RPO 0 (best-effort).</li>
+  <li><code>EDGE_STRICT_REPL=1</code> (ADR-033) — quorum 실패 시 client 에 503 응답 (informational only; bbolt commit 은 이미 발생, follower 는 다음 sync 에 catch up). 진짜 commit-before-quorum 은 §7.4.</li>
 </ul>
 
 <h3>7.4 Transactional Raft <span class="tag">ADR-034</span></h3>
@@ -760,6 +761,7 @@ type Stripe struct {
   <li><strong>multi-region</strong>. 단일 cluster 만.</li>
   <li><strong>encryption at rest</strong>. dn 디스크는 평문 (운영자가 LUKS 등으로 처리).</li>
   <li><strong>versioning, MFA delete, lifecycle policy</strong>. S3 의 그 features 들은 없음.</li>
+  <li><strong>NFS / POSIX gateway</strong> — 한번 평가 후 deferred (ADR-032). FUSE 마운트는 메타데이터 모델이 안 맞고, NFS 서버를 박으면 kvfs 가 stateful filesystem 로 변질됨.</li>
 </ul>
 
 <h2 id="s13"><span class="num">13</span>다음에 읽을 것</h2>

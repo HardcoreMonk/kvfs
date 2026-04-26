@@ -109,7 +109,7 @@ K data shards + M parity shards = K+M 개 shards 가 stripe 하나
 
 ### 3.4 Content-defined Chunking (FastCDC, ADR-018)
 
-> 고정 4 MiB 로 자르면 1 byte 만 끼워넣어도 모든 chunk_id 가 달라져 dedup 0%. CDC 는 chunk 경계를 **content** 로 결정해서 shift 에 강하다.
+> 고정 4 MiB chunking (ADR-011) 으로 자르면 1 byte 만 끼워넣어도 모든 chunk_id 가 달라져 dedup 0%. CDC 는 chunk 경계를 **content** 로 결정해서 shift 에 강하다.
 
 ```
 fp = 0
@@ -335,10 +335,11 @@ Client ──GET──┬──────┘
 - HTTP RPC 2개: `POST /v1/election/vote`, `POST /v1/election/heartbeat`.
 - `EDGE_PEERS=edge1:8000,edge2:8000,edge3:8000` 으로 활성. 기본은 single-edge.
 
-### 7.3 Synchronous replication (ADR-031 follow-up = Ep.8)
+### 7.3 Synchronous replication (ADR-031 follow-up = Ep.8) · informational strict (ADR-033)
 
 - leader 가 매 WAL Append 마다 peers 에 `POST /v1/election/append-wal` push.
 - follower 가 즉시 `ApplyEntry` → 메타 동기화. RPO 0 (best-effort).
+- `EDGE_STRICT_REPL=1` (ADR-033) — quorum 실패 시 client 에 503 응답 (informational only; bbolt commit 은 이미 발생했으므로 follower 는 다음 sync 에 catch up). 진짜 commit-before-quorum 은 §7.4.
 
 ### 7.4 Transactional Raft (ADR-034)
 
@@ -550,6 +551,7 @@ type Stripe struct {
 - **multi-region**. 단일 cluster 만.
 - **encryption at rest**. dn 디스크는 평문 (운영자가 LUKS 등으로 처리).
 - **versioning, MFA delete, lifecycle policy**. S3 의 그 features 들은 없음.
+- **NFS / POSIX gateway** — 한번 평가 후 deferred (ADR-032). FUSE 마운트는 메타데이터 모델이 안 맞고, NFS 서버를 박으면 kvfs 가 stateful filesystem 로 변질됨. 후속 검토 가능성만 열어둠.
 
 ---
 
