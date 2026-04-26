@@ -223,45 +223,59 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if len(body) == 0 {
-		writeError(w, http.StatusBadRequest, "empty body")
-		return
-	}
-
-	// Decide storage mode: header `X-KVFS-EC: K+M` opts into erasure coding.
+	// EC mode (ADR-008) still buffers the body — encoder needs full stripes.
+	// Streaming EC is a follow-up (would split per-stripe in the encoder).
 	if ecHdr := r.Header.Get("X-KVFS-EC"); ecHdr != "" {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(body) == 0 {
+			writeError(w, http.StatusBadRequest, "empty body")
+			return
+		}
 		s.handlePutEC(w, r, bucket, key, body, ecHdr)
 		return
 	}
 
-	// Split body into fixed-size chunks (ADR-011). Each chunk gets its own
-	// content-addressable id and is placed independently via Rendezvous Hashing.
-	pieces := chunker.Split(body, s.chunkSize())
-
+	// Replication mode: stream per chunk (ADR-017). Memory bound = chunkSize
+	// regardless of object size. Each chunk gets its own content-addressable id
+	// and is placed independently via Rendezvous Hashing.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	chunkRefs := make([]store.ChunkRef, len(pieces))
-	for i, p := range pieces {
-		replicas, werr := s.Coord.WriteChunk(ctx, p.ID, p.Data)
+	reader := chunker.NewReader(r.Body, s.chunkSize())
+	var chunkRefs []store.ChunkRef
+	var totalSize int64
+	for i := 0; ; i++ {
+		piece, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("read chunk %d: %v", i+1, err))
+			return
+		}
+		replicas, werr := s.Coord.WriteChunk(ctx, piece.ID, piece.Data)
 		if werr != nil {
 			// Partial-success orphan chunks remain on disk; GC (ADR-012) cleans
 			// them after min-age. We do NOT commit metadata, so reads can't see
 			// a half-written object.
 			writeError(w, http.StatusBadGateway,
-				fmt.Sprintf("chunk %d/%d (%s): %v", i+1, len(pieces), p.ID[:16], werr))
+				fmt.Sprintf("chunk %d (%s): %v", i+1, piece.ID[:16], werr))
 			return
 		}
-		chunkRefs[i] = store.ChunkRef{
-			ChunkID:  p.ID,
-			Size:     p.Size,
+		chunkRefs = append(chunkRefs, store.ChunkRef{
+			ChunkID:  piece.ID,
+			Size:     piece.Size,
 			Replicas: replicas,
-		}
+		})
+		totalSize += piece.Size
+	}
+	if len(chunkRefs) == 0 {
+		writeError(w, http.StatusBadRequest, "empty body")
+		return
 	}
 
 	contentType := r.Header.Get("Content-Type")
@@ -272,7 +286,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	meta := &store.ObjectMeta{
 		Bucket:      bucket,
 		Key:         key,
-		Size:        int64(len(body)),
+		Size:        totalSize,
 		Chunks:      chunkRefs,
 		ContentType: contentType,
 	}
@@ -284,7 +298,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"bucket":     bucket,
 		"key":        key,
-		"size":       len(body),
+		"size":       totalSize,
 		"chunk_size": s.chunkSize(),
 		"chunks":     chunkRefs,
 		"version":    meta.Version,
@@ -318,28 +332,40 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Replication mode: fetch each chunk in order and concat.
-	specs := make([]chunker.JoinSpec, len(meta.Chunks))
-	chunkReplicas := make(map[string][]string, len(meta.Chunks))
-	for i, c := range meta.Chunks {
-		specs[i] = chunker.JoinSpec{ChunkID: c.ChunkID, Size: c.Size}
-		chunkReplicas[c.ChunkID] = c.Replicas
-	}
-
-	body, err := chunker.Join(specs, meta.Size, func(chunkID string) ([]byte, error) {
-		data, _, ferr := s.Coord.ReadChunk(ctx, chunkID, chunkReplicas[chunkID])
-		return data, ferr
-	})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-
+	// Replication mode: stream each chunk to the response writer (ADR-017).
+	// Memory bound = chunkSize per iteration, regardless of object size.
+	//
+	// Header order matters: once we Write the first byte, headers are flushed.
+	// If a mid-stream chunk fetch fails, we cannot change status — only abort
+	// the connection so the client sees a truncated body.
 	w.Header().Set("Content-Type", meta.ContentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
 	w.Header().Set("X-KVFS-Chunks", fmt.Sprintf("%d", len(meta.Chunks)))
 	w.Header().Set("X-KVFS-Version", fmt.Sprintf("%d", meta.Version))
-	_, _ = w.Write(body)
+
+	for i, c := range meta.Chunks {
+		data, _, ferr := s.Coord.ReadChunk(ctx, c.ChunkID, c.Replicas)
+		if ferr != nil {
+			if i == 0 {
+				writeError(w, http.StatusBadGateway, ferr.Error())
+				return
+			}
+			s.logger().Error("GET stream aborted",
+				slog.String("bucket", bucket), slog.String("key", key),
+				slog.Int("chunk_index", i), slog.String("err", ferr.Error()))
+			return
+		}
+		if int64(len(data)) != c.Size {
+			s.logger().Error("GET chunk size mismatch",
+				slog.String("chunk_id", c.ChunkID),
+				slog.Int("got", len(data)), slog.Int64("want", c.Size))
+			return
+		}
+		if _, werr := w.Write(data); werr != nil {
+			// Client disconnect — log and stop.
+			return
+		}
+	}
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {

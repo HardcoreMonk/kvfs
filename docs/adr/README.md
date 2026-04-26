@@ -66,9 +66,14 @@ Accepted · YYYY-MM-DD
 | [016](ADR-016-auto-snapshot-scheduler.md) | Auto-snapshot scheduler (ticker + retention) | Accepted · 2026-04-26 | `internal/store/scheduler.go` + `kvfs-cli meta history` |
 | [022](ADR-022-multi-edge-ha.md) | Multi-edge HA (read-replica via snapshot-pull) | Accepted · 2026-04-26 | `internal/edge/replica.go` + `kvfs-cli role` + atomic.Pointer[bbolt.DB] |
 
+## Season 4 (in progress)
+
+| # | 제목 | 상태 | 연결 |
+|---|---|---|---|
+| [017](ADR-017-streaming-put-get.md) | Streaming PUT/GET (io.Reader 기반, replication mode) | Accepted · 2026-04-26 | `internal/chunker/stream.go` + handlePut/handleGet 리팩토링 |
+
 ## Season 3+ 예상 ADR (pending)
 - ADR-015: Coordinator daemon 분리 + Raft HA
-- ADR-017: Streaming PUT/GET (io.Reader 기반)
 - ADR-018: Content-defined chunking
 - ADR-019: WAL / incremental backup (분 단위 RPO, ADR-016 후속)
 - ADR-031: 자동 leader election (Raft / etcd, ADR-022 후속)

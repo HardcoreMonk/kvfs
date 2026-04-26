@@ -1,7 +1,7 @@
 # kvfs — Key-Value File System
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스.
-> **Go 1.26 · Apache 2.0 · 22 ADR · 13 blog episode · 15 라이브 데모 · 105 unit test**
+> **Go 1.26 · Apache 2.0 · 23 ADR · 14 blog episode · 16 라이브 데모 · 110 unit test**
 
 ## 이것은 무엇인가
 
@@ -13,7 +13,7 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **1** | MVP | ✅ closed | 2-daemon · 3-way replication · UrlKey · CA chunk |
 | **2** | 분산 알고리즘 | ✅ closed | HRW placement · rebalance · GC · chunking · EC |
 | **3** | 운영성 | ✅ closed | auto-trigger · EC repair · meta backup · heartbeat · multi-edge HA |
-| **4** | 성능·효율 | 예정 | streaming · CDC chunking · WAL · auto leader election |
+| **4** | 성능·효율 | ▶ Ep.1 (streaming) | streaming · CDC chunking · WAL · auto leader election |
 
 이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 목표는 production 이 아니라
 **이해 가능한 레퍼런스**.
@@ -89,6 +89,12 @@ cd kvfs
 | [016](docs/adr/ADR-016-auto-snapshot-scheduler.md) | Auto-snapshot scheduler (ticker + retention) | π | [12](blog/12-auto-snapshot.md) |
 | [022](docs/adr/ADR-022-multi-edge-ha.md) | Multi-edge HA (read-replica + atomic.Pointer hot-swap) | ρ | [13](blog/13-multi-edge-ha.md) |
 
+### Season 4 (성능·효율, 진행 중)
+
+| ADR | 주제 | Demo | Blog |
+|---|---|---|---|
+| [017](docs/adr/ADR-017-streaming-put-get.md) | Streaming PUT/GET (io.Reader 기반) | σ | [14](blog/14-streaming.md) |
+
 ### 운영 보강 (Accepted)
 
 | ADR | 주제 |
@@ -97,9 +103,9 @@ cd kvfs
 | [028](docs/adr/ADR-028-urlkey-rotation.md) | UrlKey kid rotation (multi-key Signer) |
 | [029](docs/adr/ADR-029-optional-tls.md) | Optional TLS / mTLS (env-driven opt-in) |
 
-### 예정 ([P4-01](docs/FOLLOWUP.md))
+### 예정 ([P4-02](docs/FOLLOWUP.md))
 
-ADR-017 streaming · ADR-018 CDC chunking · ADR-019 WAL/incremental · ADR-031 자동 leader election
+ADR-018 CDC chunking · ADR-019 WAL/incremental · ADR-031 자동 leader election
 
 ## 환경 변수
 

@@ -109,15 +109,18 @@
 ### ~~[P3-13] Season 3 Ep.7 주제 결정~~
 - **DONE 2026-04-26**: ADR-022 Multi-edge HA (read-replica MVP) 채택 + 구현 완료. **Season 3 close**
 
-### [P4-01] Season 4 (성능·효율 트랙) 진입 시점 결정
-- **현**: Season 3 close. 다음 트랙 미정
-- **후보 ep**:
-  - **ADR-017 — Streaming PUT/GET**: io.ReadAll → io.Reader 진짜 streaming. 큰 객체 메모리 부담 해소
+### ~~[P4-01] Season 4 (성능·효율 트랙) 진입 시점 결정~~
+- **DONE 2026-04-26**: ADR-017 Streaming PUT/GET 채택 + 구현 완료. Season 4 Ep.1 closed
+
+### [P4-02] Season 4 Ep.2 주제 결정
+- **현**: Ep.1 ADR-017 완료. Season 4 다음 ep 미정
+- **남은 후보**:
   - **ADR-018 — Content-defined chunking**: rabin/buzhash 비정렬 dedup 효율
-  - **ADR-019 — WAL / incremental backup**: ADR-016/022 의 후속 — RPO 초 단위
-  - **ADR-031 — Auto leader election**: ADR-022 의 후속 — Raft / etcd 통합
-- **추천**: 017 (성능 가시성↑) → 018 (효율) → 019/031 (운영 깊이)
-- **결정**: 사용자 결정 — 즉시 진행 vs 잠시 휴식
+  - **ADR-019 — WAL / incremental backup**: 분 단위 RPO
+  - **ADR-031 — Auto leader election**: Raft / etcd, ADR-022 후속
+  - **EC streaming PUT/GET** (ADR-017 follow-up): per-stripe streaming, encoder 인터페이스 변경 필요
+- **추천**: 018 (효율, 측정 가능 dedup 비율) → 019 (RPO) → 031 (HA 깊이)
+- **결정 시 P1 로 승격**
 
 ---
 
@@ -154,13 +157,14 @@
 | 2026-04-26 | Season 3 Ep.5 — ADR-030 DN heartbeat 구현 완료 | `internal/heartbeat/` (Probe interface + Monitor, 6 tests PASS), `EDGE_HEARTBEAT_INTERVAL/THRESHOLD` env, `GET /v1/admin/heartbeat`, `kvfs-cli heartbeat` 사람-친화 표 출력. `scripts/demo-omicron.sh` (3 DN: kill dn3 → 4s 후 unhealthy 표시 → restart → 즉시 recovery 라이브 PASS). `blog/11-dn-heartbeat.md` |
 | 2026-04-26 | Season 3 Ep.6 — ADR-016 Auto-snapshot scheduler 구현 완료 | `internal/store/scheduler.go` (`SnapshotScheduler.Run` ticker + atomic temp+rename + mtime-based prune, 4 tests PASS). `EDGE_SNAPSHOT_DIR/INTERVAL/KEEP` env, `GET /v1/admin/snapshot/history`, `kvfs-cli meta history`. `scripts/demo-pi.sh` (interval=2s, keep=3 → 5 ticks 후 정확히 newest 3 file 잔존, 회전 검증 라이브 PASS). `blog/12-auto-snapshot.md` |
 | 2026-04-26 | Season 3 Ep.7 — ADR-022 Multi-edge HA 구현 완료 (Season 3 close) | `internal/store/store.go` `atomic.Pointer[bbolt.DB]` 리팩토링 + `Reload(path)` (~30 LOC 변경). `internal/edge/replica.go` Role/FollowerConfig/snapshot-pull loop/rejectIfFollowerWrite middleware (~210 LOC). `EDGE_ROLE/PRIMARY_URL/PULL_INTERVAL` env, `GET /v1/admin/role`, `kvfs-cli role`. `scripts/demo-rho.sh` 라이브: primary + 1 follower (pull=2s) → PUT primary → 2s 후 follower GET 성공 (4 syncs 0 errors), follower PUT → 503 + X-KVFS-Primary 헤더. `blog/13-multi-edge-ha.md` |
+| 2026-04-26 | Season 4 Ep.1 — ADR-017 Streaming PUT/GET 구현 완료 | `internal/chunker/stream.go` `Reader.Next()` (io.ReadFull 기반, defensive copy, 5 tests PASS). `handlePut` replication path → streaming chunker 루프, `handleGet` → ResponseWriter 에 직접 write. EC mode 는 본 ep 비범위 (encoder 인터페이스 변경 필요). `scripts/demo-sigma.sh` 64 MiB random body 라이브: 16 chunks, edge mem **22.74 MiB** (object size ≫ memory), sha256 round-trip 일치. `blog/14-streaming.md` |
 
 ---
 
 ## 현재 상태 요약 (2026-04-26)
 
 - **Git**: main branch, **GitHub `HardcoreMonk/kvfs` PUBLIC** (https://github.com/HardcoreMonk/kvfs, repo 신규 재생성 후 fresh history)
-- **테스트**: 핵심 패키지 모두 = **105 unit tests PASS**, `go vet` 클린
+- **테스트**: 핵심 패키지 모두 = **110 unit tests PASS** (chunker stream 5 추가), `go vet` 클린
 - **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ, ν, ξ, ο, π, ρ 전부 라이브 통과 (15종)
 - **ADR**: 22건 Accepted (022 추가)
 - **Blog**: Ep.1~Ep.13 완성 (Ep.13 = Multi-edge HA)
