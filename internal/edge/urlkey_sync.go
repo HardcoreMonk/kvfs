@@ -108,13 +108,13 @@ func (s *Server) urlKeyPoller(ctx context.Context, interval time.Duration) {
 
 // StartURLKeyPolling launches the background poll loop. Caller controls
 // lifetime via ctx (typically the daemon's shutdown ctx). No-op when
-// CoordClient is nil (inline mode — bbolt is the source of truth).
+// CoordClient is nil (inline mode — bbolt is the source of truth) OR
+// when interval <= 0 (operator explicitly disabled). Default tuning
+// (~30s) lives at the env-parse layer in cmd/kvfs-edge/main.go so the
+// polling decision is visible at the call site.
 func (s *Server) StartURLKeyPolling(ctx context.Context, interval time.Duration) {
-	if s.CoordClient == nil {
+	if s.CoordClient == nil || interval <= 0 {
 		return
-	}
-	if interval <= 0 {
-		interval = 30 * time.Second
 	}
 	go s.urlKeyPoller(ctx, interval)
 }

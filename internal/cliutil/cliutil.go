@@ -24,6 +24,15 @@ import (
 // EnvOr returns os.LookupEnv(k) if present (including empty string),
 // otherwise def. Mirrors the per-daemon envOr the project has used since
 // Season 1.
+//
+// Empty-set vs unset: this returns "" when the operator sets `KEY=`
+// explicitly (LookupEnv treats it as set). Most kvfs callers compare to
+// a non-empty constant ("1", "cdc"), so empty acts like unset there.
+// Edge case: env vars whose default is a non-empty Go duration string
+// (e.g., "5m") get fatal errors at time.ParseDuration("") if the
+// operator clears them — that's louder than the prior os.Getenv-based
+// helpers (which would have silently used the default). Acceptable —
+// fail-loud > silently-default for misconfig.
 func EnvOr(k, def string) string {
 	if v, ok := os.LookupEnv(k); ok {
 		return v

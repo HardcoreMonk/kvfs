@@ -83,13 +83,7 @@ echo
 # Step 3: sign with the new kid v3 + secret, send through edge → 200 means
 # edge's signer knows v3 (i.e. the poll worked).
 echo "==> [new kid v3 from coord] PUT — should 201 (proves propagation)"
-SECRET="$DEMO_SECRET" SIGNED=$(SECRET="$DEMO_SECRET" python3 -c '
-import hmac, hashlib, time, sys, os
-secret=os.environ["SECRET"].encode(); method="PUT"; path="/v1/o/nun/after"; ttl=60
-exp=int(time.time())+ttl
-sig=hmac.new(secret,f"{method}:{path}:{exp}".encode(),hashlib.sha256).hexdigest()
-print(f"{path}?sig={sig}&exp={exp}&kid=v3")
-')
+SIGNED=$(SECRET="$DEMO_SECRET" sign_url PUT /v1/o/nun/after 60 v3)
 PUT_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT --data-binary 'after rotate' "${EDGE}${SIGNED}")
 echo "    PUT status = $PUT_CODE"

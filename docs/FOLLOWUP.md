@@ -104,7 +104,12 @@
 ---
 
 ### ~~[P6-10] Edge-side meta cache (per-bucket-key, short-TTL)~~
-- **DONE 2026-04-27**: opt-in `EDGE_COORD_LOOKUP_CACHE_TTL`. CoordClient 에 `cache map[bucket\x00key]cachedMeta` + RWMutex. CommitObject + DeleteObject 가 같은 client 의 entry invalidate (다른 edge 의 mutation 은 TTL 만료 대기 — 짧은 TTL 권장). 1 unit test (TestCoordClient_LookupCache_HitInvalidate). 측정 후 default 결정.
+- **DONE 2026-04-27**: opt-in `EDGE_COORD_LOOKUP_CACHE_TTL`. CoordClient 에 `cache map[bucket\x00key]cachedMeta` + RWMutex. CommitObject + DeleteObject 가 같은 client 의 entry invalidate (다른 edge 의 mutation 은 TTL 만료 대기 — 짧은 TTL 권장). 1 unit test. 측정 후 default 결정.
+
+### [P6-12] CoordClient 캐시 size cap / LRU eviction (저우선)
+- **배경**: P6-10 의 `cache map` 은 unbounded — TTL 만료 후 read 까지는 메모리 유지. 수백만 unique key workload 에서 monotonic growth. /simplify (2026-04-27) 발견.
+- **스펙**: max-entries cap (e.g. 10k) 또는 주기적 sweeper (cheap — TTL 초 단위). 측정 후 결정.
+- **우선순위**: 저우선 (현재 demo / 운영 규모에서 안 보임).
 
 ### ~~[P6-11] up.sh → lib/cluster.sh source~~
 - **DONE 2026-04-27**: up.sh 가 `start_dns 3` + `start_edge edge 8000` + `wait_healthz` 사용. ~25 LOC 절약. up-tls.sh 는 TLS env 가 lib 의 surface 를 확장시켜서 그대로 보존 (별도 작업).

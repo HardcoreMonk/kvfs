@@ -219,6 +219,11 @@ func (c *CoordClient) CommitObject(ctx context.Context, meta *store.ObjectMeta) 
 //
 // Read-through cache (P6-10, opt-in via SetLookupCache): hit short-
 // circuits the RPC; miss falls through and caches the result.
+//
+// **Caller contract**: the returned *ObjectMeta is shared with the cache
+// — do NOT mutate it. Read-only usage (chunk replicas iteration, size
+// inspection) is fine. If you need to modify, deep-copy first. All
+// current edge callers are read-only.
 func (c *CoordClient) LookupObject(ctx context.Context, bucket, key string) (*store.ObjectMeta, error) {
 	if cached, ok := c.cacheGet(bucket, key); ok {
 		return cached, nil
