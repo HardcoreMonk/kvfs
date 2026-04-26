@@ -10,8 +10,8 @@
 - **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
 - **P2**: 리뷰·개선 권고 — 현재 **0건** (P2-01~09 모두 완료)
 - **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02, OTel 도입 여부)
-- **P5**: post-Season-4 wave 후속 — 현재 **1건** (P5-09 잔여 블로그). P5-01~06 모두 완료
-- **P6**: Season 5 (coord 분리) — 현재 **1건** (P6-01 Ep.1 skeleton)
+- **P5**: post-Season-4 wave 후속 — 모두 완료 (P5-01~09 done)
+- **P6**: Season 5 (coord 분리) — 현재 **1건** (P6-01 Ep.1 skeleton 완료, Ep.2~5 대기)
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -64,24 +64,29 @@
 
 ## P6 — Season 5 (coord 분리)
 
-### [P6-01] Season 5 Ep.1 — kvfs-coord skeleton
-- **현황**: ADR-015 Accepted (P5-03). Implementation in progress.
-- **스코프**: `cmd/kvfs-coord/main.go` + `internal/coord/` package + edge → coord HTTP client. backward compat: `EDGE_COORD_URL` 미설정 시 인라인 (현재 동작 유지).
-- **첫 RPC 두 개**: `POST /v1/coord/place`, `POST /v1/coord/commit`. 이후 episode 들이 이 RPC 위에 build.
-- **Demo**: `scripts/demo-aleph.sh` (Hebrew 첫 letter — Greek alpha-omega 소진)
+### ~~[P6-01] Season 5 Ep.1 — kvfs-coord skeleton~~
+- **DONE 2026-04-26**: `cmd/kvfs-coord/main.go` + `internal/coord/` (4 RPC: place/commit/lookup/delete + healthz). 2 unit tests PASS. demo-aleph.sh 라이브. Dockerfile + Makefile + down.sh 갱신. backward compat 100% (edge 코드 0 변경).
 
-### [P6-02 ~ P6-05] Season 5 후속 episodes
-- Ep.2: coord 자체의 Raft (peer set, election 재사용)
-- Ep.3: coord daemon 간 메타 sync (WAL replication 재사용)
-- Ep.4: edge 의 placement 코드 완전 제거
-- Ep.5: kvfs-cli 가 coord 직접 admin
+### [P6-02] Edge → coord client 통합
+- **다음 단계**: edge 가 `EDGE_COORD_URL` 보면 placement + commit RPC 를 coord 로 위임. inline 모드 fallback 유지.
+- **스코프**: `internal/edge/coord_client.go` + `commitPutMeta` 분기 추가. 데모 demo-bet.sh.
+
+### [P6-03] coord 자체의 Raft (peer set, election 재사용)
+- **다음 단계**: coord HA. ADR-031 의 Elector 를 coord 가 가져와 다중 coord 구성. ADR 신규 (예상 ADR-038).
+
+### [P6-04] coord 간 메타 sync (WAL replication 재사용)
+- **다음 단계**: ADR-019 WAL + ADR-031 sync push 를 coord 간에. leader coord 가 follower coord 에 push.
+
+### [P6-05] edge 의 placement 코드 완전 제거
+- **다음 단계**: `internal/coordinator/` 의 placement 부분이 coord client wrapper 만 남음. ADR-002 기존 paragraph deprecate.
+
+### [P6-06] kvfs-cli 가 coord 직접 admin
+- **다음 단계**: `kvfs-cli coord-* ...` subcommand. admin 작업이 edge 통과 안 함.
 
 ---
 
-### [P5-09] 블로그 episode 23~28 (P4-09 wave + ADR-035 잔여)
-- **출처**: P5-06 마무리 시 잔여로 신규 등록
-- **누락**: Prometheus /metrics, SIMD-style RS, Hot/Cold tier, NFS deferred (ADR-032 의 "왜 안 했는가"), WAL log compaction, strict vs transactional 비교
-- **우선순위**: 낮음 (현재 22편으로 Season 4 narrative 는 완결). 운영 사례나 외부 질문이 누적되면 작성
+### ~~[P5-09] 블로그 episode 23~28 (P4-09 wave 정리)~~
+- **DONE 2026-04-26**: 6편 완료. Ep.23 Prometheus metrics · Ep.24 SIMD-style RS · Ep.25 Hot/Cold tier (placement bias + P5-04 rebalance 통합) · Ep.26 NFS gateway deferred (ADR-032 회고) · Ep.27 WAL log compaction · Ep.28 Strict vs Transactional 비교. 합계 743 줄. blog 22 → 28 편.
 
 ### ~~[P5-06] 블로그 episode 18~22 작성~~
 - **DONE 2026-04-26**: 5편 완료. Ep.18 (EC streaming) · Ep.19 (CDC × EC) · Ep.20 (sync replication) · Ep.21 (transactional Raft) · Ep.22 (micro-opts bundle). 합계 736 줄.
