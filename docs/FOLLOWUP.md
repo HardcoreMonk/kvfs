@@ -10,7 +10,7 @@
 - **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
 - **P2**: 리뷰·개선 권고 — 현재 **0건** (P2-01~09 모두 완료)
 - **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02, OTel 도입 여부)
-- **P5**: post-Season-4 wave 후속 — 현재 **6건**
+- **P5**: post-Season-4 wave 후속 — 현재 **1건** (P5-09 잔여 블로그). P5-01~06 모두 완료
 
 > ※ P4-* 는 모두 완료. 새 항목은 P5-* 부터.
 
@@ -64,21 +64,14 @@
 - **위험**: transactional Raft 는 `MarshalPutObjectEntry` 로 entry 미리 push 한 뒤 quorum 받으면 commit. group commit 이 그 commit 을 batch 로 묶으면 quorum-then-batch 순서가 어긋날 가능성
 - **스펙**: integration test — 두 옵션 동시 활성으로 PUT × N concurrent → bbolt + 모든 follower bbolt 일치 검증
 
-### [P5-06] 블로그 episode 18~25 작성
-- **현황**: blog 17편까지 (Ep.4 WAL). 그 이후 작업물은 코드만 있고 글 없음
-- **누락 episode**:
-  - Ep.5: Follower WAL auto-pull (demo-chi)
-  - Ep.6: EC streaming (demo-kappa 회귀)
-  - Ep.7: EC + CDC combined (demo-psi)
-  - Ep.8: Synchronous Raft-style WAL replication (demo-omega)
-  - P4-09 wave 1: Prometheus /metrics
-  - P4-09 wave 2: SIMD-style RS optimization
-  - P4-09 wave 3: Hot/Cold tier
-  - P4-09 wave 4: NFS gateway deferred (ADR-032 의 "왜 안 했는가")
-  - P4-09 wave 5: WAL log compaction
-  - P4-09 wave 6: Strict replication (ADR-033 informational vs ADR-034 transactional)
-  - Bonus: ADR-035 micro-opt bundle 의 3가지 (group commit / 3-region CDC / sync.Pool)
-- **추천 순서**: 18 = streaming 후속, 19 = CDC+EC, 20 = leader election + WAL push, 21 = transactional Raft, 22 = micro-opt bundle (group commit + CDC region + pool)
+### [P5-09] 블로그 episode 23~28 (P4-09 wave + ADR-035 잔여)
+- **출처**: P5-06 마무리 시 잔여로 신규 등록
+- **누락**: Prometheus /metrics, SIMD-style RS, Hot/Cold tier, NFS deferred (ADR-032 의 "왜 안 했는가"), WAL log compaction, strict vs transactional 비교
+- **우선순위**: 낮음 (현재 22편으로 Season 4 narrative 는 완결). 운영 사례나 외부 질문이 누적되면 작성
+
+### ~~[P5-06] 블로그 episode 18~22 작성~~
+- **DONE 2026-04-26**: 5편 완료. Ep.18 (EC streaming) · Ep.19 (CDC × EC) · Ep.20 (sync replication) · Ep.21 (transactional Raft) · Ep.22 (micro-opts bundle). 합계 736 줄.
+- **잔여 (= 신규 P5-09)**: P4-09 wave 의 자체 episode (Prometheus /metrics, SIMD-style RS, Hot/Cold tier, NFS deferred, log compaction, strict-vs-transactional 비교). 코드는 있으나 글 미작성.
 
 ---
 
