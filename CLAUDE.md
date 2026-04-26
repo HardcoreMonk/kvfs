@@ -36,28 +36,13 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | 경로 | 의미 |
 |---|---|
 | `cmd/` | 3개 바이너리 엔트리포인트 (edge, dn, cli) |
-| `internal/` | 패키지 경계. **외부 import 금지** (Go 표준 `internal/` 규칙) |
-| `internal/placement/` | Rendezvous Hashing (ADR-009, Season 2 Ep.1). chunk→DN 선택 |
-| `internal/coordinator/` | fanout + quorum. `placement.Placer` 사용. Season 2+ 에 별도 daemon 분리 예정 |
-| `internal/rebalance/` | Rebalance worker (ADR-010, Season 2 Ep.2). copy-then-update, full-success 시 trim |
-| `internal/gc/` | Surplus chunk GC (ADR-012, Season 2 Ep.3). claimed-set + min-age 두 안전망 |
-| `internal/chunker/` | Chunking (ADR-011, Season 2 Ep.4, ADR-006 supersede). Split/Join 고정 크기 |
-| `internal/reedsolomon/` | Reed-Solomon EC (ADR-008, Season 2 Ep.5). GF(2^8) + 행렬 + Encode/Reconstruct, from-scratch |
-| `internal/edge/` `StartAuto` | Auto-trigger (ADR-013, Season 3 Ep.1). time.Ticker 두 개, 같은 mutex 공유 |
-| `internal/rebalance/` `planEC`/`migrateShard` | EC stripe rebalance (ADR-024, Season 3 Ep.2). set-based 최소 이동 |
-| `internal/repair/` | EC repair queue (ADR-025, Season 3 Ep.3). K survivors → Reed-Solomon Reconstruct |
-| `internal/store/snapshot.go` | Metadata snapshot + Stats (ADR-014, Season 3 Ep.4). bbolt `tx.WriteTo` hot snapshot, restore = offline |
-| `internal/heartbeat/` | DN liveness monitor (ADR-030, Season 3 Ep.5). pull-based ticker, Probe interface, Healthy=consec_fails<threshold |
-| `internal/store/scheduler.go` | Auto-snapshot scheduler (ADR-016, Season 3 Ep.6). EDGE_SNAPSHOT_DIR/INTERVAL/KEEP, atomic temp+rename, mtime-based prune |
-| `internal/edge/replica.go` | Multi-edge HA — read-replica follower (ADR-022, Season 3 Ep.7). EDGE_ROLE/PRIMARY_URL/PULL_INTERVAL, snapshot-pull + atomic.Pointer hot-swap, write reject 503+X-KVFS-Primary |
-| `internal/chunker/stream.go` | Streaming PUT/GET (ADR-017, Season 4 Ep.1). io.Reader 기반 chunker.Reader, edge handler 메모리 = chunkSize 와 무관 (object size 무관) |
-| `internal/chunker/cdc.go` | Content-defined chunking (ADR-018, Season 4 Ep.2). FastCDC + GearTable, EDGE_CHUNK_MODE=cdc 로 활성, shift-invariant dedup |
-| `internal/election/` | Auto leader election (ADR-031, Season 4 Ep.3). Raft-style 3-state machine, term + voting invariants, HTTP vote/heartbeat RPC. EDGE_PEERS opt-in |
-| `internal/store/wal.go` | WAL of metadata mutations (ADR-019, Season 4 Ep.4). append-only JSON-lines + ApplyEntry replay. EDGE_WAL_PATH opt-in |
+| `internal/` | 패키지 경계. **외부 import 금지** (Go 표준 `internal/` 규칙). 패키지별 ADR / 시즌-에피소드 매핑은 `docs/adr/README.md` 단일 소스 |
 | `scripts/` | 클러스터 lifecycle + 데모 (bash, curl, docker, python3만) |
-| `docs/adr/` | 아키텍처 의사결정 기록 (불변) |
+| `docs/adr/` | 아키텍처 의사결정 기록 (불변). 시즌·에피소드·연결 코드 모두 여기 |
 | `docs/FOLLOWUP.md` | 우선순위별 pending 작업 단일 소스 |
 | `blog/` | 공개 블로그 시리즈 초안 — episode별 1파일 |
+
+> 패키지 단위 책임·ADR linkage 는 ADR README 표를 그대로 참조. CLAUDE.md 에 또 적지 않음 (drift 방지).
 
 ## 개발·테스트
 
@@ -66,29 +51,10 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `make build` | `./bin/` 에 3개 바이너리 |
 | `make test` | 단위 테스트 (CGO 없음) |
 | `make test-race` | race 감지 (CGO 필요 — 로컬 Go 있을 때만) |
-| `make fmt` | `gofmt -w .` |
-| `make lint` | `go vet ./...` |
-| `./scripts/up.sh` | Docker 클러스터 기동 (compose 플러그인 불필요) |
-| `./scripts/demo-alpha.sh` | 3-way replication 데모 |
-| `./scripts/demo-epsilon.sh` | UrlKey 데모 |
-| `./scripts/demo-zeta.sh` | 4-DN 추가 후 placement 분산 데모 (Season 2 Ep.1) |
-| `./scripts/demo-eta.sh` | Rebalance worker 라이브 데모 (Season 2 Ep.2) |
-| `./scripts/demo-theta.sh` | Surplus chunk GC 라이브 데모 (Season 2 Ep.3) |
-| `./scripts/demo-iota.sh` | Chunking 라이브 데모 (Season 2 Ep.4) |
-| `./scripts/demo-kappa.sh` | Reed-Solomon EC 라이브 데모 (Season 2 Ep.5) |
-| `./scripts/demo-lambda.sh` | Auto-trigger 라이브 데모 (Season 3 Ep.1) |
-| `./scripts/demo-mu.sh` | EC stripe rebalance 라이브 데모 (Season 3 Ep.2) |
-| `./scripts/demo-nu.sh` | EC repair 라이브 데모 (Season 3 Ep.3) |
-| `./scripts/demo-xi.sh` | Meta backup + offline restore 라이브 데모 (Season 3 Ep.4) |
-| `./scripts/demo-omicron.sh` | DN heartbeat 라이브 데모 (Season 3 Ep.5) |
-| `./scripts/demo-pi.sh` | Auto-snapshot scheduler 라이브 데모 (Season 3 Ep.6) |
-| `./scripts/demo-rho.sh` | Multi-edge HA (read-replica) 라이브 데모 (Season 3 Ep.7, Season 3 close) |
-| `./scripts/demo-sigma.sh` | Streaming PUT/GET 라이브 데모 (Season 4 Ep.1) — 64 MiB / edge mem 22 MiB |
-| `./scripts/demo-tau.sh` | CDC chunking dedup 라이브 데모 (Season 4 Ep.2) — fixed 0% vs CDC 40% |
-| `./scripts/demo-upsilon.sh` | Auto leader election 라이브 데모 (Season 4 Ep.3) — 3 edge, kill leader, ~4s 후 새 leader 자동 등극 |
-| `./scripts/demo-phi.sh` | WAL of metadata mutations 라이브 데모 (Season 4 Ep.4) — 7 entries audit + snapshot WAL-Seq header |
+| `make fmt` / `make lint` | `gofmt -w .` / `go vet ./...` |
+| `./scripts/up.sh` / `down.sh` | Docker 클러스터 기동·정리 (compose 플러그인 불필요) |
+| `./scripts/demo-*.sh` | 시즌별 라이브 데모. greek letter 순으로 정렬 (alpha → omega 진행). episode ↔ 데모 ↔ ADR 매핑은 `docs/adr/README.md` |
 | `./scripts/chaos-dn-killer.sh` | 주기적 random DN kill + GET 검증 (회귀 catch) |
-| `./scripts/down.sh` | 정리 (dn1~dn8 + edge 포함) |
 
 Docker로 빌드 검증 (로컬 Go 없어도):
 
@@ -116,10 +82,9 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26-alpine \
 ## Claude Code 작업 힌트
 
 - 환경변수 전체 표는 `README.md` § "환경 변수" — 신규 env 추가 시 README + main.go 도움말 동기화
-- 새 ADR 작성 시 `docs/adr/README.md` 표에 한 줄 추가
+- 새 ADR 작성 시 `docs/adr/README.md` 표에 한 줄 추가 (시즌별 표, **번호 오름차순** 으로 삽입)
 - 블로그 episode 완성 시 `blog/` 에 커밋 전 실 cluster 로 데모 재현
 - 새 시즌 진입 시 README 의 시즌 표 갱신
-- `internal/coordinator/` 독립 daemon 분리 시 ADR-002 supersede
 
 ## 금지·주의
 
