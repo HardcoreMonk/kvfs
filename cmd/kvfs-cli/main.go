@@ -1075,9 +1075,50 @@ func cmdMeta(args []string) {
 		cmdMetaInfo(args[1:])
 	case "restore":
 		cmdMetaRestore(args[1:])
+	case "history":
+		cmdMetaHistory(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown meta subcommand: %s\n", args[0])
 		os.Exit(2)
+	}
+}
+
+func cmdMetaHistory(args []string) {
+	fs := flag.NewFlagSet("meta history", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	body := mustHTTP("GET", *edge+"/v1/admin/snapshot/history")
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+	var st store.SchedulerStats
+	if err := json.Unmarshal(body, &st); err != nil {
+		fail(err)
+	}
+	if !st.Enabled {
+		fmt.Println("auto-snapshot scheduler: DISABLED on edge (set EDGE_SNAPSHOT_DIR)")
+		return
+	}
+	fmt.Printf("dir:          %s\n", st.Dir)
+	fmt.Printf("interval:     %s\n", st.Interval)
+	fmt.Printf("keep:         %d\n", st.Keep)
+	fmt.Printf("total runs:   %d (errors: %d)\n", st.TotalRuns, st.TotalErrors)
+	if !st.LastRun.IsZero() {
+		fmt.Printf("last run:     %s (%d bytes)\n", st.LastRun.Format(time.RFC3339), st.LastSize)
+	}
+	if st.LastErr != "" {
+		fmt.Printf("last error:   %s\n", st.LastErr)
+	}
+	fmt.Printf("\nhistory (%d files, newest first):\n", len(st.History))
+	if len(st.History) == 0 {
+		fmt.Println("  (none)")
+		return
+	}
+	for _, sn := range st.History {
+		fmt.Printf("  %-44s %10d bytes  %s\n", sn.Name, sn.SizeBytes, sn.ModTime.Format(time.RFC3339))
 	}
 }
 

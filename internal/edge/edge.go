@@ -113,6 +113,10 @@ type Server struct {
 	// Heartbeat is the per-DN liveness monitor (ADR-030). nil disables it.
 	// StartHeartbeat wires up the periodic probe loop.
 	Heartbeat *heartbeat.Monitor
+
+	// SnapshotScheduler is the in-edge auto-backup ticker (ADR-016). nil
+	// disables it. StartSnapshotScheduler wires up the loop.
+	SnapshotScheduler *store.SnapshotScheduler
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -152,6 +156,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/meta/snapshot", s.handleMetaSnapshot)
 	mux.HandleFunc("GET /v1/admin/meta/info", s.handleMetaInfo)
 	mux.HandleFunc("GET /v1/admin/heartbeat", s.handleHeartbeat)
+	mux.HandleFunc("GET /v1/admin/snapshot/history", s.handleSnapshotHistory)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }
@@ -1051,6 +1056,26 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		"enabled":  true,
 		"statuses": s.Heartbeat.Snapshot(),
 	})
+}
+
+// handleSnapshotHistory returns the auto-snapshot scheduler's stats + the
+// rotating snapshot directory listing (ADR-016). When the scheduler is nil
+// (env not set), returns enabled:false.
+func (s *Server) handleSnapshotHistory(w http.ResponseWriter, r *http.Request) {
+	if s.SnapshotScheduler == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.SnapshotScheduler.Stats())
+}
+
+// StartSnapshotScheduler runs the auto-snapshot loop in a goroutine. No-op if
+// s.SnapshotScheduler is nil. The scheduler stops on ctx.Done.
+func (s *Server) StartSnapshotScheduler(ctx context.Context) {
+	if s.SnapshotScheduler == nil {
+		return
+	}
+	go s.SnapshotScheduler.Run(ctx.Done())
 }
 
 // StartHeartbeat runs a goroutine that probes all runtime DNs every

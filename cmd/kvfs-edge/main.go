@@ -62,6 +62,9 @@ func main() {
 		flagSkip    = flag.Bool("skip-auth", envOr("EDGE_SKIP_AUTH", "") == "1", "DEMO ONLY: skip UrlKey verify")
 		flagHB      = flag.String("heartbeat-interval", envOr("EDGE_HEARTBEAT_INTERVAL", "10s"), "DN heartbeat probe interval (ADR-030); 0s disables")
 		flagHBFail  = flag.Int("heartbeat-fail-threshold", atoiOr(envOr("EDGE_HEARTBEAT_FAIL_THRESHOLD", "3"), 3), "consecutive probe failures before DN marked unhealthy")
+		flagSnapDir = flag.String("snapshot-dir", envOr("EDGE_SNAPSHOT_DIR", ""), "auto-snapshot output directory (ADR-016); empty disables")
+		flagSnapInt = flag.String("snapshot-interval", envOr("EDGE_SNAPSHOT_INTERVAL", "1h"), "auto-snapshot ticker interval")
+		flagSnapKp  = flag.Int("snapshot-keep", atoiOr(envOr("EDGE_SNAPSHOT_KEEP", "7"), 7), "how many recent snapshots to retain")
 	)
 	flag.Parse()
 
@@ -197,15 +200,25 @@ func main() {
 		hbMon = heartbeat.New(httpHealthProbe(dnScheme, dnTLSCfg), *flagHBFail, 2*time.Second)
 	}
 
+	var snapSched *store.SnapshotScheduler
+	if *flagSnapDir != "" {
+		snapInt, perr := time.ParseDuration(*flagSnapInt)
+		if perr != nil {
+			fatal("invalid EDGE_SNAPSHOT_INTERVAL: " + perr.Error())
+		}
+		snapSched = store.NewSnapshotScheduler(ms, *flagSnapDir, snapInt, *flagSnapKp)
+	}
+
 	srv := &edge.Server{
-		Store:     ms,
-		Coord:     coord,
-		Signer:    signer,
-		Log:       log,
-		ChunkSize: chunkSize,
-		AutoCfg:   autoCfg,
-		SkipAuth:  *flagSkip,
-		Heartbeat: hbMon,
+		Store:             ms,
+		Coord:             coord,
+		Signer:            signer,
+		Log:               log,
+		ChunkSize:         chunkSize,
+		AutoCfg:           autoCfg,
+		SkipAuth:          *flagSkip,
+		Heartbeat:         hbMon,
+		SnapshotScheduler: snapSched,
 	}
 
 	log.Info("kvfs-edge starting",
@@ -236,6 +249,9 @@ func main() {
 
 	// Start DN heartbeat (ADR-030). No-op if Heartbeat is nil.
 	srv.StartHeartbeat(ctx, hbInterval)
+
+	// Start auto-snapshot scheduler (ADR-016). No-op if SnapshotScheduler is nil.
+	srv.StartSnapshotScheduler(ctx)
 
 	errCh := make(chan error, 1)
 	tlsCert := envOr("EDGE_TLS_CERT", "")
