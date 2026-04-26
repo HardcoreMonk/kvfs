@@ -64,6 +64,19 @@ type CoordClient struct {
 
 	mu      sync.RWMutex
 	baseURL string
+
+	// P6-10: opt-in per-(bucket,key) read-through cache for LookupObject.
+	// Disabled when cacheTTL == 0. CommitObject + DeleteObject invalidate
+	// by key on the SAME client; mutations from other edges wait out the
+	// TTL (so default short — 1-5s).
+	cacheTTL time.Duration
+	cache    map[string]cachedMeta
+}
+
+// cachedMeta is one entry of CoordClient's optional read-through cache.
+type cachedMeta struct {
+	meta   *store.ObjectMeta
+	expiry time.Time
 }
 
 // BaseURL returns the current target URL (the one that subsequent calls
@@ -81,6 +94,55 @@ func NewCoordClient(baseURL string) *CoordClient {
 		HTTP:    &http.Client{Timeout: 30 * time.Second},
 		Timeout: 10 * time.Second,
 	}
+}
+
+// SetLookupCache enables/disables the per-(bucket,key) read-through cache
+// (P6-10). ttl > 0 enables; 0 disables and frees the map. Recommended:
+// 1-5s. Multi-edge mutations from other clients won't invalidate this
+// edge's cache, so don't set TTL beyond your tolerance for stale reads.
+func (c *CoordClient) SetLookupCache(ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cacheTTL = ttl
+	if ttl > 0 {
+		c.cache = make(map[string]cachedMeta)
+	} else {
+		c.cache = nil
+	}
+}
+
+func (c *CoordClient) cacheKey(bucket, key string) string {
+	return bucket + "\x00" + key
+}
+
+func (c *CoordClient) cacheGet(bucket, key string) (*store.ObjectMeta, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.cache == nil {
+		return nil, false
+	}
+	if e, ok := c.cache[c.cacheKey(bucket, key)]; ok && time.Now().Before(e.expiry) {
+		return e.meta, true
+	}
+	return nil, false
+}
+
+func (c *CoordClient) cachePut(bucket, key string, meta *store.ObjectMeta) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cache == nil {
+		return
+	}
+	c.cache[c.cacheKey(bucket, key)] = cachedMeta{meta: meta, expiry: time.Now().Add(c.cacheTTL)}
+}
+
+func (c *CoordClient) cacheInvalidate(bucket, key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cache == nil {
+		return
+	}
+	delete(c.cache, c.cacheKey(bucket, key))
 }
 
 // call is the shared marshal-do-decode loop for every coord RPC. req is
@@ -139,27 +201,46 @@ func (c *CoordClient) PlaceN(ctx context.Context, key string, n int) ([]string, 
 // CommitObject ships an ObjectMeta to coord for persistence. coord owns the
 // bbolt write and assigns the version. Returns error on quorum/network/coord
 // failure — caller (handlePut) should surface to client as 5xx.
+//
+// Invalidates the local lookup cache for (bucket, key) on success so a
+// subsequent GET on the same edge sees the new version.
 func (c *CoordClient) CommitObject(ctx context.Context, meta *store.ObjectMeta) error {
-	return c.call(ctx, "POST", "/v1/coord/commit", "commit",
-		coord.CommitRequest{Meta: meta}, nil, false)
+	if err := c.call(ctx, "POST", "/v1/coord/commit", "commit",
+		coord.CommitRequest{Meta: meta}, nil, false); err != nil {
+		return err
+	}
+	c.cacheInvalidate(meta.Bucket, meta.Key)
+	return nil
 }
 
 // LookupObject fetches an object's metadata from coord. Returns
 // store.ErrNotFound when coord answers 404, so callers can use errors.Is
 // to distinguish missing keys from network errors.
+//
+// Read-through cache (P6-10, opt-in via SetLookupCache): hit short-
+// circuits the RPC; miss falls through and caches the result.
 func (c *CoordClient) LookupObject(ctx context.Context, bucket, key string) (*store.ObjectMeta, error) {
+	if cached, ok := c.cacheGet(bucket, key); ok {
+		return cached, nil
+	}
 	path := fmt.Sprintf("/v1/coord/lookup?bucket=%s&key=%s", urlEsc(bucket), urlEsc(key))
 	var meta store.ObjectMeta
 	if err := c.call(ctx, "GET", path, "lookup", nil, &meta, true); err != nil {
 		return nil, err
 	}
+	c.cachePut(bucket, key, &meta)
 	return &meta, nil
 }
 
 // DeleteObject removes the meta record on coord. Same ErrNotFound contract.
+// Invalidates the local lookup cache.
 func (c *CoordClient) DeleteObject(ctx context.Context, bucket, key string) error {
-	return c.call(ctx, "POST", "/v1/coord/delete", "delete",
-		coord.DeleteRequest{Bucket: bucket, Key: key}, nil, true)
+	if err := c.call(ctx, "POST", "/v1/coord/delete", "delete",
+		coord.DeleteRequest{Bucket: bucket, Key: key}, nil, true); err != nil {
+		return err
+	}
+	c.cacheInvalidate(bucket, key)
+	return nil
 }
 
 // Healthz returns nil when coord answers /healthz with 200. Used at edge

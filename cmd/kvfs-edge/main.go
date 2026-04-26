@@ -95,6 +95,7 @@ func main() {
 		flagPrefer   = flag.String("placement-prefer-class", envOr("EDGE_PLACEMENT_PREFER", ""), "Hot/Cold tier (ADR-035 follow-up): bias new writes toward DNs with this class label (empty = no bias)")
 		flagCoordURL    = flag.String("coord-url", envOr("EDGE_COORD_URL", ""), "ADR-015 Season 5 Ep.2: kvfs-coord base URL (e.g. http://coord:9000). Empty = inline meta mode (legacy default).")
 		flagURLKeyPoll  = flag.String("urlkey-poll-interval", envOr("EDGE_COORD_URLKEY_POLL_INTERVAL", "30s"), "ADR-049 Season 6 Ep.7: how often to refresh urlkey.Signer from coord (only when --coord-url set).")
+		flagLookupCache = flag.String("coord-lookup-cache-ttl", envOr("EDGE_COORD_LOOKUP_CACHE_TTL", ""), "P6-10 (opt-in): TTL for per-(bucket,key) lookup cache on CoordClient. Empty = disabled. Recommended 1-5s.")
 		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
 		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
 		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
@@ -359,6 +360,15 @@ func main() {
 			fatal("EDGE_COORD_URL set but coord unreachable: " + err.Error())
 		}
 		probeCancel()
+		// P6-10 opt-in cache.
+		if *flagLookupCache != "" {
+			ttl, perr := time.ParseDuration(*flagLookupCache)
+			if perr != nil {
+				fatal("EDGE_COORD_LOOKUP_CACHE_TTL parse: " + perr.Error())
+			}
+			coordClient.SetLookupCache(ttl)
+			log.Info("coord lookup cache enabled (P6-10)", "ttl", ttl)
+		}
 		log.Info("kvfs-edge: coord-proxy mode (Ep.2)", "coord_url", *flagCoordURL,
 			"note", "metadata commit/lookup/delete RPC; inline auto-trigger disabled")
 	}

@@ -6,8 +6,10 @@ package edge
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -161,6 +163,75 @@ func TestServer_placeN_DispatchesByCoordClient(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "from-coord:8080" {
 		t.Errorf("proxy mode placeN = %v, want [from-coord:8080]", got)
+	}
+}
+
+// P6-10: opt-in lookup cache. Hit short-circuits the RPC; CommitObject /
+// DeleteObject invalidate the entry. Tests via a counting test server
+// that bumps on every /v1/coord/lookup hit.
+func TestCoordClient_LookupCache_HitInvalidate(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.PutObject(&store.ObjectMeta{Bucket: "b", Key: "k", Size: 1}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var lookupHits int32
+	cs := &coord.Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}})}
+	mux := cs.Routes()
+	wrapped := http.NewServeMux()
+	wrapped.HandleFunc("GET /v1/coord/lookup", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&lookupHits, 1)
+		mux.ServeHTTP(w, r)
+	})
+	// Mount everything else (commit, etc.) too so CommitObject still works.
+	wrapped.HandleFunc("POST /v1/coord/commit", func(w http.ResponseWriter, r *http.Request) { mux.ServeHTTP(w, r) })
+	wrapped.HandleFunc("POST /v1/coord/delete", func(w http.ResponseWriter, r *http.Request) { mux.ServeHTTP(w, r) })
+	wrapped.HandleFunc("GET /v1/coord/healthz", func(w http.ResponseWriter, r *http.Request) { mux.ServeHTTP(w, r) })
+
+	ts := httptest.NewServer(wrapped)
+	defer ts.Close()
+
+	cc := NewCoordClient(ts.URL)
+	cc.SetLookupCache(2 * time.Second)
+	ctx := context.Background()
+
+	// Two consecutive Lookups → only ONE coord hit (second served from cache).
+	if _, err := cc.LookupObject(ctx, "b", "k"); err != nil {
+		t.Fatalf("lookup 1: %v", err)
+	}
+	if _, err := cc.LookupObject(ctx, "b", "k"); err != nil {
+		t.Fatalf("lookup 2: %v", err)
+	}
+	if got := atomic.LoadInt32(&lookupHits); got != 1 {
+		t.Errorf("after 2 lookups, coord hits = %d, want 1 (second cached)", got)
+	}
+
+	// Commit on the same client invalidates → next Lookup fetches anew.
+	if err := cc.CommitObject(ctx, &store.ObjectMeta{Bucket: "b", Key: "k", Size: 2}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := cc.LookupObject(ctx, "b", "k"); err != nil {
+		t.Fatalf("lookup 3: %v", err)
+	}
+	if got := atomic.LoadInt32(&lookupHits); got != 2 {
+		t.Errorf("after commit + lookup, coord hits = %d, want 2 (cache invalidated)", got)
+	}
+
+	// SetLookupCache(0) disables.
+	cc.SetLookupCache(0)
+	if _, err := cc.LookupObject(ctx, "b", "k"); err != nil {
+		t.Fatalf("lookup 4: %v", err)
+	}
+	if _, err := cc.LookupObject(ctx, "b", "k"); err != nil {
+		t.Fatalf("lookup 5: %v", err)
+	}
+	if got := atomic.LoadInt32(&lookupHits); got != 4 {
+		t.Errorf("after disable + 2 lookups, coord hits = %d, want 4 (no caching)", got)
 	}
 }
 

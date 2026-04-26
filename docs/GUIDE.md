@@ -497,6 +497,7 @@ type Stripe struct {
 | `COORD_TRANSACTIONAL_RAFT` | 0 | Season 5 Ep.5 (ADR-040): replicate-then-commit. quorum 실패 시 503 + leader bbolt 무변화 (Elector + WAL 필수) |
 | `COORD_DN_IO` | 0 | Season 6 Ep.2 (ADR-044): coord 가 chunk I/O — rebalance/gc/repair apply paths runnable on coord |
 | `EDGE_COORD_URLKEY_POLL_INTERVAL` | 30s | Season 6 Ep.7 (ADR-049): edge 가 coord 의 urlkey 변경을 polling 주기로 sync |
+| `EDGE_COORD_LOOKUP_CACHE_TTL` | (off) | P6-10 (opt-in): coord lookup 결과 per-(bucket,key) 캐싱. 권장 1-5s. CommitObject/DeleteObject 가 invalidate |
 
 > 운영 디테일 (election timing, DN-side TLS CA 등) 은 `README.md` § "환경 변수" 의 전체 표.
 

@@ -103,11 +103,8 @@
 
 ---
 
-### [P6-10] Edge-side meta cache (per-bucket-key, short-TTL)
-- **배경**: coord-proxy 모드에서 매 GET/HEAD = coord 에 1 RTT. 같은 키 반복 GET 이 N RPC. /simplify (2026-04-27) 가 두 번째로 flag.
-- **스펙**: `CoordClient` 안에 LRU `(bucket, key) → (meta, version, expiry)`. CommitObject 시 invalidate. TTL 1-5s 옵트인 (`EDGE_COORD_LOOKUP_CACHE_TTL`).
-- **위험**: stale read window. version 기반 invalidation 으로 mitigation. 짧은 TTL 이면 multi-edge 불일치 작음.
-- **우선순위**: 운영 측정 후 결정 (실측 RPC rate 가 임계 넘으면 진행).
+### ~~[P6-10] Edge-side meta cache (per-bucket-key, short-TTL)~~
+- **DONE 2026-04-27**: opt-in `EDGE_COORD_LOOKUP_CACHE_TTL`. CoordClient 에 `cache map[bucket\x00key]cachedMeta` + RWMutex. CommitObject + DeleteObject 가 같은 client 의 entry invalidate (다른 edge 의 mutation 은 TTL 만료 대기 — 짧은 TTL 권장). 1 unit test (TestCoordClient_LookupCache_HitInvalidate). 측정 후 default 결정.
 
 ### ~~[P6-11] up.sh → lib/cluster.sh source~~
 - **DONE 2026-04-27**: up.sh 가 `start_dns 3` + `start_edge edge 8000` + `wait_healthz` 사용. ~25 LOC 절약. up-tls.sh 는 TLS env 가 lib 의 surface 를 확장시켜서 그대로 보존 (별도 작업).

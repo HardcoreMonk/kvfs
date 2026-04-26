@@ -700,6 +700,7 @@ type Stripe struct {
 <tr><td><code>COORD_TRANSACTIONAL_RAFT</code></td><td>0</td><td>Season 5 Ep.5 (ADR-040): replicate-then-commit. quorum 실패 시 503 + leader bbolt 무변화</td></tr>
 <tr><td><code>COORD_DN_IO</code></td><td>0</td><td>Season 6 Ep.2 (ADR-044): coord 가 chunk I/O — rebalance/gc/repair apply on coord</td></tr>
 <tr><td><code>EDGE_COORD_URLKEY_POLL_INTERVAL</code></td><td>30s</td><td>Season 6 Ep.7 (ADR-049): edge 가 coord 의 urlkey 변경 polling sync</td></tr>
+<tr><td><code>EDGE_COORD_LOOKUP_CACHE_TTL</code></td><td>(off)</td><td>P6-10 (opt-in): coord lookup 결과 per-(bucket,key) 캐싱. 권장 1-5s</td></tr>
 </tbody>
 </table>
 <blockquote><p>운영 디테일 (election timing, DN-side TLS CA 등) 은 <code>README.md</code> § "환경 변수" 의 전체 표.</p></blockquote>
