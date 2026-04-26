@@ -24,38 +24,19 @@ echo "=== ו vav demo: edge → coord placement (Season 5 Ep.6, ADR-041) ==="
 need curl; need jq; need docker; need python3
 ./scripts/down.sh >/dev/null 2>&1 || true
 
-for tgt in kvfs-coord kvfs-edge kvfs-dn kvfs-cli; do
-  docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${tgt}:dev$" \
-    || { echo "==> building ${tgt}"; docker build --target "${tgt}" -t "${tgt}:dev" . >/dev/null; }
-done
+ensure_images
 
 docker network create $NET 2>/dev/null || true
 start_dns 4   # 4 DNs spun up
 
-# Coord knows only dn1, dn2, dn3 (NOT dn4).
-docker volume create coord1-data >/dev/null
-docker run -d --name coord1 --network "$NET" \
-  -p "${COORD_PORT}:9000" \
-  -e COORD_ADDR=":9000" \
-  -e COORD_DATA_DIR="/var/lib/kvfs-coord" \
-  -e COORD_DNS="dn1:8080,dn2:8080,dn3:8080" \
-  -v "coord1-data:/var/lib/kvfs-coord" \
-  kvfs-coord:dev >/dev/null
-
+# Coord uses default 3-DN set (dn1..dn3). NOT dn4.
+start_coord coord1 $COORD_PORT
 wait_healthz "http://localhost:${COORD_PORT}/v1/coord/healthz"
 
 # Edge knows ALL FOUR DNs (so dn4 is reachable for I/O), but proxies
-# placement to coord (which won't pick dn4).
-docker volume create edge-data >/dev/null
-docker run -d --name edge --network "$NET" \
-  -p 8000:8000 \
-  -e EDGE_ADDR=":8000" \
-  -e EDGE_DNS="dn1:8080,dn2:8080,dn3:8080,dn4:8080" \
-  -e EDGE_DATA_DIR="/var/lib/kvfs-edge" \
-  -e EDGE_URLKEY_SECRET="$SECRET" \
-  -e EDGE_COORD_URL="http://coord1:9000" \
-  -v "edge-data:/var/lib/kvfs-edge" \
-  kvfs-edge:dev >/dev/null
+# placement to coord (which won't pick dn4) — EDGE_DNS env override.
+EDGE_DNS="dn1:8080,dn2:8080,dn3:8080,dn4:8080" \
+  start_edge edge 8000 "http://coord1:9000"
 wait_healthz "${EDGE}/healthz"
 
 echo "==> coord knows: dn1,dn2,dn3   edge knows: dn1,dn2,dn3,dn4"

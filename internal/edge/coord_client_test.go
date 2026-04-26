@@ -134,6 +134,36 @@ func TestCoordClient_PlaceN_ReturnsCoordsView(t *testing.T) {
 	}
 }
 
+// placeN dispatch: with no CoordClient, Server falls back to local
+// Coord.PlaceN. With CoordClient set, the RPC result wins. This guards
+// the dispatch logic in edge.go::placeN against accidental swaps.
+func TestServer_placeN_DispatchesByCoordClient(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// Coord that reports a fixed 1-DN set ("from-coord:8080").
+	cs := &coord.Server{
+		Store:  st,
+		Placer: placement.New([]placement.Node{{ID: "from-coord:8080", Addr: "from-coord:8080"}}),
+	}
+	ts := httptest.NewServer(cs.Routes())
+	defer ts.Close()
+
+	// Server with CoordClient → expect coord's view.
+	srvProxy := &Server{CoordClient: NewCoordClient(ts.URL)}
+	got, err := srvProxy.placeN(context.Background(), "k", 1)
+	if err != nil {
+		t.Fatalf("proxy placeN: %v", err)
+	}
+	if len(got) != 1 || got[0] != "from-coord:8080" {
+		t.Errorf("proxy mode placeN = %v, want [from-coord:8080]", got)
+	}
+}
+
 // Healthz against an unreachable coord must return a non-nil error within
 // the per-call timeout — used by edge boot to fail fast on misconfig.
 func TestCoordClient_HealthzFailsFastOnUnreachable(t *testing.T) {

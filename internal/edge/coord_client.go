@@ -83,27 +83,55 @@ func NewCoordClient(baseURL string) *CoordClient {
 	}
 }
 
+// call is the shared marshal-do-decode loop for every coord RPC. req is
+// optional (nil for GET / no-body POST). respOut is optional (nil = caller
+// only cares about success/failure status, not body). notFoundOK lets
+// the caller treat a 404 as a typed sentinel (ErrNotFound) instead of an
+// arbitrary "non-2xx" string error — used by lookup/delete which need to
+// distinguish "key absent" from "coord broken".
+//
+// Centralizing here means the leader-redirect, status-check, and
+// readErrBody bookkeeping live in one place; per-RPC methods become 3-line
+// wrappers that just describe their endpoint contract.
+func (c *CoordClient) call(ctx context.Context, method, path, label string, req, respOut any, notFoundOK bool) error {
+	var body []byte
+	if req != nil {
+		b, err := json.Marshal(req)
+		if err != nil {
+			return fmt.Errorf("coord-client: marshal %s: %w", label, err)
+		}
+		body = b
+	}
+	resp, err := c.do(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if notFoundOK && resp.StatusCode == http.StatusNotFound {
+		return store.ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("coord-client: %s status %d: %s", label, resp.StatusCode, readErrBody(resp))
+	}
+	if respOut == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(respOut); err != nil {
+		return fmt.Errorf("coord-client: decode %s: %w", label, err)
+	}
+	return nil
+}
+
 // PlaceN asks coord to pick n DNs for the given key (chunk_id or stripe_id).
 // Coord runs the same HRW algorithm as edge would but against its own DN
 // list — the authoritative one. ADR-041 (Season 5 Ep.6) makes this the
 // single point of placement decision so divergence between edge instances
 // and topology drift can't produce different placements for the same key.
 func (c *CoordClient) PlaceN(ctx context.Context, key string, n int) ([]string, error) {
-	body, err := json.Marshal(coord.PlaceRequest{Key: key, N: n})
-	if err != nil {
-		return nil, fmt.Errorf("coord-client: marshal place: %w", err)
-	}
-	resp, err := c.do(ctx, "POST", "/v1/coord/place", body)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("coord-client: place status %d: %s", resp.StatusCode, readErrBody(resp))
-	}
 	var pr coord.PlaceResponse
-	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
-		return nil, fmt.Errorf("coord-client: decode place: %w", err)
+	if err := c.call(ctx, "POST", "/v1/coord/place", "place",
+		coord.PlaceRequest{Key: key, N: n}, &pr, false); err != nil {
+		return nil, err
 	}
 	return pr.Addrs, nil
 }
@@ -112,19 +140,8 @@ func (c *CoordClient) PlaceN(ctx context.Context, key string, n int) ([]string, 
 // bbolt write and assigns the version. Returns error on quorum/network/coord
 // failure — caller (handlePut) should surface to client as 5xx.
 func (c *CoordClient) CommitObject(ctx context.Context, meta *store.ObjectMeta) error {
-	body, err := json.Marshal(coord.CommitRequest{Meta: meta})
-	if err != nil {
-		return fmt.Errorf("coord-client: marshal commit: %w", err)
-	}
-	resp, err := c.do(ctx, "POST", "/v1/coord/commit", body)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("coord-client: commit status %d: %s", resp.StatusCode, readErrBody(resp))
-	}
-	return nil
+	return c.call(ctx, "POST", "/v1/coord/commit", "commit",
+		coord.CommitRequest{Meta: meta}, nil, false)
 }
 
 // LookupObject fetches an object's metadata from coord. Returns
@@ -132,54 +149,24 @@ func (c *CoordClient) CommitObject(ctx context.Context, meta *store.ObjectMeta) 
 // to distinguish missing keys from network errors.
 func (c *CoordClient) LookupObject(ctx context.Context, bucket, key string) (*store.ObjectMeta, error) {
 	path := fmt.Sprintf("/v1/coord/lookup?bucket=%s&key=%s", urlEsc(bucket), urlEsc(key))
-	resp, err := c.do(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, store.ErrNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("coord-client: lookup status %d: %s", resp.StatusCode, readErrBody(resp))
-	}
 	var meta store.ObjectMeta
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return nil, fmt.Errorf("coord-client: decode lookup: %w", err)
+	if err := c.call(ctx, "GET", path, "lookup", nil, &meta, true); err != nil {
+		return nil, err
 	}
 	return &meta, nil
 }
 
 // DeleteObject removes the meta record on coord. Same ErrNotFound contract.
 func (c *CoordClient) DeleteObject(ctx context.Context, bucket, key string) error {
-	body, _ := json.Marshal(coord.DeleteRequest{Bucket: bucket, Key: key})
-	resp, err := c.do(ctx, "POST", "/v1/coord/delete", body)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return store.ErrNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("coord-client: delete status %d: %s", resp.StatusCode, readErrBody(resp))
-	}
-	return nil
+	return c.call(ctx, "POST", "/v1/coord/delete", "delete",
+		coord.DeleteRequest{Bucket: bucket, Key: key}, nil, true)
 }
 
 // Healthz returns nil when coord answers /healthz with 200. Used at edge
 // startup so a misconfigured EDGE_COORD_URL surfaces as a fatal boot error
 // rather than as 503 on every PUT later.
 func (c *CoordClient) Healthz(ctx context.Context) error {
-	resp, err := c.do(ctx, "GET", "/v1/coord/healthz", nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("coord-client: healthz status %d", resp.StatusCode)
-	}
-	return nil
+	return c.call(ctx, "GET", "/v1/coord/healthz", "healthz", nil, nil, false)
 }
 
 func (c *CoordClient) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {

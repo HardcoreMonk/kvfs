@@ -64,12 +64,12 @@ type Server struct {
 	// window: if quorum push fails, the leader's bbolt is NOT touched.
 	// Requires Elector + WAL to be active. Default false (Ep.4 behavior).
 	TransactionalCommit bool
-
-	// ReplicateTimeout caps each transactional commit's quorum wait.
-	// Default 2s (matches election.Config default). Override only if
-	// peer RTT is unusually high.
-	ReplicateTimeout time.Duration
 }
+
+// transactionalCommitTimeout caps each transactional commit's quorum wait.
+// Matches election.Config's default; not exposed as a field until a real
+// operator request shows up.
+const transactionalCommitTimeout = 2 * time.Second
 
 // HeaderCoordLeader names the redirect header used when a follower coord
 // returns 503 on a write — value is the current leader's base URL (from
@@ -199,8 +199,11 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 // commit dispatches between the best-effort and transactional commit paths.
 // Both paths require leadership (already checked by handleCommit). The
 // transactional path additionally requires Elector + WAL — without WAL
-// there's nothing to replicate, so it falls back to the legacy path with
-// a one-time warning at startup (logged by main when wiring detects it).
+// there's nothing to replicate, so it falls back to the legacy path.
+//
+// cmd/kvfs-coord/main.go fatals at startup when TransactionalCommit is
+// enabled without both prerequisites; this nil-check is a defensive
+// guard for programmatic Server construction (tests, future embedders).
 func (s *Server) commit(ctx context.Context, meta *store.ObjectMeta) error {
 	if !s.TransactionalCommit || s.Elector == nil || s.Store.WAL() == nil {
 		return s.Store.PutObject(meta)
@@ -209,11 +212,7 @@ func (s *Server) commit(ctx context.Context, meta *store.ObjectMeta) error {
 	if err != nil {
 		return fmt.Errorf("marshal entry: %w", err)
 	}
-	timeout := s.ReplicateTimeout
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-	repCtx, cancel := context.WithTimeout(ctx, timeout)
+	repCtx, cancel := context.WithTimeout(ctx, transactionalCommitTimeout)
 	defer cancel()
 	if err := s.Elector.ReplicateEntry(repCtx, body); err != nil {
 		return fmt.Errorf("transactional replicate: %w", err)

@@ -21,10 +21,7 @@ echo "=== ג gimel demo: coord HA via Raft (Season 5 Ep.3, ADR-038) ==="
 need curl; need jq; need docker; need python3
 ./scripts/down.sh >/dev/null 2>&1 || true
 
-for tgt in kvfs-coord kvfs-edge kvfs-dn kvfs-cli; do
-  docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${tgt}:dev$" \
-    || { echo "==> building ${tgt}"; docker build --target "${tgt}" -t "${tgt}:dev" . >/dev/null; }
-done
+ensure_images
 
 docker network create $NET 2>/dev/null || true
 start_dns 3

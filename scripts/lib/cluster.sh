@@ -26,16 +26,31 @@ start_dns() {
   done
 }
 
+# ensure_images <target>... — `docker build` each missing kvfs-* image.
+# Default targets if no args: kvfs-coord kvfs-edge kvfs-dn kvfs-cli.
+ensure_images() {
+  local targets=("$@")
+  if [ "${#targets[@]}" -eq 0 ]; then
+    targets=(kvfs-coord kvfs-edge kvfs-dn kvfs-cli)
+  fi
+  for tgt in "${targets[@]}"; do
+    docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${tgt}:dev$" \
+      || { echo "==> building ${tgt} (one-time)"; docker build --target "${tgt}" -t "${tgt}:dev" . >/dev/null; }
+  done
+}
+
 # start_coord name port [peers] [self_url] [wal_path] [txn_raft_bool]
+# Caller may pre-export COORD_DNS to override the default 3-DN list.
 start_coord() {
   local name="$1" port="$2" peers="${3:-}" self_url="${4:-}" wal="${5:-}" txn="${6:-}"
+  local dns="${COORD_DNS:-dn1:8080,dn2:8080,dn3:8080}"
   docker volume create "${name}-data" >/dev/null
   local args=(
     -d --name "$name" --network "$NET"
     -p "${port}:9000"
     -e COORD_ADDR=":9000"
     -e COORD_DATA_DIR="/var/lib/kvfs-coord"
-    -e COORD_DNS="dn1:8080,dn2:8080,dn3:8080"
+    -e COORD_DNS="$dns"
     -v "${name}-data:/var/lib/kvfs-coord"
   )
   [ -n "$peers" ]    && args+=(-e COORD_PEERS="$peers")
@@ -46,14 +61,17 @@ start_coord() {
 }
 
 # start_edge name port [coord_url]
+# Caller may pre-export EDGE_DNS to override the default 3-DN list (used
+# by demos that need a different DN topology, e.g. demo-vav).
 start_edge() {
   local name="$1" port="$2" coord_url="${3:-}"
+  local dns="${EDGE_DNS:-dn1:8080,dn2:8080,dn3:8080}"
   docker volume create "${name}-data" >/dev/null
   local args=(
     -d --name "$name" --network "$NET"
     -p "${port}:8000"
     -e EDGE_ADDR=":8000"
-    -e EDGE_DNS="dn1:8080,dn2:8080,dn3:8080"
+    -e EDGE_DNS="$dns"
     -e EDGE_DATA_DIR="/var/lib/kvfs-edge"
     -e EDGE_URLKEY_SECRET="$SECRET"
     -v "${name}-data:/var/lib/kvfs-edge"

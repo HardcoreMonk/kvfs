@@ -222,7 +222,6 @@ func TestTransactionalCommit_QuorumFailureLeavesBboltUntouched(t *testing.T) {
 		Placer:              placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}}),
 		Elector:             el,
 		TransactionalCommit: true,
-		ReplicateTimeout:    200 * time.Millisecond,
 	}
 
 	// Force the test elector into Leader state by directly handling a

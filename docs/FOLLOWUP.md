@@ -79,6 +79,17 @@
 ### ~~[P6-07] coord transactional commit (ADR-034 port)~~
 - **DONE 2026-04-27**: ADR-040 작성 + 구현. `coord.Server.{TransactionalCommit, ReplicateTimeout}` field, `commit()` helper 가 분기. `COORD_TRANSACTIONAL_RAFT=1` env (Elector + WAL 둘 다 필수, mismatch 시 startup fatal). 2 unit tests: quorum failure → bbolt 무변화 + WAL.LastSeq 무변화, prerequisite 누락 시 fallback. 데모 demo-he.sh (히브리 ה) — 2/3 coord kill 후 PUT 503 + lookup 404 + 복구 후 PUT 200. 148 tests PASS.
 
+### [P6-10] Edge-side meta cache (per-bucket-key, short-TTL)
+- **배경**: coord-proxy 모드에서 매 GET/HEAD = coord 에 1 RTT. 같은 키 반복 GET 이 N RPC. /simplify (2026-04-27) 가 두 번째로 flag.
+- **스펙**: `CoordClient` 안에 LRU `(bucket, key) → (meta, version, expiry)`. CommitObject 시 invalidate. TTL 1-5s 옵트인 (`EDGE_COORD_LOOKUP_CACHE_TTL`).
+- **위험**: stale read window. version 기반 invalidation 으로 mitigation. 짧은 TTL 이면 multi-edge 불일치 작음.
+- **우선순위**: 운영 측정 후 결정 (실측 RPC rate 가 임계 넘으면 진행).
+
+### [P6-11] up.sh / up-tls.sh → lib/cluster.sh source
+- **배경**: cluster.sh 의 start_dns / start_edge 와 up.sh 의 인라인 docker run 이 중복. /simplify 발견.
+- **스펙**: up.sh 가 `. lib/cluster.sh` + `start_dns 3` + `start_edge edge 8000`. up-tls.sh 는 TLS env 추가가 필요해서 lib 에 `start_edge_tls` 변형 또는 EDGE_TLS_* env override 패턴 확장.
+- **우선순위**: 저우선 (works fine 으로). 다음 demo 가 또 추가될 때 묶어 정리.
+
 ### [P6-08] scripts/lib/cluster.sh 추출
 - **배경**: demo-bet/gimel/dalet 의 docker-build + DN-spawn boilerplate (~50줄) 가 반복. 기존 `scripts/lib/common.sh` 는 sign_url 만 제공. /simplify 가 발견.
 - **스펙**: `start_dns N`, `start_coord <name> <port> [peers]`, `start_edge <coord_url>`, `wait_healthz <url>` helpers. S5 demos + 향후 S6 demos 에서 source.
