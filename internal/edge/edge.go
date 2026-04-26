@@ -275,19 +275,11 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// EC mode (ADR-008) still buffers the body — encoder needs full stripes.
-	// Streaming EC is a follow-up (would split per-stripe in the encoder).
+	// EC mode (ADR-008) — streaming per-stripe (ADR-017 follow-up).
+	// Encoder needs uniform K data shards per stripe, so we still pull
+	// stripeBytes worth of bytes at a time, but never the whole object.
 	if ecHdr := r.Header.Get("X-KVFS-EC"); ecHdr != "" {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if len(body) == 0 {
-			writeError(w, http.StatusBadRequest, "empty body")
-			return
-		}
-		s.handlePutEC(w, r, bucket, key, body, ecHdr)
+		s.handlePutECStream(w, r, bucket, key, ecHdr)
 		return
 	}
 
@@ -1327,7 +1319,11 @@ func parseEC(hdr string) (k, m int, err error) {
 //     desired DNs = Pick(stripe_id, K+M) → K+M distinct DN addresses,
 //     PUT each shard to its assigned DN
 //  5. Persist ObjectMeta with EC params + Stripes
-func (s *Server) handlePutEC(w http.ResponseWriter, r *http.Request, bucket, key string, body []byte, ecHdr string) {
+// handlePutECStream is the streaming EC PUT (ADR-017 follow-up to ADR-008).
+// Reads stripeBytes (= K × shardSize) at a time from r.Body, encodes to
+// K+M shards, fans out, and appends one stripe per iteration. Memory bound
+// = stripeBytes regardless of object size.
+func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucket, key, ecHdr string) {
 	k, m, err := parseEC(ecHdr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1347,42 +1343,49 @@ func (s *Server) handlePutEC(w http.ResponseWriter, r *http.Request, bucket, key
 
 	shardSize := s.chunkSize()
 	stripeBytes := k * shardSize
-	dataLen := int64(len(body))
-
-	// Pad up to multiple of stripeBytes.
-	padded := body
-	if pad := stripeBytes - (len(body) % stripeBytes); pad > 0 && pad < stripeBytes {
-		padded = make([]byte, len(body)+pad)
-		copy(padded, body)
-	}
-	numStripes := len(padded) / stripeBytes
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	stripes := make([]store.Stripe, 0, numStripes)
-	for stripeIdx := 0; stripeIdx < numStripes; stripeIdx++ {
-		// Slice K data shards for this stripe.
-		off := stripeIdx * stripeBytes
+	stripeBuf := make([]byte, stripeBytes)
+	var stripes []store.Stripe
+	var dataLen int64
+
+	for stripeIdx := 0; ; stripeIdx++ {
+		n, rerr := io.ReadFull(r.Body, stripeBuf)
+		if rerr == io.EOF {
+			break // exact stripe boundary
+		}
+		// Last stripe: short read → pad with zeros to stripeBytes.
+		if rerr == io.ErrUnexpectedEOF {
+			for i := n; i < stripeBytes; i++ {
+				stripeBuf[i] = 0
+			}
+		} else if rerr != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("read stripe %d: %v", stripeIdx, rerr))
+			return
+		}
+		dataLen += int64(n)
+
+		// Slice K data shards (defensive copies — encoder/PutChunkTo may retain).
 		dataShards := make([][]byte, k)
 		for di := 0; di < k; di++ {
-			dataShards[di] = padded[off+di*shardSize : off+(di+1)*shardSize]
+			ds := make([]byte, shardSize)
+			copy(ds, stripeBuf[di*shardSize:(di+1)*shardSize])
+			dataShards[di] = ds
 		}
-		// Encode → M parity shards.
 		parityShards, encErr := enc.Encode(dataShards)
 		if encErr != nil {
 			writeError(w, http.StatusInternalServerError,
 				fmt.Sprintf("stripe %d encode: %v", stripeIdx, encErr))
 			return
 		}
-		// stripe_id = sha256 of K data shards concatenated.
 		hsh := sha256.New()
 		for _, ds := range dataShards {
 			hsh.Write(ds)
 		}
 		stripeID := hex.EncodeToString(hsh.Sum(nil))
 
-		// Pick K+M distinct DN addresses for this stripe.
 		dnAddrs := s.Coord.PlaceN(stripeID, k+m)
 		if len(dnAddrs) < k+m {
 			writeError(w, http.StatusBadGateway,
@@ -1390,29 +1393,36 @@ func (s *Server) handlePutEC(w http.ResponseWriter, r *http.Request, bucket, key
 			return
 		}
 
-		// Build shards array (K data + M parity), assign each to its DN.
 		all := make([][]byte, 0, k+m)
 		all = append(all, dataShards...)
 		all = append(all, parityShards...)
 
 		shardRefs := make([]store.ChunkRef, k+m)
 		for si := 0; si < k+m; si++ {
-			shardData := all[si]
-			sum := sha256.Sum256(shardData)
+			sum := sha256.Sum256(all[si])
 			shardID := hex.EncodeToString(sum[:])
 			addr := dnAddrs[si]
-			if perr := s.Coord.PutChunkTo(ctx, addr, shardID, shardData); perr != nil {
+			if perr := s.Coord.PutChunkTo(ctx, addr, shardID, all[si]); perr != nil {
 				writeError(w, http.StatusBadGateway,
 					fmt.Sprintf("stripe %d shard %d (%s) → %s: %v", stripeIdx, si, shardID[:16], addr, perr))
 				return
 			}
 			shardRefs[si] = store.ChunkRef{
 				ChunkID:  shardID,
-				Size:     int64(len(shardData)),
+				Size:     int64(len(all[si])),
 				Replicas: []string{addr},
 			}
 		}
 		stripes = append(stripes, store.Stripe{StripeID: stripeID, Shards: shardRefs})
+
+		if rerr == io.ErrUnexpectedEOF {
+			break // last (padded) stripe processed
+		}
+	}
+
+	if dataLen == 0 {
+		writeError(w, http.StatusBadRequest, "empty body")
+		return
 	}
 
 	contentType := r.Header.Get("Content-Type")
@@ -1462,7 +1472,17 @@ func (s *Server) handleGetEC(w http.ResponseWriter, r *http.Request, ctx context
 	}
 	k, m := meta.EC.K, meta.EC.M
 
-	out := make([]byte, 0, meta.EC.DataSize)
+	// Streaming GET (ADR-017 follow-up): per-stripe reconstruct, write data
+	// shards directly to ResponseWriter. Memory bound = (K+M) × shardSize per
+	// iteration regardless of object size. Last stripe is trimmed to DataSize
+	// (drops padding) by tracking remaining bytes.
+	w.Header().Set("Content-Type", meta.ContentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
+	w.Header().Set("X-KVFS-EC", fmt.Sprintf("%d+%d", k, m))
+	w.Header().Set("X-KVFS-Stripes", fmt.Sprintf("%d", len(meta.Stripes)))
+	w.Header().Set("X-KVFS-Version", fmt.Sprintf("%d", meta.Version))
+
+	remaining := meta.EC.DataSize
 	for stripeIdx, stripe := range meta.Stripes {
 		shards := make([][]byte, k+m)
 		survivors := 0
@@ -1471,7 +1491,6 @@ func (s *Server) handleGetEC(w http.ResponseWriter, r *http.Request, ctx context
 			if ferr != nil {
 				continue
 			}
-			// Integrity: sha256 must match.
 			sum := sha256.Sum256(data)
 			if hex.EncodeToString(sum[:]) != sh.ChunkID {
 				continue
@@ -1480,34 +1499,34 @@ func (s *Server) handleGetEC(w http.ResponseWriter, r *http.Request, ctx context
 			survivors++
 		}
 		if survivors < k {
-			writeError(w, http.StatusServiceUnavailable,
-				fmt.Sprintf("stripe %d: only %d of %d shards survived (need >= %d)", stripeIdx, survivors, k+m, k))
+			if stripeIdx == 0 {
+				writeError(w, http.StatusServiceUnavailable,
+					fmt.Sprintf("stripe %d: only %d of %d shards survived (need >= %d)", stripeIdx, survivors, k+m, k))
+				return
+			}
+			s.logger().Error("EC GET stream aborted",
+				slog.Int("stripe", stripeIdx), slog.Int("survivors", survivors))
 			return
 		}
 		if rerr := enc.Reconstruct(shards); rerr != nil {
-			writeError(w, http.StatusInternalServerError,
-				fmt.Sprintf("stripe %d reconstruct: %v", stripeIdx, rerr))
+			if stripeIdx == 0 {
+				writeError(w, http.StatusInternalServerError,
+					fmt.Sprintf("stripe %d reconstruct: %v", stripeIdx, rerr))
+				return
+			}
+			s.logger().Error("EC GET reconstruct failed mid-stream", slog.Int("stripe", stripeIdx))
 			return
 		}
-		// Append the K data shards (in order).
-		for di := 0; di < k; di++ {
-			out = append(out, shards[di]...)
+		// Write K data shards in order, trimmed by remaining for the last stripe.
+		for di := 0; di < k && remaining > 0; di++ {
+			toWrite := shards[di]
+			if int64(len(toWrite)) > remaining {
+				toWrite = toWrite[:remaining]
+			}
+			if _, werr := w.Write(toWrite); werr != nil {
+				return // client disconnect
+			}
+			remaining -= int64(len(toWrite))
 		}
 	}
-	// Trim padding.
-	if int64(len(out)) > meta.EC.DataSize {
-		out = out[:meta.EC.DataSize]
-	}
-	if int64(len(out)) != meta.EC.DataSize {
-		writeError(w, http.StatusInternalServerError,
-			fmt.Sprintf("size mismatch: got %d want %d", len(out), meta.EC.DataSize))
-		return
-	}
-
-	w.Header().Set("Content-Type", meta.ContentType)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
-	w.Header().Set("X-KVFS-EC", fmt.Sprintf("%d+%d", k, m))
-	w.Header().Set("X-KVFS-Stripes", fmt.Sprintf("%d", len(meta.Stripes)))
-	w.Header().Set("X-KVFS-Version", fmt.Sprintf("%d", meta.Version))
-	_, _ = w.Write(out)
 }
