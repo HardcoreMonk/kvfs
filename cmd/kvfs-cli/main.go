@@ -1036,6 +1036,7 @@ func cmdURLKey(args []string) {
 func cmdRepair(args []string) {
 	fs := flag.NewFlagSet("repair", flag.ExitOnError)
 	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	coordURL := fs.String("coord", "", "ADR-046: ask coord directly (Season 6 Ep.4). Edge path used otherwise.")
 	doPlan := fs.Bool("plan", false, "show repair plan only (no changes)")
 	doApply := fs.Bool("apply", false, "execute the plan")
 	concurrency := fs.Int("concurrency", 4, "parallel stripe repairs during apply")
@@ -1052,8 +1053,15 @@ func cmdRepair(args []string) {
 	}
 
 	base := strings.TrimRight(*edge, "/")
+	planPath := "/v1/admin/repair/plan"
+	applyPath := "/v1/admin/repair/apply"
+	if *coordURL != "" {
+		base = strings.TrimRight(*coordURL, "/")
+		planPath = "/v1/coord/admin/repair/plan"
+		applyPath = "/v1/coord/admin/repair/apply"
+	}
 	if *doPlan {
-		body := mustPost(base + "/v1/admin/repair/plan")
+		body := mustPost(base + planPath)
 		var plan struct {
 			Scanned int `json:"scanned"`
 			Repairs []struct {
@@ -1119,7 +1127,7 @@ func cmdRepair(args []string) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/v1/admin/repair/apply?concurrency=%d", base, *concurrency)
+	url := fmt.Sprintf("%s%s?concurrency=%d", base, applyPath, *concurrency)
 	body := mustPost(url)
 	var stats struct {
 		Scanned        int      `json:"scanned"`

@@ -44,6 +44,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/gc"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
+	"github.com/HardcoreMonk/kvfs/internal/repair"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 )
 
@@ -111,6 +112,9 @@ func (s *Server) Routes() *http.ServeMux {
 	// apply needs Coord (for DeleteChunkFrom). Both 503 if Coord nil.
 	mux.HandleFunc("POST /v1/coord/admin/gc/plan", s.handleGCPlan)
 	mux.HandleFunc("POST /v1/coord/admin/gc/apply", s.handleGCApply)
+	// ADR-046 (Season 6 Ep.4): EC repair. Both 503 if Coord nil.
+	mux.HandleFunc("POST /v1/coord/admin/repair/plan", s.handleRepairPlan)
+	mux.HandleFunc("POST /v1/coord/admin/repair/apply", s.handleRepairApply)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
@@ -401,6 +405,37 @@ func (s *Server) handleGCApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stats := gc.Run(r.Context(), s.Coord, plan, concurrency)
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// handleRepairPlan + handleRepairApply: ADR-046 Season 6 Ep.4. EC repair
+// scans every stripe for missing/unresponsive shards and (apply path)
+// reconstructs them via Reed-Solomon. Both 503 if Coord nil.
+func (s *Server) handleRepairPlan(w http.ResponseWriter, r *http.Request) {
+	if s.Coord == nil {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("coord repair: COORD_DN_IO not enabled"))
+		return
+	}
+	plan, err := repair.ComputePlan(s.Coord, s.Store)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
+	if s.Coord == nil {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("coord repair: COORD_DN_IO not enabled"))
+		return
+	}
+	concurrency := parseIntQuery(r, "concurrency", 4)
+	plan, err := repair.ComputePlan(s.Coord, s.Store)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	stats := repair.Run(r.Context(), s.Coord, s.Store, plan, concurrency)
 	writeJSON(w, http.StatusOK, stats)
 }
 
