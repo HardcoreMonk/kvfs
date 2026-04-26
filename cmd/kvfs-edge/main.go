@@ -81,6 +81,7 @@ func main() {
 		flagSnapInt = flag.String("snapshot-interval", envOr("EDGE_SNAPSHOT_INTERVAL", "1h"), "auto-snapshot ticker interval")
 		flagSnapKp  = flag.Int("snapshot-keep", atoiOr(envOr("EDGE_SNAPSHOT_KEEP", "7"), 7), "how many recent snapshots to retain")
 		flagChunkMd  = flag.String("chunk-mode", envOr("EDGE_CHUNK_MODE", "fixed"), "PUT chunker mode (ADR-018): fixed | cdc")
+		flagPoolCap  = flag.Int64("chunker-pool-cap-bytes", int64(atoiOr(envOr("EDGE_CHUNKER_POOL_CAP_BYTES", "0"), 0)), "ADR-037 chunker scratch-pool soft cap in bytes (0 = unlimited)")
 		flagPeers    = flag.String("peers", envOr("EDGE_PEERS", ""), "ADR-031 election: comma-sep peer URLs (incl. self), e.g. 'http://edge1:8000,http://edge2:8000'; empty disables election")
 		flagSelfURL  = flag.String("self-url", envOr("EDGE_SELF_URL", ""), "ADR-031 election: this edge's own peer URL; required when -peers set")
 		flagElectHB  = flag.String("election-heartbeat-interval", envOr("EDGE_ELECTION_HB_INTERVAL", "500ms"), "leader heartbeat cadence (election mode)")
@@ -233,6 +234,7 @@ func main() {
 	if chunkSize <= 0 {
 		chunkSize = chunker.DefaultChunkSize
 	}
+	chunker.SetPoolCap(*flagPoolCap)
 
 	autoCfg := edge.AutoConfig{Enabled: *flagAuto, Concurrency: *flagAutoCnc}
 	parseAutoDur := func(name, raw string, dst *time.Duration) {

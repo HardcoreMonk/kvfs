@@ -21,7 +21,7 @@ EDGE_MAIN="$ROOT/cmd/kvfs-edge/main.go"
 #   foundational (described by concept, not by ADR ref): 001 002 003 004
 #   superseded (replaced by a later ADR; older one still in repo for history): 006
 #   reserved/pending (placeholder rows in adr/README.md):                     015 020 021 023 026 036 037
-RESERVED_ADRS="001 002 003 004 006 015 020 021 023 026 036 037"
+RESERVED_ADRS="001 002 003 004 006 015 020 021 023 026"
 
 errors=0
 warns=0

@@ -96,6 +96,11 @@ type WAL struct {
 	// detect that their seq is no longer reachable and bail instead of
 	// parking forever.
 	epoch uint64
+
+	// Observability (ADR-036). Both are 0 when batchInterval == 0 or no
+	// pending entries — gauges interpret 0 as "nothing to report".
+	lastBatchSize    atomic.Int64 // entries flushed in the most recent fsync cycle
+	oldestUnsyncedNs atomic.Int64 // unix-ns of the oldest unsynced entry, 0 = none
 }
 
 // OpenWAL opens (or creates) the WAL at path with inline fsync (one fsync
@@ -188,7 +193,9 @@ func (w *WAL) flushOnce() {
 		return
 	}
 	if pending > w.durableSeq {
+		w.lastBatchSize.Store(pending - w.durableSeq)
 		w.durableSeq = pending
+		w.oldestUnsyncedNs.Store(0)
 		w.cond.Broadcast()
 	}
 }
@@ -218,6 +225,30 @@ func (w *WAL) recoverLastSeq() (int64, error) {
 
 // LastSeq returns the seq of the most recently appended entry (0 = empty WAL).
 func (w *WAL) LastSeq() int64 { return w.seq.Load() }
+
+// LastBatchSize returns the entry count of the most recent fsync cycle in
+// group-commit mode (0 if inline mode or no flush has happened yet). Used
+// by ADR-036 metric kvfs_wal_batch_size.
+func (w *WAL) LastBatchSize() int64 {
+	if w == nil {
+		return 0
+	}
+	return w.lastBatchSize.Load()
+}
+
+// OldestUnsyncedAge returns how long the oldest unsynced entry has been
+// waiting (0 if nothing pending or inline mode). Used by ADR-036 metric
+// kvfs_wal_durable_lag_seconds.
+func (w *WAL) OldestUnsyncedAge() time.Duration {
+	if w == nil {
+		return 0
+	}
+	ns := w.oldestUnsyncedNs.Load()
+	if ns == 0 {
+		return 0
+	}
+	return time.Duration(time.Now().UnixNano() - ns)
+}
 
 // Append writes one entry, fsyncs, and returns the assigned seq plus the
 // raw JSON line bytes (without the trailing newline). The bytes are returned
@@ -254,6 +285,9 @@ func (w *WAL) Append(op string, args any) (int64, []byte, error) {
 		}
 		return seq, line, nil
 	}
+	// Mark this entry as the oldest unsynced one if no batch is in flight.
+	// The flusher resets oldestUnsyncedNs to 0 on each successful fsync.
+	w.oldestUnsyncedNs.CompareAndSwap(0, time.Now().UnixNano())
 	// Group-commit: park until flusher fsyncs past our seq, OR Truncate
 	// bumps the epoch out from under us, OR Close fires. cond is bound to
 	// mu so Wait atomically releases + reacquires.
@@ -375,6 +409,8 @@ func (w *WAL) Truncate() (int64, error) {
 	w.seq.Store(0)
 	w.durableSeq = 0
 	w.epoch++
+	w.lastBatchSize.Store(0)
+	w.oldestUnsyncedNs.Store(0)
 	if w.cond != nil {
 		w.cond.Broadcast()
 	}

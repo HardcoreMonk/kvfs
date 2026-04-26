@@ -618,6 +618,8 @@ stateDiagram-v2
   <li>Prometheus text format, stdlib only (외부 client lib 없음).</li>
   <li>Counter / Gauge 만. Histogram 은 없음 (overkill).</li>
   <li><code>EDGE_METRICS=1</code> (default on).</li>
+  <li>WAL 운영 가시성 (ADR-036): <code>kvfs_wal_batch_size</code> + <code>kvfs_wal_durable_lag_seconds</code>. group commit 효과 외부 검증.</li>
+  <li>메모리 가시성 (ADR-037): <code>kvfs_chunker_pool_bytes</code>. cgroup limit 친화 — <code>EDGE_CHUNKER_POOL_CAP_BYTES</code> 로 soft cap.</li>
 </ul>
 
 <h2 id="s9"><span class="num">9</span>데이터 모델</h2>

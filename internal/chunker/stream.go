@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 )
 
 // scratchPool recycles per-Reader scratch buffers across PUTs so back-to-back
@@ -45,7 +46,35 @@ import (
 // 4 MiB 짜리 슬라이스가 초당 수백 개 만들어지면 GC 압력 + RSS 흔들림.
 // sync.Pool 은 "재사용 가능한 슬랩" 을 keep — Get 해서 쓰고 Put 으로 반납,
 // GC 가 한가할 때만 비운다. 핵심: cap(buf) 가 같아야 의미 있는 재사용이 됨.
-var scratchPool sync.Pool
+//
+// 명시적 cap (ADR-037)
+// ────────────────────
+// sync.Pool 자체는 GC 라운드마다 비워지지만 라운드 사이에는 무한 누적 가능.
+// 동시 PUT spike 후 모든 reader 가 16 MiB 슬랩을 반납하면 메모리 압박.
+// `poolCapBytes` 는 Pool 누적 cap 의 soft cap — putScratch 가 이미 누적이
+// 한도를 넘었으면 슬랩을 drop (GC 회수에 맡김). atomic counter 로 lock-free.
+var (
+	scratchPool       sync.Pool
+	scratchPoolBytes  atomic.Int64 // 풀에 들어있는 슬랩들의 cap 합계
+	poolCapBytes      atomic.Int64 // 0 = unlimited (default for backward compat)
+)
+
+// SetPoolCap sets the upper bound (in bytes) on cumulative slab capacity
+// kept in the chunker pool. 0 disables the cap (default). Caller would
+// typically wire this from EDGE_CHUNKER_POOL_CAP_BYTES env var. Safe to
+// call anytime; takes effect on subsequent putScratch calls.
+func SetPoolCap(bytes int64) {
+	if bytes < 0 {
+		bytes = 0
+	}
+	poolCapBytes.Store(bytes)
+}
+
+// PoolStats returns (current cumulative slab bytes in pool, cap bytes).
+// Used by the kvfs_chunker_pool_bytes metric. cap=0 means unlimited.
+func PoolStats() (int64, int64) {
+	return scratchPoolBytes.Load(), poolCapBytes.Load()
+}
 
 // getScratch retrieves a []byte with cap in [n, 2n] from the pool, or
 // allocates a fresh one. Length is set to n.
@@ -61,19 +90,31 @@ func getScratch(n int) []byte {
 			break
 		}
 		b := v.([]byte)
+		// Slab leaving the pool — debit the running total before checking fit
+		// (matches the credit on Put). If the slab doesn't fit, we drop it
+		// without re-Put, so the debit is the right book-keeping either way.
+		scratchPoolBytes.Add(-int64(cap(b)))
 		if cap(b) >= n && cap(b) <= 2*n {
 			return b[:n]
 		}
-		// Wrong size band — let it fall to GC.
+		// Wrong size band — let it fall to GC (already debited).
 	}
 	return make([]byte, n)
 }
 
-// putScratch returns the buffer to the pool. Caller must not retain b.
+// putScratch returns the buffer to the pool, subject to the cumulative cap
+// (ADR-037). When the pool is over its cap, the slab is dropped on the floor
+// for GC instead of returned. cap=0 means unlimited.
 func putScratch(b []byte) {
 	if b == nil {
 		return
 	}
+	c := int64(cap(b))
+	limit := poolCapBytes.Load()
+	if limit > 0 && scratchPoolBytes.Load()+c > limit {
+		return // over cap; let GC reclaim.
+	}
+	scratchPoolBytes.Add(c)
 	scratchPool.Put(b[:0]) //nolint:staticcheck // pool of slices is fine; we restore len at Get.
 }
 

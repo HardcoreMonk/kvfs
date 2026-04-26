@@ -405,6 +405,8 @@ Client ──GET──┬──────┘
 - Prometheus text format, stdlib only (외부 client lib 없음).
 - Counter / Gauge 만. Histogram 은 없음 (overkill).
 - `EDGE_METRICS=1` (default on).
+- WAL 운영 가시성 (ADR-036): `kvfs_wal_batch_size` (last fsync cycle entry count) + `kvfs_wal_durable_lag_seconds` (oldest unsynced entry age). group commit 효과 외부 검증.
+- 메모리 가시성 (ADR-037): `kvfs_chunker_pool_bytes` (scratch pool 누적 cap). cgroup limit 친화 — `EDGE_CHUNKER_POOL_CAP_BYTES` 로 soft cap 설정.
 
 ---
 

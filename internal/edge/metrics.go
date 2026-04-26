@@ -28,6 +28,7 @@ package edge
 import (
 	"net/http"
 
+	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/metrics"
 )
 
@@ -77,6 +78,13 @@ func (s *Server) SetupMetrics() {
 		reg.Gauge("kvfs_wal_last_seq", "Most recent WAL sequence number", func() int64 {
 			return s.Store.WAL().LastSeq()
 		})
+		// ADR-036: group-commit observability. Both 0 in inline mode.
+		reg.Gauge("kvfs_wal_batch_size", "Entries in the most recent fsync batch (group-commit mode)", func() int64 {
+			return s.Store.WAL().LastBatchSize()
+		})
+		reg.Gauge("kvfs_wal_durable_lag_seconds", "Age of the oldest unsynced WAL entry in seconds (0 = nothing pending)", func() int64 {
+			return int64(s.Store.WAL().OldestUnsyncedAge().Seconds())
+		})
 	}
 	if s.Elector != nil {
 		reg.Gauge("kvfs_election_state", "0=follower 1=candidate 2=leader", func() int64 {
@@ -91,6 +99,11 @@ func (s *Server) SetupMetrics() {
 			return int64(len(s.Heartbeat.HealthyAddrs()))
 		})
 	}
+	// ADR-037: chunker scratch-pool memory usage (running cap-bytes total).
+	reg.Gauge("kvfs_chunker_pool_bytes", "Cumulative cap of slabs held in chunker scratch pool", func() int64 {
+		bytes, _ := chunker.PoolStats()
+		return bytes
+	})
 
 	s.Metrics = h
 }

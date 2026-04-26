@@ -85,11 +85,11 @@ Accepted · YYYY-MM-DD
 | [033](ADR-033-strict-replication.md) | Strict replication (informational; bbolt commits regardless) | Accepted · 2026-04-26 | `EDGE_STRICT_REPL=1` |
 | [034](ADR-034-transactional-raft.md) | Transactional Raft (replicate-then-commit, true strict) | Accepted · 2026-04-26 | `EDGE_TRANSACTIONAL_RAFT=1` + `MarshalPutObjectEntry` |
 | [035](ADR-035-micro-optimizations.md) | WAL group commit · 3-region CDC · chunker sync.Pool | Accepted · 2026-04-26 | `EDGE_WAL_BATCH_INTERVAL`, `CDCConfig.MaskBitsRelax`, `chunker.scratchPool` |
+| [036](ADR-036-wal-batch-metrics.md) | WAL group commit observability (batch_size + durable_lag gauges) | Accepted · 2026-04-26 | `WAL.LastBatchSize` / `OldestUnsyncedAge` + `internal/edge/metrics.go` |
+| [037](ADR-037-chunker-pool-cap.md) | Chunker scratch-pool soft cap (memory pressure 대응) | Accepted · 2026-04-26 | `chunker.SetPoolCap` + `EDGE_CHUNKER_POOL_CAP_BYTES` |
 
 ## 미작성 ADR (예상)
 
 - **ADR-015** — Coordinator daemon 분리 (현재 edge 인라인). ADR-002 supersede 예정.
-- **ADR-036** — WAL group commit metric (`kvfs_wal_batch_size`, `kvfs_wal_durable_lag_seconds`). ADR-035 follow-up.
-- **ADR-037** — chunker sync.Pool cap 정책 (메모리 압박 시 evict). ADR-035 follow-up.
 
 작성 시점: 해당 기능 설계 직전.
