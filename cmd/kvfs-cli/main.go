@@ -249,6 +249,17 @@ func httpGet(url string, timeout time.Duration) (*http.Response, error) {
 	return c.Get(url)
 }
 
+// pickRoute returns (base, path) chosen between the edge and coord
+// targets. Used by every cli subcommand that grew a --coord flag.
+// Centralizes the convention so adding new admin endpoints stays
+// mechanical: cli passes both candidate paths, helper picks one.
+func pickRoute(edgeURL, coordURL, edgePath, coordPath string) (string, string) {
+	if coordURL != "" {
+		return strings.TrimRight(coordURL, "/"), coordPath
+	}
+	return strings.TrimRight(edgeURL, "/"), edgePath
+}
+
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "kvfs-cli:", err)
 	os.Exit(1)
@@ -492,21 +503,13 @@ func cmdRebalance(args []string) {
 		os.Exit(2)
 	}
 	if *doPlan {
-		base := *edge
-		path := "/v1/admin/rebalance/plan"
-		if *coordURL != "" {
-			base = *coordURL
-			path = "/v1/coord/admin/rebalance/plan"
-		}
+		base, path := pickRoute(*edge, *coordURL,
+			"/v1/admin/rebalance/plan", "/v1/coord/admin/rebalance/plan")
 		runRebalancePlan(base, path, *verbose)
 	} else {
 		// ADR-044 (Ep.2): apply via coord when --coord is set.
-		base := *edge
-		path := "/v1/admin/rebalance/apply"
-		if *coordURL != "" {
-			base = *coordURL
-			path = "/v1/coord/admin/rebalance/apply"
-		}
+		base, path := pickRoute(*edge, *coordURL,
+			"/v1/admin/rebalance/apply", "/v1/coord/admin/rebalance/apply")
 		runRebalanceApplyAt(base, path, *concurrency, *verbose)
 	}
 }
@@ -686,18 +689,20 @@ func cmdGC(args []string) {
 		os.Exit(2)
 	}
 
-	base, planPath, applyPath, ageQuery := *edge, "/v1/admin/gc/plan", "/v1/admin/gc/apply", fmt.Sprintf("min_age_seconds=%d", *minAge)
+	ageQuery := fmt.Sprintf("min_age_seconds=%d", *minAge)
 	if *coordURL != "" {
-		base = *coordURL
-		planPath = "/v1/coord/admin/gc/plan"
-		applyPath = "/v1/coord/admin/gc/apply"
+		// coord uses Go duration string instead of integer seconds.
 		ageQuery = fmt.Sprintf("min-age=%ds", *minAge)
 	}
 
 	if *doPlan {
-		runGCPlanAt(base, planPath, ageQuery, *verbose)
+		base, path := pickRoute(*edge, *coordURL,
+			"/v1/admin/gc/plan", "/v1/coord/admin/gc/plan")
+		runGCPlanAt(base, path, ageQuery, *verbose)
 	} else {
-		runGCApplyAt(base, applyPath, ageQuery, *concurrency, *verbose)
+		base, path := pickRoute(*edge, *coordURL,
+			"/v1/admin/gc/apply", "/v1/coord/admin/gc/apply")
+		runGCApplyAt(base, path, ageQuery, *concurrency, *verbose)
 	}
 }
 
@@ -1098,14 +1103,10 @@ func cmdRepair(args []string) {
 		os.Exit(2)
 	}
 
-	base := strings.TrimRight(*edge, "/")
-	planPath := "/v1/admin/repair/plan"
-	applyPath := "/v1/admin/repair/apply"
-	if *coordURL != "" {
-		base = strings.TrimRight(*coordURL, "/")
-		planPath = "/v1/coord/admin/repair/plan"
-		applyPath = "/v1/coord/admin/repair/apply"
-	}
+	base, planPath := pickRoute(*edge, *coordURL,
+		"/v1/admin/repair/plan", "/v1/coord/admin/repair/plan")
+	_, applyPath := pickRoute(*edge, *coordURL,
+		"/v1/admin/repair/apply", "/v1/coord/admin/repair/apply")
 	if *doPlan {
 		body := mustPost(base + planPath)
 		var plan struct {

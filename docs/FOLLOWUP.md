@@ -99,6 +99,20 @@
 ### ~~[P7-05] Season 6 Ep.5 — DN registry mutation on coord~~
 - **DONE 2026-04-27**: ADR-047. `/v1/coord/admin/dns` POST/DELETE + `/v1/coord/admin/dns/class` PUT. 모두 requireLeader gate. cli `dns add/remove/class --coord`. urlkey rotation 은 본 ADR 비포함 (별도 ep). 1 unit test. demo-lamed (히브리 ל).
 
+### [P7-06] coord-side URLKey rotation
+- **다음**: coord 가 urlkey.Signer 를 owner 로 가져감. 현재 (ADR-028) edge-side. cli `urlkey rotate --coord URL`. 별도 ADR.
+- **우선순위**: 중간. ADR-042/047 의 cli admin 트랙 마무리.
+
+### [P7-07] coord placer + Coord embedded — dual placer 정리
+- **배경**: /simplify (2026-04-27) 발견. coord.Server 의 `Placer` 필드와 `Coord *coordinator.Coordinator` 가 각자 placement.Placer 를 가짐. boot 시 같은 노드 set 으로 동기화되고 refreshDNTopology 가 둘 다 갱신해서 정상 동작하지만, 구조적 redundancy.
+- **스펙**: Coord 가 nil 이 아니면 `s.Placer = s.Coord.placer()` (또는 Coord 가 placer accessor 노출) 로 단일 출처.
+- **우선순위**: 저우선 (현재 동작 정확).
+
+### [P7-08] CANDIDATE 상태 retry 예산
+- **배경**: /simplify (2026-04-27) 발견. coord 가 election 중 (CANDIDATE) 일 때 mutating RPC 가 503 + 빈 X-COORD-LEADER 헤더 반환. edge.CoordClient + cli 가 무한 retry 가능.
+- **스펙**: CoordClient.MaxRetries 또는 backoff. Election timeout 보다 큰 budget.
+- **우선순위**: 저우선 (운영상 거의 안 일어남, election ~5s).
+
 ---
 
 ### [P6-10] Edge-side meta cache (per-bucket-key, short-TTL)

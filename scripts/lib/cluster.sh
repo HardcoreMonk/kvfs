@@ -40,10 +40,13 @@ ensure_images() {
 }
 
 # start_coord name port [peers] [self_url] [wal_path] [txn_raft_bool]
-# Caller may pre-export COORD_DNS to override the default 3-DN list.
+# Caller may pre-export COORD_DNS to override the default 3-DN list, or
+# COORD_DN_IO=1 to enable Season 6 Ep.2's coord-side DN I/O (rebalance/
+# gc/repair apply paths).
 start_coord() {
   local name="$1" port="$2" peers="${3:-}" self_url="${4:-}" wal="${5:-}" txn="${6:-}"
   local dns="${COORD_DNS:-dn1:8080,dn2:8080,dn3:8080}"
+  local dnio="${COORD_DN_IO:-}"
   docker volume create "${name}-data" >/dev/null
   local args=(
     -d --name "$name" --network "$NET"
@@ -57,6 +60,7 @@ start_coord() {
   [ -n "$self_url" ] && args+=(-e COORD_SELF_URL="$self_url")
   [ -n "$wal" ]      && args+=(-e COORD_WAL_PATH="$wal")
   [ -n "$txn" ]      && args+=(-e COORD_TRANSACTIONAL_RAFT="$txn")
+  [ -n "$dnio" ]     && args+=(-e COORD_DN_IO="$dnio")
   docker run "${args[@]}" kvfs-coord:dev >/dev/null
 }
 

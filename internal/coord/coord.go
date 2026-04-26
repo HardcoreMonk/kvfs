@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
@@ -50,10 +51,18 @@ import (
 
 // Server bundles the coord daemon's owned state (placement + meta store)
 // and serves the HTTP RPC surface defined by ADR-015 / Season 5 Ep.1.
+//
+// Placer is replaced (not mutated in-place) on every dns admin change
+// so handlePlace / rebalanceCoord stay coherent under concurrent
+// reads. dnsAdminMu serializes the persist+refresh flow in
+// refreshDNTopology — gates the swap so two concurrent adds don't
+// stomp each other's view.
 type Server struct {
 	Store  *store.MetaStore
 	Placer *placement.Placer
 	Log    *slog.Logger
+
+	dnsAdminMu sync.Mutex
 
 	// Coord is the optional DN-I/O backend (Season 6 Ep.2, ADR-044).
 	// When non-nil, rebalance/gc/repair APPLY paths can run on coord
@@ -130,6 +139,19 @@ func (s *Server) Routes() *http.ServeMux {
 		mux.HandleFunc("POST /v1/election/append-wal", s.Elector.HandleAppendWAL)
 	}
 	return mux
+}
+
+// requireDNIO is the gate for handlers that need coord-side DN I/O
+// (rebalance/gc/repair apply). Returns true if the request was rejected
+// (caller must return immediately). 503 + a message naming the missing
+// COORD_DN_IO env so operators get a clear path to fix.
+func (s *Server) requireDNIO(w http.ResponseWriter, op string) bool {
+	if s.Coord != nil {
+		return false
+	}
+	writeErr(w, http.StatusServiceUnavailable,
+		fmt.Errorf("coord %s: COORD_DN_IO not enabled", op))
+	return true
 }
 
 // requireLeader is the gate for mutating RPCs in HA mode. Returns true if
@@ -357,9 +379,7 @@ func (s *Server) handleRebalancePlan(w http.ResponseWriter, _ *http.Request) {
 //
 // Concurrency knob via ?concurrency=N (default 4, matches edge default).
 func (s *Server) handleRebalanceApply(w http.ResponseWriter, r *http.Request) {
-	if s.Coord == nil {
-		writeErr(w, http.StatusServiceUnavailable,
-			errors.New("coord rebalance apply: COORD_DN_IO not enabled (no Coordinator wired)"))
+	if s.requireDNIO(w, "rebalance apply") {
 		return
 	}
 	concurrency := 4
@@ -385,8 +405,7 @@ func (s *Server) handleRebalanceApply(w http.ResponseWriter, r *http.Request) {
 //   ?min-age=DURATION  default 5m (mirror of edge's EDGE_AUTO_GC_MIN_AGE)
 //   ?concurrency=N     apply only; default 4
 func (s *Server) handleGCPlan(w http.ResponseWriter, r *http.Request) {
-	if s.Coord == nil {
-		writeErr(w, http.StatusServiceUnavailable, errors.New("coord gc: COORD_DN_IO not enabled"))
+	if s.requireDNIO(w, "gc plan") {
 		return
 	}
 	minAge := parseDurationQuery(r, "min-age", 5*time.Minute)
@@ -399,8 +418,7 @@ func (s *Server) handleGCPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGCApply(w http.ResponseWriter, r *http.Request) {
-	if s.Coord == nil {
-		writeErr(w, http.StatusServiceUnavailable, errors.New("coord gc: COORD_DN_IO not enabled"))
+	if s.requireDNIO(w, "gc apply") {
 		return
 	}
 	minAge := parseDurationQuery(r, "min-age", 5*time.Minute)
@@ -435,6 +453,10 @@ func (s *Server) handleAdminAddDN(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := s.refreshDNTopology(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("refresh placer: %w", err))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"added": addr})
 }
 
@@ -451,7 +473,44 @@ func (s *Server) handleAdminRemoveDN(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := s.refreshDNTopology(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("refresh placer: %w", err))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"removed": addr})
+}
+
+// refreshDNTopology rebuilds the in-memory placement view from the
+// authoritative bbolt registry. Without this, s.Placer / s.Coord stay
+// frozen at boot-time COORD_DNS even after dns add/remove mutations
+// — placement decisions go to the wrong DNs forever.
+//
+// Edge (internal/edge/edge.go::applyDNChange) does the equivalent atomic
+// persist+refresh in one helper. Coord persists via Store first (so HA
+// followers see it via WAL) and then refreshes the local view here.
+//
+// Note: there's a small inconsistency window — between Store.Add* and
+// refreshDNTopology(), placement still sees the old set. Acceptable for
+// admin operations (low frequency). For higher consistency a writer-mu
+// would help; deferred.
+func (s *Server) refreshDNTopology() error {
+	s.dnsAdminMu.Lock()
+	defer s.dnsAdminMu.Unlock()
+	addrs, err := s.Store.ListRuntimeDNs()
+	if err != nil {
+		return err
+	}
+	nodes := make([]placement.Node, 0, len(addrs))
+	for _, addr := range addrs {
+		nodes = append(nodes, placement.Node{ID: addr, Addr: addr})
+	}
+	s.Placer = placement.New(nodes)
+	if s.Coord != nil {
+		if err := s.Coord.UpdateNodes(nodes); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleAdminSetDNClass(w http.ResponseWriter, r *http.Request) {
@@ -475,8 +534,7 @@ func (s *Server) handleAdminSetDNClass(w http.ResponseWriter, r *http.Request) {
 // scans every stripe for missing/unresponsive shards and (apply path)
 // reconstructs them via Reed-Solomon. Both 503 if Coord nil.
 func (s *Server) handleRepairPlan(w http.ResponseWriter, r *http.Request) {
-	if s.Coord == nil {
-		writeErr(w, http.StatusServiceUnavailable, errors.New("coord repair: COORD_DN_IO not enabled"))
+	if s.requireDNIO(w, "repair plan") {
 		return
 	}
 	plan, err := repair.ComputePlan(s.Coord, s.Store)
@@ -488,8 +546,7 @@ func (s *Server) handleRepairPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
-	if s.Coord == nil {
-		writeErr(w, http.StatusServiceUnavailable, errors.New("coord repair: COORD_DN_IO not enabled"))
+	if s.requireDNIO(w, "repair apply") {
 		return
 	}
 	concurrency := parseIntQuery(r, "concurrency", 4)

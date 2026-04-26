@@ -17,14 +17,7 @@ need curl; need jq; need docker; need python3
 ensure_images
 docker network create $NET 2>/dev/null || true
 start_dns 4
-docker volume create coord1-data >/dev/null
-docker run -d --name coord1 --network "$NET" \
-  -p "9000:9000" \
-  -e COORD_ADDR=":9000" -e COORD_DATA_DIR="/var/lib/kvfs-coord" \
-  -e COORD_DNS="dn1:8080,dn2:8080,dn3:8080" \
-  -e COORD_DN_IO=1 \
-  -v coord1-data:/var/lib/kvfs-coord \
-  kvfs-coord:dev >/dev/null
+COORD_DN_IO=1 start_coord coord1 9000
 wait_healthz "${COORD}/v1/coord/healthz"
 
 echo "==> initial DN list (cli via coord)"

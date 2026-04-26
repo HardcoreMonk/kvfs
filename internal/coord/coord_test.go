@@ -408,6 +408,66 @@ func TestAdminMutateDNRegistry(t *testing.T) {
 	}
 }
 
+// /simplify regression: dns add MUST refresh the in-memory Placer (and
+// Coord.UpdateNodes when wired). Without this fix, all subsequent
+// placement decisions used the boot-time DN set forever — adding a
+// runtime DN would persist to bbolt but never actually receive any
+// chunks (HRW didn't know it existed).
+func TestAdminAddDN_RefreshesInMemoryPlacer(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// Seed the boot-time DN list (matches what main.go would do).
+	for _, addr := range []string{"dn1:8080", "dn2:8080"} {
+		if err := st.AddRuntimeDN(addr); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	bootNodes := []placement.Node{
+		{ID: "dn1:8080", Addr: "dn1:8080"},
+		{ID: "dn2:8080", Addr: "dn2:8080"},
+	}
+	srv := &Server{Store: st, Placer: placement.New(bootNodes)}
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+
+	// Sanity: before add, Pick over a chunk_id should return only dn1+dn2.
+	pre := srv.Placer.Pick("any-chunk", 3)
+	if len(pre) != 2 {
+		t.Fatalf("pre-add Pick should return 2 (only 2 DNs known), got %d", len(pre))
+	}
+
+	// Admin add dn3.
+	resp, err := http.Post(hs.URL+"/v1/coord/admin/dns?addr=dn3:8080", "application/json", nil)
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("add status %d", resp.StatusCode)
+	}
+
+	// Post-fix: srv.Placer must have been refreshed; Pick should now
+	// see dn3 as a candidate.
+	post := srv.Placer.Pick("any-chunk", 3)
+	if len(post) != 3 {
+		t.Errorf("post-add Pick = %d nodes, want 3 (dn3 should be picked)", len(post))
+	}
+	hasDN3 := false
+	for _, n := range post {
+		if n.Addr == "dn3:8080" {
+			hasDN3 = true
+		}
+	}
+	if !hasDN3 {
+		t.Errorf("post-add Pick = %v, want one to be dn3:8080", post)
+	}
+}
+
 // ADR-040 transactional commit: when no quorum can be reached, the leader
 // must reject the commit (return error from commit(), 5xx to client) AND
 // MUST NOT touch its bbolt. This guards the phantom-write window that the
