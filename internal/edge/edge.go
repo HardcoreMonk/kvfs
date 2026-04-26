@@ -370,13 +370,29 @@ func (s *Server) placeN(ctx context.Context, key string, n int) ([]string, error
 	return s.Coord.PlaceN(key, n), nil
 }
 
-// commitPutMeta is the unified PutObject path that picks transactional
-// (ADR-034) vs informational (ADR-033) replication based on Server config.
+// commitPutMeta is the unified PutObject path. Three modes, picked by
+// Server config — first match wins:
 //
-//   - Default + non-leader: plain Store.PutObject (legacy best-effort hook).
-//   - StrictReplication + leader: pre-marshal entry → ReplicateEntry quorum
-//     wait → on success Store.PutObjectAfterReplicate (no hook re-push).
-//     On quorum failure: return error WITHOUT committing — caller responds 503.
+//	┌──────────────────────────────┬──────────────────────────────────────┐
+//	│ if CoordClient != nil        │ ADR-015 coord-proxy: edge → coord   │
+//	│   (EDGE_COORD_URL set)       │ commit RPC. coord owns durability.  │
+//	│                              │ Transactional Raft happens coord-   │
+//	│                              │ side (ADR-040), not here.           │
+//	├──────────────────────────────┼──────────────────────────────────────┤
+//	│ elif StrictReplication       │ ADR-034 transactional: marshal      │
+//	│   && Elector != nil          │ entry → ReplicateEntry waits for    │
+//	│   && IsLeader                │ quorum → on success                 │
+//	│                              │ PutObjectAfterReplicate. Failure    │
+//	│                              │ → 503 without committing.           │
+//	├──────────────────────────────┼──────────────────────────────────────┤
+//	│ else                         │ Best-effort (Season 1~4 default):   │
+//	│                              │ Store.PutObject + WAL hook fires    │
+//	│                              │ async best-effort push to peers.    │
+//	└──────────────────────────────┴──────────────────────────────────────┘
+//
+// The first branch dominates in any deployment that uses kvfs-coord.
+// The other two are the legacy paths from Season 4 (in-edge transactional
+// + best-effort) — kept for inline-mode operators.
 func (s *Server) commitPutMeta(ctx context.Context, meta *store.ObjectMeta) error {
 	// Coord-proxy mode (Ep.2): all metadata writes go through the coord
 	// daemon. Strict / transactional Raft happens coord-side in later eps;

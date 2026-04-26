@@ -3,26 +3,41 @@
 
 // kvfs-coord — the coordinator daemon (ADR-015, Season 5 Ep.1).
 //
-// Owns:
-//   - HRW placement (the runtime DN list — single source of truth)
-//   - bbolt metadata (objects, dns_runtime, urlkey_secrets buckets)
-//   - WAL + snapshot (subset of S3/S4 capabilities; full carry-over is later eps)
+// 비전공자용 해설
+// ──────────────
+// kvfs-edge 가 Season 1~4 동안 게이트웨이 + coordinator + meta-store 의
+// 3 역을 했다. 단일 edge 의 bbolt single-writer 가 메타 throughput 의
+// 천장이었고 멀티-edge HA 도 snapshot-pull / Raft 같은 우회로 풀었다.
+// ADR-015 가 그 결정을 뒤집어 coord 를 별도 daemon 으로 분리.
 //
-// HTTP RPC (versioned at /v1/coord/*):
-//   POST  /v1/coord/place   — placement decision
-//   POST  /v1/coord/commit  — write ObjectMeta
-//   GET   /v1/coord/lookup  — read ObjectMeta
-//   POST  /v1/coord/delete  — remove ObjectMeta
-//   GET   /v1/coord/healthz
+// 책임 분담 (Season 5 close 시점):
+//   kvfs-edge   — HTTP 종단, UrlKey 검증, chunker/EC encoder, DN I/O
+//   kvfs-coord  — placement (HRW) + 메타 (bbolt) + 일관성 (Raft + WAL)
+//   kvfs-dn     — chunk byte 저장 (변동 없음)
+//   kvfs-cli    — 운영자 도구 (이젠 coord 에 직접 admin 가능)
 //
-// Boot env (subset; full list will grow with later eps):
-//   COORD_ADDR       — HTTP bind (default :9000)
-//   COORD_DATA_DIR   — bbolt + (later) WAL/snapshot dir (default ./coord-data)
-//   COORD_DNS        — comma-separated DN addresses for HRW (required)
+// Season 6 가 추가로 worker (rebalance / GC / repair) 와 mutating admin
+// (DN 추가/제거/class, URLKey rotation) 도 coord 로 옮겼다. 결과: edge 는
+// 진정한 thin gateway, 모든 운영 결정은 coord 에서.
 //
-// Edge wires to coord via EDGE_COORD_URL=http://coord:9000.
-// When EDGE_COORD_URL is unset, edge stays in inline mode (Season 1~4
-// behavior preserved — backward compat is the Ep.1 contract).
+// HTTP RPC 표면 (현재):
+//   /v1/coord/{place,commit,lookup,delete,healthz}        — Season 5 Ep.1
+//   /v1/election/{vote,heartbeat,append-wal}              — Season 5 Ep.3/Ep.4
+//   /v1/coord/admin/{objects,dns,urlkey}                  — Season 5 Ep.7 + Season 6 Ep.5/6
+//   /v1/coord/admin/dns{,/class}                          — Season 6 Ep.5
+//   /v1/coord/admin/{rebalance,gc,repair}/{plan,apply}    — Season 6 Ep.1~4
+//
+// Boot env (전체):
+//   COORD_ADDR                   — HTTP bind (default :9000)
+//   COORD_DATA_DIR               — bbolt + WAL/snapshot dir (default ./coord-data)
+//   COORD_DNS                    — comma-separated DN addresses for HRW (required)
+//   COORD_PEERS / COORD_SELF_URL — HA mode (ADR-038): leader election + redirect
+//   COORD_WAL_PATH               — WAL replication (ADR-039): peers stay in sync
+//   COORD_TRANSACTIONAL_RAFT     — replicate-then-commit (ADR-040, 진짜 strict)
+//   COORD_DN_IO                  — coord-side DN HTTP client (ADR-044): apply paths
+//
+// Edge 사이드 (참고): EDGE_COORD_URL=http://coord:9000 으로 proxy 모드. 미설정 시
+// edge 는 인라인 모드 유지 (Season 1~4 backward compat).
 package main
 
 import (

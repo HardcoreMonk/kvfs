@@ -3,31 +3,62 @@
 
 // Package coord is the kvfs-coord daemon's HTTP RPC surface.
 //
-// Season 5 Ep.1 (ADR-015) — first separation of placement + metadata
-// ownership out of edge into a dedicated daemon. Edge becomes a thin
-// gateway that calls coord via HTTP for every metadata mutation and
-// every placement decision.
-//
 // 비전공자용 해설
 // ──────────────
-// Season 1~4 의 kvfs-edge 는 게이트웨이 + coordinator + meta-store 의 3역.
-// 단일 edge 의 bbolt single-writer 가 메타 throughput 의 천장이었고, 멀티-edge
-// HA 도 snapshot-pull / Raft 같은 우회로 풀어왔다.
+// ADR-015 가 Season 5 의 architectural pivot: edge 가 게이트웨이 + coordinator
+// + meta-store 3역 하던 걸 coord 라는 별도 daemon 으로 분리. edge 는 thin
+// gateway 가 됨. cmd/kvfs-coord/main.go 의 top doc 에 책임 분담 + boot env
+// 매트릭스. 본 패키지는 그 daemon 의 HTTP handler 모음.
 //
-// ADR-015 의 결정: coord 를 떼낸다. 책임 재배치:
+// Season 5 (메타 분리) — Ep.1~7
+//   Ep.1 ADR-015: skeleton + place/commit/lookup/delete RPC
+//   Ep.2 ADR-038-앞: edge → coord meta proxy (CoordClient, EDGE_COORD_URL)
+//   Ep.3 ADR-038: coord HA via Raft (election + leader redirect)
+//   Ep.4 ADR-039: coord-to-coord WAL replication (best-effort)
+//   Ep.5 ADR-040: transactional commit (replicate-then-commit, true strict)
+//   Ep.6 ADR-041: edge → coord placement RPC (single source of truth)
+//   Ep.7 ADR-042: cli direct coord admin (read-only inspect)
 //
-//   kvfs-edge   — HTTP 종단, UrlKey 검증, chunker/EC encoder, DN I/O
-//   kvfs-coord  — placement (HRW), 메타 (bbolt), 결정의 단일 출처
-//   kvfs-dn     — chunk byte 저장 (변동 없음)
+// Season 6 (운영 분리) — Ep.1~7
+//   Ep.1 ADR-043: rebalance plan on coord (no DN I/O)
+//   Ep.2 ADR-044: rebalance apply (COORD_DN_IO=1 → coordinator embed)
+//   Ep.3 ADR-045: GC plan + apply
+//   Ep.4 ADR-046: EC repair (Reed-Solomon Reconstruct)
+//   Ep.5 ADR-047: DN registry mutation (add/remove/class)
+//   Ep.6 ADR-048: URLKey kid registry (rotate/list/remove)
+//   Ep.7 ADR-049: edge urlkey.Signer propagation (polling)
 //
-// Ep.1 의 minimal RPC:
-//   POST /v1/coord/place   {key, n}    → {addrs:[...]}
-//   POST /v1/coord/commit  {meta}      → {ok:true, version:N}
-//   GET  /v1/coord/lookup?bucket&key   → {meta}  (or 404)
-//   POST /v1/coord/delete  {bucket,key} → {ok:true}
-//   GET  /v1/coord/healthz
+// HTTP route 카탈로그 (현재 코드의 Routes() 와 1:1 일치):
+//   POST /v1/coord/place                                  Ep.1 — placement
+//   POST /v1/coord/commit                                 Ep.1 — meta write
+//   GET  /v1/coord/lookup?bucket=&key=                    Ep.1 — meta read
+//   POST /v1/coord/delete                                 Ep.1 — meta delete
+//   GET  /v1/coord/healthz                                Ep.1 — liveness + role
+//   POST /v1/election/vote                                Ep.3 — Raft vote RPC
+//   POST /v1/election/heartbeat                           Ep.3 — Raft heartbeat
+//   POST /v1/election/append-wal                          Ep.4 — WAL push
+//   GET  /v1/coord/admin/objects                          Ep.7 — bulk meta dump
+//   GET  /v1/coord/admin/dns                              Ep.7 — DN list (read)
+//   POST /v1/coord/admin/rebalance/plan                   S6 Ep.1 — plan
+//   POST /v1/coord/admin/rebalance/apply?concurrency=N    S6 Ep.2 — apply (DN I/O)
+//   POST /v1/coord/admin/gc/{plan,apply}?min-age=         S6 Ep.3
+//   POST /v1/coord/admin/repair/{plan,apply}?concurrency= S6 Ep.4
+//   POST   /v1/coord/admin/dns?addr=                      S6 Ep.5 — leader-only
+//   DELETE /v1/coord/admin/dns?addr=                      S6 Ep.5 — leader-only
+//   PUT    /v1/coord/admin/dns/class?addr=&class=         S6 Ep.5 — leader-only
+//   GET    /v1/coord/admin/urlkey                         S6 Ep.6 — kid list
+//   POST   /v1/coord/admin/urlkey/rotate                  S6 Ep.6 — leader-only
+//   DELETE /v1/coord/admin/urlkey?kid=                    S6 Ep.6 — leader-only
 //
-// 이후 episode 가 PlaceN, EC stripe placement, runtime DN registry 추가.
+// 두 가지 gate:
+//   requireLeader  — HA mode (Elector 활성) 의 mutating RPC 가 follower 에 오면
+//                    503 + X-COORD-LEADER 헤더로 리다이렉트
+//   requireDNIO    — apply 계열 (rebalance/gc/repair) 이 COORD_DN_IO 미설정 시
+//                    503 (coord 가 DN HTTP 클라이언트 없음)
+//
+// Coord field 는 옵셔널 (COORD_DN_IO=1 일 때만 wired). Plan 계열은 어댑터
+// (rebalancePlanCoord) 로 placer-only fallback. 자세한 거 Server 정의 + 각
+// handler 위 ADR 코멘트.
 package coord
 
 import (

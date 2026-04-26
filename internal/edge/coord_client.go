@@ -3,27 +3,32 @@
 
 // Edge → coord HTTP client (Season 5 Ep.2, ADR-015 follow-up).
 //
-// Wires the edge into kvfs-coord's RPC surface so metadata reads and writes
-// proxy through coord instead of hitting edge's local bbolt. Created when
-// EDGE_COORD_URL is set; nil otherwise (preserves Season 1~4 inline mode).
+// 누적 capabilities (이 파일이 다루는 것 전부):
+//   Ep.2  CommitObject / LookupObject / DeleteObject / Healthz   — 메타 RPC
+//   Ep.3  do() 의 leader-redirect (503 + X-COORD-LEADER, ADR-038)
+//   Ep.6  PlaceN                                                  — placement RPC
+//   Ep.7  ListURLKeys                                             — kid registry sync source
+//   P6-10 cache (cacheTTL/cache + SetLookupCache)                 — opt-in lookup cache
+//   P7-08 do() 의 CANDIDATE 503-empty backoff                     — election 중 transparent retry
 //
 // 비전공자용 해설
 // ──────────────
-// Ep.1 (demo-aleph) 에서 coord 를 standalone 으로 띄웠지만 edge 는 자기 bbolt
-// 를 그대로 썼다. 이번 ep 에서 edge 가 EDGE_COORD_URL 을 보면 모든 메타 작업
-// (commit / delete / lookup) 을 coord 에 위임한다. 결과:
+// EDGE_COORD_URL 이 설정되면 edge 가 자기 bbolt 대신 coord HTTP 에 모든
+// 메타 / placement 작업을 위임. 결과 (coord-proxy mode):
 //
 //   - coord.bbolt 가 진실의 단일 출처
-//   - edge.bbolt 는 EDGE_COORD_URL 설정 시 unused (혹은 미생성)
-//   - placement 결정은 edge 에 잠시 머물러 있음 (edge 가 자기 DN list 알기에).
-//     Ep.3 또는 Ep.4 에서 coord 가 placement 도 가져갈 예정.
+//   - edge.bbolt 는 미사용 (Season 7 미정의 정리 후보)
+//   - read-after-write: 같은 client 가 commit 직후 lookup 하면 coord 의
+//     bbolt 트랜잭션 직렬성 덕에 새 값 보장
+//   - failover: coord 다중화 (ADR-038/039) 가 leader 변경 처리
 //
-// 동기화·일관성:
-//   - 모든 commit 이 coord 의 single bbolt writer 통과 → 멀티-edge 라도
-//     메타 일관성 자연 유지 (ADR-022 의 snapshot pull 우회 불필요)
-//   - read-after-write: edge 가 자기 commit RPC 직후 lookup RPC → 같은
-//     coord 가 응답. coord 의 bbolt 트랜잭션이 직렬이므로 보장됨
-//   - failover: coord 다중화는 Ep.3 (P6-03) 의 책임
+// HTTP 클라이언트 정책:
+//   - per-call timeout 10s (Timeout field). 5xx 시 instant fail (caller 가 retry 결정)
+//   - 503 + X-COORD-LEADER 헤더: transparent 1-hop redirect (baseURL 갱신)
+//   - 503 + 빈 헤더 (CANDIDATE 상태): 200ms backoff + retry (election convergence)
+//   - 캐시 (P6-10, opt-in): SetLookupCache(ttl) 으로 활성. CommitObject/
+//     DeleteObject 가 same-client 의 entry invalidate. 다른 edge 의
+//     mutation 은 TTL 만료까지 stale (짧은 TTL 권장)
 package edge
 
 import (
