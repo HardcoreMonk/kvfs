@@ -160,7 +160,7 @@
 ## 현재 상태 요약 (2026-04-26)
 
 - **Git**: main branch, **GitHub `HardcoreMonk/kvfs` PUBLIC** (https://github.com/HardcoreMonk/kvfs, repo 신규 재생성 후 fresh history)
-- **테스트**: 핵심 패키지 모두 = **93 unit tests PASS**, `go vet` 클린
+- **테스트**: 핵심 패키지 모두 = **105 unit tests PASS**, `go vet` 클린
 - **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ, ν, ξ, ο, π, ρ 전부 라이브 통과 (15종)
 - **ADR**: 22건 Accepted (022 추가)
 - **Blog**: Ep.1~Ep.13 완성 (Ep.13 = Multi-edge HA)

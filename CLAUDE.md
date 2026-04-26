@@ -107,12 +107,11 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26-alpine \
 
 ## Claude Code 작업 힌트
 
-다음 작업 패턴이 반복되면 이 문서를 업데이트:
-
-1. **새 의존성 추가 시** — ADR 작성 (`docs/adr/` 템플릿 참조)
-2. **블로그 episode 완성 시** — `blog/` 에 커밋 전 실 cluster로 데모 재현
-3. **Season 2 진입 시** — README 로드맵 갱신
-4. **`internal/coordinator/` 독립 daemon 분리 시** — ADR-002 supersede
+- 환경변수 전체 표는 `README.md` § "환경 변수" — 신규 env 추가 시 README + main.go 도움말 동기화
+- 새 ADR 작성 시 `docs/adr/README.md` 표에 한 줄 추가
+- 블로그 episode 완성 시 `blog/` 에 커밋 전 실 cluster 로 데모 재현
+- 새 시즌 진입 시 README 의 시즌 표 갱신
+- `internal/coordinator/` 독립 daemon 분리 시 ADR-002 supersede
 
 ## 금지·주의
 
