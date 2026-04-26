@@ -10,6 +10,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -44,6 +46,8 @@ func main() {
 		cmdAuto(os.Args[2:])
 	case "dns":
 		cmdDNs(os.Args[2:])
+	case "urlkey":
+		cmdURLKey(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -64,6 +68,7 @@ Subcommands:
   gc              Delete surplus chunks no object's metadata claims (ADR-012)
   auto            Show auto-trigger config + recent run history (ADR-013)
   dns             list / add / remove DNs in the live registry (ADR-027)
+  urlkey          list / rotate / remove signing kids (ADR-028)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -810,6 +815,85 @@ func cmdDNs(args []string) {
 		fmt.Println(string(body))
 	default:
 		fmt.Fprintf(os.Stderr, "dns: unknown subcommand %q (want list | add | remove)\n", rest[0])
+		os.Exit(2)
+	}
+}
+
+// ---- urlkey ----
+//
+// Live UrlKey kid registry (ADR-028). Wraps:
+//   GET    /v1/admin/urlkey
+//   POST   /v1/admin/urlkey/rotate body {"kid":..,"secret_hex":..}
+//   DELETE /v1/admin/urlkey?kid=v1
+//
+// Usage:
+//   kvfs-cli urlkey list
+//   kvfs-cli urlkey rotate                    # auto-generate kid + secret
+//   kvfs-cli urlkey rotate --kid v3 --secret-hex 0123abcd...
+//   kvfs-cli urlkey remove --kid v1           # 옛 kid (verify 무효화)
+func cmdURLKey(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "urlkey: missing subcommand (list | rotate | remove)")
+		os.Exit(2)
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("urlkey "+sub, flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	flagKid := fs.String("kid", "", "kid for rotate/remove")
+	flagSecret := fs.String("secret-hex", "", "hex-encoded secret for rotate (auto-gen if empty)")
+	fs.Parse(args[1:])
+
+	base := strings.TrimRight(*edge, "/")
+	switch sub {
+	case "list":
+		body := mustGet(base + "/v1/admin/urlkey")
+		var resp struct {
+			Kids []struct {
+				Kid       string    `json:"kid"`
+				IsPrimary bool      `json:"is_primary"`
+				CreatedAt time.Time `json:"created_at"`
+			} `json:"kids"`
+			Primary string `json:"primary"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			fail(err)
+		}
+		fmt.Printf("%d kid(s)  primary=%s\n", len(resp.Kids), resp.Primary)
+		for _, k := range resp.Kids {
+			marker := " "
+			if k.IsPrimary {
+				marker = "*"
+			}
+			fmt.Printf("  %s %-12s  created=%s\n", marker, k.Kid, k.CreatedAt.Format(time.RFC3339))
+		}
+	case "rotate":
+		kid := *flagKid
+		if kid == "" {
+			kid = fmt.Sprintf("v%d", time.Now().Unix())
+		}
+		secret := *flagSecret
+		if secret == "" {
+			buf := make([]byte, 32)
+			if _, err := rand.Read(buf); err != nil {
+				fail(err)
+			}
+			secret = hex.EncodeToString(buf)
+			fmt.Printf("ℹ️  generated random 32-byte secret\n")
+		}
+		payload := fmt.Sprintf(`{"kid":%q,"secret_hex":%q}`, kid, secret)
+		body := mustHTTPJSON(http.MethodPost, base+"/v1/admin/urlkey/rotate", payload)
+		fmt.Printf("✅ rotated; primary=%s\n", kid)
+		fmt.Println(string(body))
+	case "remove":
+		if *flagKid == "" {
+			fmt.Fprintln(os.Stderr, "urlkey remove: --kid required")
+			os.Exit(2)
+		}
+		body := mustHTTPJSON(http.MethodDelete, base+"/v1/admin/urlkey?kid="+*flagKid, "")
+		fmt.Printf("✅ removed kid=%s\n", *flagKid)
+		fmt.Println(string(body))
+	default:
+		fmt.Fprintf(os.Stderr, "urlkey: unknown subcommand %q\n", sub)
 		os.Exit(2)
 	}
 }

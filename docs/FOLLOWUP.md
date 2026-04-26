@@ -61,10 +61,8 @@
 ### ~~[P2-07] Chaos test — random DN kill~~
 - **DONE 2026-04-26**: `scripts/chaos-dn-killer.sh` (--duration/--interval/--downtime/--get-rate/--dns flags). quorum (R/2+1) 보장 위해 alive > 2 일 때만 kill, 죽은 DN 자동 restore. 라이브 검증: 30s/3 kill cycle, 69 GETs 0 fail PASS
 
-### [P2-08] Secret rotation (UrlKey `kid`)
-- 현재: 단일 secret env var. 만료·누출 대응 어려움
-- 개선: `urlkey_secrets` bucket 에 `kid → secret` 저장, URL 에 `kid=...` 추가
-- 운영 측면 sophistication. MVP 에선 과함
+### ~~[P2-08] Secret rotation (UrlKey `kid`)~~
+- **DONE 2026-04-26 (ADR-028)**: multi-key `urlkey.Signer` (Add/Remove/SetPrimary/Kids), `urlkey_secrets` bbolt 버킷 영속, URL `?kid=` 파라미터, kid 누락 시 try-all-kids fallback (legacy/shell 클라이언트 호환). `POST /v1/admin/urlkey/rotate` + `DELETE /v1/admin/urlkey?kid=`. `kvfs-cli urlkey list/rotate/remove --kid X`. 라이브 검증: rotate 후 옛 v1-signed URL 정상 verify, v1 remove 후 401. 11 unit tests PASS (5 기존 + 6 rotation)
 
 ### [P2-09] TLS / mTLS
 - 현재: 모든 통신 평문 HTTP

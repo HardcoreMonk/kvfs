@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -106,12 +107,44 @@ func main() {
 		fatal(err.Error())
 	}
 
+	// ADR-028 multi-key signer: load all kids from urlkey_secrets bucket;
+	// seed kid="v1" from EDGE_URLKEY_SECRET env if bucket empty.
 	var signer *urlkey.Signer
 	if !*flagSkip {
-		signer, err = urlkey.NewSigner([]byte(*flagSecret))
-		if err != nil {
-			fatal(err.Error())
+		entries, lerr := ms.ListURLKeys()
+		if lerr != nil {
+			fatal("read urlkey_secrets: " + lerr.Error())
 		}
+		if len(entries) == 0 {
+			if err := ms.PutURLKey(urlkey.DefaultKid, hex.EncodeToString([]byte(*flagSecret)), true); err != nil {
+				fatal("seed urlkey: " + err.Error())
+			}
+			entries, _ = ms.ListURLKeys()
+			log.Info("seeded urlkey_secrets with EDGE_URLKEY_SECRET", "kid", urlkey.DefaultKid)
+		}
+		keys := make(map[string][]byte, len(entries))
+		var primary string
+		for _, e := range entries {
+			b, derr := hex.DecodeString(e.SecretHex)
+			if derr != nil {
+				fatal("decode urlkey kid=" + e.Kid + ": " + derr.Error())
+			}
+			keys[e.Kid] = b
+			if e.IsPrimary {
+				primary = e.Kid
+			}
+		}
+		if primary == "" {
+			primary = entries[0].Kid // fallback
+		}
+		if override := envOr("EDGE_URLKEY_PRIMARY_KID", ""); override != "" {
+			primary = override
+		}
+		signer, err = urlkey.NewMultiSigner(keys, primary)
+		if err != nil {
+			fatal("build signer: " + err.Error())
+		}
+		log.Info("urlkey signer ready", "kids", len(entries), "primary", primary)
 	}
 
 	chunkSize := *flagChunk

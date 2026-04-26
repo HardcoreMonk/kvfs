@@ -93,6 +93,10 @@ type Server struct {
 	// add/remove don't race the bbolt persist + Coord.UpdateNodes pair.
 	dnsAdminMu sync.Mutex
 
+	// urlkeyAdminMu serializes /v1/admin/urlkey/* so persist + Signer
+	// mutation stay consistent.
+	urlkeyAdminMu sync.Mutex
+
 	// autoMu protects autoRuns + lastCheck timestamps.
 	// Empty cycles update lastCheck only (not autoRuns) so the ring buffer
 	// keeps actionable history; lastCheck still proves the loop is alive.
@@ -126,6 +130,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/dns", s.handleDNs)
 	mux.HandleFunc("POST /v1/admin/dns", s.handleAddDN)
 	mux.HandleFunc("DELETE /v1/admin/dns", s.handleRemoveDN)
+	mux.HandleFunc("GET /v1/admin/urlkey", s.handleListURLKeys)
+	mux.HandleFunc("POST /v1/admin/urlkey/rotate", s.handleRotateURLKey)
+	mux.HandleFunc("DELETE /v1/admin/urlkey", s.handleRemoveURLKey)
 	mux.HandleFunc("POST /v1/admin/rebalance/plan", s.handleRebalancePlan)
 	mux.HandleFunc("POST /v1/admin/rebalance/apply", s.handleRebalanceApply)
 	mux.HandleFunc("POST /v1/admin/gc/plan", s.handleGCPlan)
@@ -423,6 +430,111 @@ func (s *Server) applyDNChange(mutate func([]string) ([]string, error), addr, ac
 	s.logger().Info("dns registry changed", "action", action, "addr", addr,
 		"new_count", len(next))
 	return nil
+}
+
+// ─── ADR-028 UrlKey rotation handlers ───
+
+func (s *Server) handleListURLKeys(w http.ResponseWriter, r *http.Request) {
+	if s.Signer == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"kids": []any{}, "primary": ""})
+		return
+	}
+	entries, err := s.Store.ListURLKeys()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, map[string]any{
+			"kid":        e.Kid,
+			"is_primary": e.IsPrimary,
+			"created_at": e.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kids":    out,
+		"primary": s.Signer.Primary(),
+	})
+}
+
+// handleRotateURLKey adds a new (kid, secret_hex) and sets it primary.
+// Body: {"kid":"v2","secret_hex":"<hex>"}.
+func (s *Server) handleRotateURLKey(w http.ResponseWriter, r *http.Request) {
+	if s.Signer == nil {
+		writeError(w, http.StatusBadRequest, "signer disabled (skip-auth)")
+		return
+	}
+	var body struct {
+		Kid       string `json:"kid"`
+		SecretHex string `json:"secret_hex"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Kid == "" || body.SecretHex == "" {
+		writeError(w, http.StatusBadRequest, "kid + secret_hex required")
+		return
+	}
+	secret, err := hex.DecodeString(body.SecretHex)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "secret_hex: "+err.Error())
+		return
+	}
+
+	s.urlkeyAdminMu.Lock()
+	defer s.urlkeyAdminMu.Unlock()
+
+	if err := s.Store.PutURLKey(body.Kid, body.SecretHex, true); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.Signer.Add(body.Kid, secret); err != nil && err != urlkey.ErrDuplicateKid {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.Signer.SetPrimary(body.Kid); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.logger().Info("urlkey rotated", "new_primary", body.Kid)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"action":  "rotate",
+		"primary": body.Kid,
+		"kids":    s.Signer.Kids(),
+	})
+}
+
+// handleRemoveURLKey deletes a non-primary kid. Query: ?kid=v1.
+func (s *Server) handleRemoveURLKey(w http.ResponseWriter, r *http.Request) {
+	if s.Signer == nil {
+		writeError(w, http.StatusBadRequest, "signer disabled (skip-auth)")
+		return
+	}
+	kid := r.URL.Query().Get("kid")
+	if kid == "" {
+		writeError(w, http.StatusBadRequest, "missing kid query param")
+		return
+	}
+
+	s.urlkeyAdminMu.Lock()
+	defer s.urlkeyAdminMu.Unlock()
+
+	if err := s.Signer.Remove(kid); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.Store.DeleteURLKey(kid); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.logger().Info("urlkey removed", "kid", kid)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"action": "remove",
+		"kid":    kid,
+		"kids":   s.Signer.Kids(),
+	})
 }
 
 // handleRebalancePlan computes (read-only) the migration plan and returns it.

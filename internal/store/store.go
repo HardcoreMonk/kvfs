@@ -24,9 +24,10 @@ import (
 )
 
 var (
-	bucketObjects    = []byte("objects")
-	bucketDNs        = []byte("dns")
-	bucketDNsRuntime = []byte("dns_runtime") // ADR-027: live DN registry, addr -> registered_at JSON
+	bucketObjects       = []byte("objects")
+	bucketDNs           = []byte("dns")
+	bucketDNsRuntime    = []byte("dns_runtime")    // ADR-027
+	bucketURLKeySecrets = []byte("urlkey_secrets") // ADR-028: kid -> JSON {secret_hex, created_at, is_primary}
 
 	ErrNotFound = errors.New("store: not found")
 )
@@ -122,7 +123,7 @@ func Open(path string) (*MetaStore, error) {
 		return nil, fmt.Errorf("open bbolt: %w", err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketObjects, bucketDNs, bucketDNsRuntime} {
+		for _, b := range [][]byte{bucketObjects, bucketDNs, bucketDNsRuntime, bucketURLKeySecrets} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -409,4 +410,98 @@ func (m *MetaStore) SeedRuntimeDNs(addrs []string) error {
 		}
 		return nil
 	})
+}
+
+// ─── UrlKey secret store (ADR-028) ───
+
+// URLKeyEntry is the persisted record per kid.
+type URLKeyEntry struct {
+	Kid       string    `json:"kid"`
+	SecretHex string    `json:"secret_hex"` // hex-encoded; binary safe in JSON
+	IsPrimary bool      `json:"is_primary"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// PutURLKey upserts a (kid, secret) pair. If isPrimary, also clears
+// is_primary on all other kids in one transaction.
+func (m *MetaStore) PutURLKey(kid string, secretHex string, isPrimary bool) error {
+	if kid == "" || secretHex == "" {
+		return errors.New("store: kid and secret_hex required")
+	}
+	return m.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketURLKeySecrets)
+		if isPrimary {
+			// Clear primary flag on existing entries.
+			if err := b.ForEach(func(k, v []byte) error {
+				var e URLKeyEntry
+				if err := json.Unmarshal(v, &e); err != nil {
+					return err
+				}
+				if !e.IsPrimary {
+					return nil
+				}
+				e.IsPrimary = false
+				buf, err := json.Marshal(&e)
+				if err != nil {
+					return err
+				}
+				return b.Put(k, buf)
+			}); err != nil {
+				return err
+			}
+		}
+		// Preserve created_at if exists; otherwise set now.
+		created := time.Now().UTC()
+		if prev := b.Get([]byte(kid)); prev != nil {
+			var pe URLKeyEntry
+			if err := json.Unmarshal(prev, &pe); err == nil && !pe.CreatedAt.IsZero() {
+				created = pe.CreatedAt
+			}
+		}
+		entry := URLKeyEntry{Kid: kid, SecretHex: secretHex, IsPrimary: isPrimary, CreatedAt: created}
+		buf, err := json.Marshal(&entry)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(kid), buf)
+	})
+}
+
+// DeleteURLKey removes a kid. Refuses primary kid (caller must rotate first).
+func (m *MetaStore) DeleteURLKey(kid string) error {
+	return m.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketURLKeySecrets)
+		raw := b.Get([]byte(kid))
+		if raw == nil {
+			return ErrNotFound
+		}
+		var e URLKeyEntry
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return err
+		}
+		if e.IsPrimary {
+			return errors.New("store: cannot delete primary kid")
+		}
+		return b.Delete([]byte(kid))
+	})
+}
+
+// ListURLKeys returns all entries sorted by kid.
+func (m *MetaStore) ListURLKeys() ([]*URLKeyEntry, error) {
+	var out []*URLKeyEntry
+	err := m.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketURLKeySecrets).ForEach(func(_, v []byte) error {
+			var e URLKeyEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				return err
+			}
+			out = append(out, &e)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Kid < out[j].Kid })
+	return out, nil
 }

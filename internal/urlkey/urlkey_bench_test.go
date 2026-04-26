@@ -24,7 +24,7 @@ func BenchmarkSign(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = s.Sign("GET", "/v1/o/bucket/some/key/path.bin", exp)
+		_, _ = s.Sign("GET", "/v1/o/bucket/some/key/path.bin", exp)
 	}
 }
 
