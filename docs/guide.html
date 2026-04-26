@@ -674,21 +674,26 @@ type Stripe struct {
 <thead><tr><th>변수</th><th>기본</th><th>영향</th></tr></thead>
 <tbody>
 <tr><td><code>EDGE_REPLICATION_FACTOR</code></td><td>3</td><td>replication 모드의 R</td></tr>
+<tr><td><code>EDGE_QUORUM_WRITE</code></td><td>⌊R/2⌋+1</td><td>write ack 임계 명시 override (보통 자동)</td></tr>
 <tr><td><code>EDGE_CHUNK_SIZE</code></td><td>4 MiB</td><td>fixed chunk size</td></tr>
 <tr><td><code>EDGE_CHUNK_MODE</code></td><td><code>fixed</code></td><td><code>cdc</code> 로 설정 시 FastCDC 활성</td></tr>
 <tr><td><code>EDGE_WAL_PATH</code></td><td>(off)</td><td>설정 시 WAL 활성</td></tr>
 <tr><td><code>EDGE_WAL_BATCH_INTERVAL</code></td><td>(off)</td><td>설정 시 group commit 활성</td></tr>
-<tr><td><code>EDGE_PEERS</code></td><td>(off)</td><td>설정 시 leader election 활성</td></tr>
+<tr><td><code>EDGE_PEERS</code> / <code>EDGE_SELF_URL</code></td><td>(off)</td><td>설정 시 leader election 활성 (ADR-031)</td></tr>
 <tr><td><code>EDGE_TRANSACTIONAL_RAFT</code></td><td>0</td><td>1 = ADR-034 commit-before-quorum</td></tr>
 <tr><td><code>EDGE_PLACEMENT_PREFER</code></td><td>(off)</td><td>DN class 라벨 bias</td></tr>
 <tr><td><code>EDGE_METRICS</code></td><td>1</td><td><code>/metrics</code> Prometheus endpoint</td></tr>
 <tr><td><code>EDGE_AUTO_REBALANCE_INTERVAL</code></td><td>(off)</td><td>auto-rebalance ticker</td></tr>
 <tr><td><code>EDGE_AUTO_GC_INTERVAL</code></td><td>(off)</td><td>auto-GC ticker</td></tr>
+<tr><td><code>EDGE_AUTO_GC_MIN_AGE</code></td><td>5m</td><td>GC 안전망 — 이보다 어린 chunk 보호</td></tr>
+<tr><td><code>EDGE_AUTO_CONCURRENCY</code></td><td>1</td><td>rebalance/GC worker 동시 실행 수</td></tr>
 <tr><td><code>EDGE_SNAPSHOT_DIR / INTERVAL / KEEP</code></td><td>(off)</td><td>auto-snapshot scheduler</td></tr>
 <tr><td><code>EDGE_HEARTBEAT_INTERVAL</code></td><td>(off)</td><td>DN heartbeat</td></tr>
-<tr><td><code>EDGE_ROLE</code></td><td><code>primary</code></td><td><code>follower</code> 면 read-only + snapshot pull</td></tr>
+<tr><td><code>EDGE_ROLE</code> / <code>EDGE_PRIMARY_URL</code> / <code>EDGE_FOLLOWER_PULL_INTERVAL</code></td><td><code>primary</code> / — / 30s</td><td>follower 모드: read-only + snapshot pull (ADR-022)</td></tr>
+<tr><td><code>EDGE_TLS_CERT</code> / <code>EDGE_TLS_KEY</code></td><td>(off)</td><td>설정 시 HTTPS 활성 (ADR-029, <code>internal/tlsutil</code>)</td></tr>
 </tbody>
 </table>
+<blockquote><p>운영 디테일 (election timing, DN-side TLS CA 등) 은 <code>README.md</code> § "환경 변수" 의 전체 표.</p></blockquote>
 
 <h2 id="s11"><span class="num">11</span>모드 선택 가이드</h2>
 

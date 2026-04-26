@@ -471,19 +471,25 @@ type Stripe struct {
 | 변수 | 기본 | 영향 |
 |---|---|---|
 | `EDGE_REPLICATION_FACTOR` | 3 | replication 모드의 R |
+| `EDGE_QUORUM_WRITE` | ⌊R/2⌋+1 | write ack 임계 명시 override (보통 자동) |
 | `EDGE_CHUNK_SIZE` | 4 MiB | fixed chunk size |
 | `EDGE_CHUNK_MODE` | `fixed` | `cdc` 로 설정 시 FastCDC 활성 |
 | `EDGE_WAL_PATH` | (off) | 설정 시 ADR-019 WAL 활성 |
 | `EDGE_WAL_BATCH_INTERVAL` | (off) | 설정 시 group commit 활성 (e.g. `5ms`) |
-| `EDGE_PEERS` | (off) | 설정 시 leader election 활성 |
+| `EDGE_PEERS` / `EDGE_SELF_URL` | (off) | 설정 시 leader election 활성 (ADR-031) |
 | `EDGE_TRANSACTIONAL_RAFT` | 0 | 1 = ADR-034 commit-before-quorum |
 | `EDGE_PLACEMENT_PREFER` | (off) | DN class 라벨 ("hot" 등) bias |
 | `EDGE_METRICS` | 1 | `/metrics` Prometheus endpoint |
 | `EDGE_AUTO_REBALANCE_INTERVAL` | (off) | 설정 시 auto-rebalance ticker |
 | `EDGE_AUTO_GC_INTERVAL` | (off) | 설정 시 auto-GC ticker |
+| `EDGE_AUTO_GC_MIN_AGE` | 5m | GC 안전망 — 이보다 어린 chunk 보호 |
+| `EDGE_AUTO_CONCURRENCY` | 1 | rebalance/GC worker 동시 실행 수 |
 | `EDGE_SNAPSHOT_DIR / INTERVAL / KEEP` | (off) | 설정 시 auto-snapshot scheduler |
 | `EDGE_HEARTBEAT_INTERVAL` | (off) | 설정 시 DN heartbeat |
-| `EDGE_ROLE` | `primary` | `follower` 면 read-only + snapshot pull |
+| `EDGE_ROLE` / `EDGE_PRIMARY_URL` / `EDGE_FOLLOWER_PULL_INTERVAL` | `primary` / — / 30s | follower 모드: read-only + snapshot pull (ADR-022) |
+| `EDGE_TLS_CERT` / `EDGE_TLS_KEY` | (off) | 설정 시 HTTPS 활성 (ADR-029, `internal/tlsutil`) |
+
+> 운영 디테일 (election timing, DN-side TLS CA 등) 은 `README.md` § "환경 변수" 의 전체 표.
 
 ---
 

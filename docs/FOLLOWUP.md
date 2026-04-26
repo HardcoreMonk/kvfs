@@ -2,200 +2,117 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-26** · Season 3 Ep.1 (ADR-013 Auto-trigger) 완료 시점 기준.
+문서 현행화 일자: **2026-04-26** · Season 4 close + P4-09 wave + 아키텍처 가이드 + doc-drift CI 까지 반영.
 
 ## 우선순위 맵
 
 - **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
-- **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **2건**
-- **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **0건** (P2-01~09 모두 완료)
-- **P3**: 별도 스펙·사용자 결정 필요 — 현재 **3건** (P3-05/06 obsolete · 취소선; P3-07 ADR-024 완료 → P3-09 신규)
+- **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
+- **P2**: 리뷰·개선 권고 — 현재 **0건** (P2-01~09 모두 완료)
+- **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02, OTel 도입 여부)
+- **P5**: post-Season-4 wave 후속 — 현재 **6건**
+
+> ※ P4-* 는 모두 완료. 새 항목은 P5-* 부터.
 
 ---
 
-## P1 — 실행 대기 (명확한 스펙)
-
-### [P1-01] GitHub 레포 발행
-- **상태**: Local `git init` + 2 commit 완료 (`main` 브랜치, `origin` 없음)
-- **대기**: 사용자 직접 `gh repo create` 실행 (public/private 결정 후)
-- **명령**:
-  ```
-  ! cd /data/projects/claude-zone/200.kvfs && gh repo create kvfs --private \
-    --description "kvfs — Key-Value File System: an educational reference for distributed object storage (Go 1.26, Apache 2.0)" \
-    --source=. --push --remote=origin
-  ```
-  (public 전환: `gh repo edit HardcoreMonk/kvfs --visibility public --accept-visibility-change-consequences`)
+## P1 — 실행 대기 (사용자 직접)
 
 ### [P1-02] Docker Compose plugin 설치
-- **배경**: `./scripts/up.sh` 는 plain `docker run` 으로 대체 구현됨 (compose 미설치 환경 대응). `docker-compose.yml` 은 있으나 `docker compose` 명령 사용 불가
-- **해결**: `sudo apt install docker-compose-plugin` — 사용자 직접
-- **효과**: README 의 `docker compose up -d` 표준 명령이 동작. 현재는 `./scripts/up.sh` 권장
+- **배경**: `./scripts/up.sh` 가 plain `docker run` 으로 우회 구현됨. `docker-compose.yml` 은 있으나 `docker compose` 명령 사용 불가
+- **해결**: `sudo apt install docker-compose-plugin`
+- **효과**: README 의 `docker compose up -d` 표준 명령 동작
 
 ---
 
-## P2 — 개선 권고 (개인 프로젝트 여유 시)
+## P3 — 사용자 결정
 
-### ~~[P2-01] LICENSE 헤더~~
-- **DONE 2026-04-26** (`6c18c51`): `scripts/add-license-headers.sh` (idempotent + trailing-newline 보존), 23 .go SPDX 헤더, `make license`
-
-### ~~[P2-02] CONTRIBUTING + CODE_OF_CONDUCT~~
-- **DONE 2026-04-26** (`6c18c51` + 후속): `CONTRIBUTING.md` (개발 흐름·ADR 규칙·커밋 컨벤션), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1 by reference)
-
-### ~~[P2-03] GitHub Actions CI~~
-- **DONE 2026-04-26** (`6c18c51`): `.github/workflows/ci.yml` 3 jobs (build/vet/test on Go 1.26 + staticcheck + govulncheck). /simplify 가 잡은 1.25 vs go.mod 불일치 fix 동반
-
-### ~~[P2-04] placement-sim bar chart edge case~~
-- **DONE 2026-04-26**: cmdPlacementSim 패키지 주석 + R=N 케이스 런타임 ℹ️  notice + barChart 함수 주석 추가
-
-### ~~[P2-05] edge 동작 중 EDGE_DNS 변경 지원~~
-- **DONE 2026-04-26 (ADR-027)**: `Coordinator.UpdateNodes` (RWMutex), `dns_runtime` bbolt 버킷 영속, `POST /v1/admin/dns` + `DELETE /v1/admin/dns?addr=`, `kvfs-cli dns list/add/remove`. 라이브 검증: dn4 add → edge restart → bbolt 영속 유지 → remove 즉시 적용. `EDGE_DNS_RESET=1` env 가 disaster recovery
-
-### ~~[P2-06] Benchmark suite~~
-- **DONE 2026-04-26**: 4 패키지 `*_bench_test.go` 신규
-  - placement: `BenchmarkPick` (N=3..1000) — N=10 ~1.4 µs, N=1000 ~178 µs (O(N) 그대로)
-  - urlkey: Sign 737 ns, BuildURL 859 ns, Verify 1053 ns
-  - reedsolomon: (4+2) Encode/Reconstruct ~515 MB/s, (10+4) ~264 MB/s, gfMul 0.44 ns/op
-  - chunker: Split ~2350 MB/s (sha256 한계)
-- ADR-008 / blog Ep.6 의 "~50 MB/s" 추정치를 실측 기준으로 갱신 (실제 ~10배 빠름, log/exp 테이블 L1 cache-friendly 덕)
-
-### ~~[P2-07] Chaos test — random DN kill~~
-- **DONE 2026-04-26**: `scripts/chaos-dn-killer.sh` (--duration/--interval/--downtime/--get-rate/--dns flags). quorum (R/2+1) 보장 위해 alive > 2 일 때만 kill, 죽은 DN 자동 restore. 라이브 검증: 30s/3 kill cycle, 69 GETs 0 fail PASS
-
-### ~~[P2-08] Secret rotation (UrlKey `kid`)~~
-- **DONE 2026-04-26 (ADR-028)**: multi-key `urlkey.Signer` (Add/Remove/SetPrimary/Kids), `urlkey_secrets` bbolt 버킷 영속, URL `?kid=` 파라미터, kid 누락 시 try-all-kids fallback (legacy/shell 클라이언트 호환). `POST /v1/admin/urlkey/rotate` + `DELETE /v1/admin/urlkey?kid=`. `kvfs-cli urlkey list/rotate/remove --kid X`. 라이브 검증: rotate 후 옛 v1-signed URL 정상 verify, v1 remove 후 401. 11 unit tests PASS (5 기존 + 6 rotation)
-
-### ~~[P2-09] TLS / mTLS~~
-- **DONE 2026-04-26 (ADR-029)**: env-driven opt-in TLS. `EDGE_TLS_CERT/KEY` (HTTPS server), `EDGE_DN_TLS_CA + CLIENT_CERT/KEY` (edge → DN mTLS), `DN_TLS_CERT/KEY + CLIENT_CA` (DN HTTPS + mTLS). Coordinator 에 DNScheme + TLSConfig 추가, URL build 시 scheme 적용. `scripts/gen-tls-certs.sh` (self-signed CA + edge/dn/client certs), `scripts/up-tls.sh` (TLS 클러스터 데모). 라이브: healthz with CA → 200, without CA → curl exit 60 (verify fail), TLS PUT/GET round-trip 일치, edge→DN mTLS 로그 확인. 11 기존 데모는 plain HTTP 그대로 (TLS env 없으면 평문)
+### [P3-02] OTel 통합 여부
+- **현황**: Prometheus `/metrics` 는 P4-09 wave 에서 도입 완료 (ADR-035 미시 옵트 묶음의 일부). 옵션 A (slog + /metrics) 는 사실상 채택됨
+- **남은 결정**: 옵션 B (OTel SDK 풀 통합 — traces·metrics·logs) 갈지 여부
+- **추천**: 현재로 충분하면 close. trace 수집·여러 backend 호환이 필요해질 때 재오픈
 
 ---
 
-## P3 — 사용자 결정·별도 스펙 필요
+## P5 — Post-Season-4 wave 후속
 
-### [P3-02] 관찰성 스택 선택
-- **현황**: ADR-013 으로 `slog` 구조화 로그 + `/v1/admin/auto/status` JSON endpoint 가 부분 도입됨. 클러스터-wide metrics 는 미정
-- **옵션 A**: 기존 slog + `/metrics` 엔드포인트 추가 (Prometheus-exposition 포맷 직접 작성)
-- **옵션 B**: OpenTelemetry SDK 풀 통합 (traces · metrics · logs)
-- **옵션 C**: 외부 stack 없이 현재 구조 유지 (최소 변경)
-- **개인 프로젝트 고려**: A 가 ADR-013 의 slog 흐름과 자연 연결. B 는 별도 Season 3 episode 감
+### [P5-01] ADR-036 — WAL batch metrics
+- **배경**: ADR-035 group commit 이 실제 throughput 을 올리고 있는지 운영 중 관측 불가
+- **스펙**: `kvfs_wal_batch_size` (gauge — 마지막 batch 의 entry 수), `kvfs_wal_durable_lag_seconds` (gauge — 가장 오래 대기 중인 미-fsync entry 의 age)
+- **연결**: `internal/store/wal.go` flusher 에서 update, `internal/edge/metrics.go` 에 등록
+- **출처**: ADR-035 본문 "후속" 섹션
 
-### [P3-04] Public 전환 타이밍
-- **현**: 아직 GitHub 발행 안 됨 (P1-01 대기 중). private 으로 만든 후 public 전환할지, 처음부터 public 으로 만들지 결정 필요
-- **public 전환 기준** (사용자 결정 필요):
-  - (a) 즉시 — Season 2 closed + Season 3 Ep.1 완료, 7 blog episode + 13 ADR + 10 demo 으로 첫 공개에 충분
-  - (b) Season 3 Ep.2~3 완료 후 — 운영성 트랙 한두 개 더 채운 뒤 공개
-  - (c) 후속 작업 (CI workflow P2-03, LICENSE 헤더 P2-01, CONTRIBUTING P2-02) 갖춘 후 공개
+### [P5-02] ADR-037 — chunker pool cap 정책
+- **배경**: `internal/chunker/stream.go` `scratchPool` 은 정상 GC 회수에 의존. 메모리 압박 시명시적 evict 없음
+- **스펙**: pool 의 슬랩 수 상한, 또는 cap 합계 상한. 초과 시 가장 오래된 것부터 drop
+- **연결**: `getScratch`/`putScratch`. 측정용 카운터 (P5-01 과 묶어 처리 가능)
+- **출처**: ADR-035 본문 "후속" 섹션
 
-### ~~[P3-05] 블로그 Ep.3~5 주제 확정~~
-- **OBSOLETE (2026-04-26)**: Ep.3~7 모두 완료 (rebalance · GC · chunking · EC · auto-trigger). 후보였던 dedup/repair/RPC 벤치 중 어느 것도 채택 안 됨 — 다른 방향이 더 나아서. 다음 Ep 결정은 신규 [P3-07] 가 받음
+### [P5-03] ADR-015 — Coordinator daemon 분리
+- **배경**: 현재 coordinator 는 edge 인라인. 단일 edge 의 single-writer (bbolt) 가 메타 mutation throughput 의 천장
+- **스펙**: ADR-002 supersede. coordinator 가 별도 daemon 으로 떨어져 placement/quorum 책임 전담, edge 는 게이트웨이만
+- **트레이드오프**: 운영 복잡도 ↑ (3종 daemon), HA scope 확장
+- **결정 필요**: Season 5 진입 트리거로 채택할지 여부
 
-### ~~[P3-06] Season 3 로드맵 확정 시점~~
-- **OBSOLETE (2026-04-26)**: Season 2 closed, Season 3 (운영성 트랙) Ep.1 (ADR-013 Auto-trigger) 으로 시작됨. 후속 ep 결정은 신규 [P3-07]
+### [P5-04] Hot/Cold rebalance 통합
+- **배경**: P4-09 wave 의 hot/cold tier 는 신규 PUT 만 hot 으로 bias. 기존 cold 데이터의 hot→cold 자동 migration 미구현
+- **스펙**: `internal/rebalance/` 가 chunk 의 `Class` 라벨을 인식, ideal placement set 계산 시 class 필터 적용
+- **출처**: ADR-035 follow-up commit message ("Out of scope: rebalance scope by class — defer to follow-up")
 
-### ~~[P3-07] Season 3 Ep.2 주제 결정~~
-- **OBSOLETE (2026-04-26)**: ADR-024 (EC stripe rebalance) 채택 + 구현 완료. 다음 ep 결정은 신규 [P3-09]
+### [P5-05] WAL group commit × transactional Raft 상호작용 검증
+- **배경**: `EDGE_WAL_BATCH_INTERVAL=5ms` + `EDGE_TRANSACTIONAL_RAFT=1` 동시 활성 시 동작 미검증
+- **위험**: transactional Raft 는 `MarshalPutObjectEntry` 로 entry 미리 push 한 뒤 quorum 받으면 commit. group commit 이 그 commit 을 batch 로 묶으면 quorum-then-batch 순서가 어긋날 가능성
+- **스펙**: integration test — 두 옵션 동시 활성으로 PUT × N concurrent → bbolt + 모든 follower bbolt 일치 검증
 
-### ~~[P3-09] Season 3 Ep.3 주제 결정~~
-- **OBSOLETE (2026-04-26)**: ADR-025 EC repair queue 채택 + 구현 완료. 다음 ep 결정은 신규 [P3-10]
-
-### ~~[P3-10] Season 3 Ep.4 주제 결정~~
-- **OBSOLETE (2026-04-26)**: ADR-014 Meta backup/HA 채택 + 구현 완료. 다음 ep 결정은 신규 [P3-11]
-
-### ~~[P3-11] Season 3 Ep.5 주제 결정~~
-- **OBSOLETE (2026-04-26)**: ADR-030 DN heartbeat 채택 + 구현 완료
-
-### ~~[P3-12] Season 3 Ep.6 주제 결정~~
-- **OBSOLETE (2026-04-26)**: ADR-016 Auto-snapshot scheduler 채택 + 구현 완료. 다음 ep 결정은 신규 [P3-13]
-
-### ~~[P3-13] Season 3 Ep.7 주제 결정~~
-- **DONE 2026-04-26**: ADR-022 Multi-edge HA (read-replica MVP) 채택 + 구현 완료. **Season 3 close**
-
-### ~~[P4-01] Season 4 (성능·효율 트랙) 진입 시점 결정~~
-- **DONE 2026-04-26**: ADR-017 Streaming PUT/GET 채택 + 구현 완료. Season 4 Ep.1 closed
-
-### ~~[P4-02] Season 4 Ep.2 주제 결정~~
-- **DONE 2026-04-26**: ADR-018 Content-defined chunking 채택 + 구현 완료
-
-### ~~[P4-03] Season 4 Ep.3 주제 결정~~
-- **DONE 2026-04-26**: ADR-031 Auto leader election 채택 + 구현 완료
-
-### ~~[P4-04] Season 4 Ep.4 주제 결정~~
-- **DONE 2026-04-26**: ADR-019 WAL 채택 + 구현 완료
-
-### ~~[P4-05] Season 4 Ep.5 주제 결정~~
-- **DONE 2026-04-26**: ADR-019 follow-up (Follower WAL auto-pull) 채택 + 구현 완료
-
-### ~~[P4-06] Season 4 Ep.6/7/8 진행~~
-- **DONE 2026-04-26**: Ep.6 (EC streaming, ADR-017 follow-up) · Ep.7 (EC+CDC, ADR-018 follow-up) · Ep.8 (sync Raft-style WAL replication, ADR-031 follow-up) 모두 채택 + 구현 완료. Season 4 의 4 가지 candidate (#1-4) 모두 처리됨.
-
-### [P4-09] Season 4 close 후 Season 5 진입 결정
-- **현**: Season 4 의 8 ep 누적 완료 (streaming, CDC, election, WAL, follower-pull, EC-streaming, EC+CDC, sync repl)
-- **남은 가능 트랙**:
-  - 관측성 (Prometheus `/metrics` 또는 OTel 통합)
-  - SIMD-accelerated Reed-Solomon
-  - Hot/Cold tiering
-  - NFS/SMB gateway
-  - WAL → snapshot 자동 회전 + log compaction
-  - 진짜 strong consistency (commit 전 quorum ack — 현재는 best-effort)
-- **결정**: 사용자
+### [P5-06] 블로그 episode 18~25 작성
+- **현황**: blog 17편까지 (Ep.4 WAL). 그 이후 작업물은 코드만 있고 글 없음
+- **누락 episode**:
+  - Ep.5: Follower WAL auto-pull (demo-chi)
+  - Ep.6: EC streaming (demo-kappa 회귀)
+  - Ep.7: EC + CDC combined (demo-psi)
+  - Ep.8: Synchronous Raft-style WAL replication (demo-omega)
+  - P4-09 wave 1: Prometheus /metrics
+  - P4-09 wave 2: SIMD-style RS optimization
+  - P4-09 wave 3: Hot/Cold tier
+  - P4-09 wave 4: NFS gateway deferred (ADR-032 의 "왜 안 했는가")
+  - P4-09 wave 5: WAL log compaction
+  - P4-09 wave 6: Strict replication (ADR-033 informational vs ADR-034 transactional)
+  - Bonus: ADR-035 micro-opt bundle 의 3가지 (group commit / 3-region CDC / sync.Pool)
+- **추천 순서**: 18 = streaming 후속, 19 = CDC+EC, 20 = leader election + WAL push, 21 = transactional Raft, 22 = micro-opt bundle (group commit + CDC region + pool)
 
 ---
 
 ## 완료된 주요 작업 기록
 
-참고용. 상세는 각 commit · ADR 참조.
+상세는 각 commit · ADR · blog episode 참조. 본 표는 **시즌 단위로 압축** — 2026-04-26 하루 (collapse 된 활동 기간) 동안 진행된 모든 작업을 시즌 별로 묶어둠.
 
-| 완료일 | 작업 | 결과 |
+| 시점 | 시즌 / 트랙 | 결과 |
 |---|---|---|
-| 2026-04-25 | 독자 프로젝트 identity 출범 | clean-slate 정의 · ADR-001 |
-| 2026-04-25 | Season 1 MVP 스캐폴딩 | 2-daemon · 22 파일 · 1,367 LOC · Apache 2.0 |
-| 2026-04-25 | Season 1 α + ε 데모 라이브 통과 | 3-way replication 내구성 · UrlKey TTL 검증 |
-| 2026-04-25 | Season 1 dedup 가설 검증 | 4 objects → 3 unique chunks (content-addressable 증명) |
-| 2026-04-25 | CLAUDE.md + ADR 001~007 작성 | 7 ADR 불변 기록 · L3 체인 상속 |
-| 2026-04-25 | git init + first commit (local) | `5cf3151 Initial commit — kvfs MVP` |
-| 2026-04-25 | 블로그 Ep.1 실 데모 출력 embed | `304b991 blog(01): embed actual α/ε demo output` |
-| 2026-04-25 | Season 2 Ep.1 — Rendezvous Hashing | `32d880a feat(placement)` · ADR-009 · 7 tests PASS |
-| 2026-04-25 | placement-sim CLI 도구 | ASCII bar chart, 이동률 실측 표시 |
-| 2026-04-25 | Blog Ep.2 작성 — Consistent Hashing | `blog/02-consistent-hashing.md` · placement-sim 3 케이스 실측 embed |
-| 2026-04-25 | 4-DN 라이브 데모 스크립트 | `scripts/demo-zeta.sh` · seed 4 + add dn4 + new 8 쓰기, dn4 4/24 slots 실측, 기존 청크 정지 확인 |
-| 2026-04-25 | Season 2 Ep.2 주제 결정 (P3-01 → P1-05) | ADR-010 Rebalance worker 채택, 010 → 011 → 008 로드맵 확정 |
-| 2026-04-26 | Season 2 Ep.2 — ADR-010 Rebalance worker 구현 완료 | `internal/rebalance/` (8 tests PASS) + edge admin 엔드포인트 + `kvfs-cli rebalance` + `scripts/demo-eta.sh` (라이브 PASS) + `blog/03-rebalance.md` |
-| 2026-04-26 | Season 2 Ep.3 — ADR-012 Surplus chunk GC 구현 완료 | `internal/gc/` (9 tests PASS) + DN `/chunks` list + edge admin + `kvfs-cli gc` + `scripts/demo-theta.sh` (라이브: 15→12 disk chunks, 메타↔디스크 정확 일치) + `blog/04-gc.md`. Rebalance trim-on-full-success 보정 동반 |
-| 2026-04-26 | Season 2 Ep.4 — ADR-011 Chunking 구현 완료 (ADR-006 supersede) | `internal/chunker/` (13 tests PASS) + ObjectMeta 스키마 변경 (Chunks []ChunkRef + legacy adapter) + edge PUT/GET/DELETE 청크화 + rebalance/gc 청크 단위 갱신 + `EDGE_CHUNK_SIZE` env + `scripts/demo-iota.sh` (256 KiB → 4 청크 라이브 PASS) + `blog/05-chunking.md`. demo-eta/theta/alpha 회귀 fix 동반 |
-| 2026-04-26 | Season 2 Ep.5 — ADR-008 Reed-Solomon EC 구현 완료 (Season 2 closed) | `internal/reedsolomon/` from-scratch (24 tests PASS): GF(2^8) + Vandermonde + Gauss-Jordan. ObjectMeta 에 ECParams + Stripes 추가, `Coordinator.PlaceN(stripeID, K+M)`, `X-KVFS-EC: K+M` 헤더로 per-object 모드, `internal/edge` 에 `handlePutEC` / `handleGetEC`. `scripts/demo-kappa.sh` (6 DN, 128 KiB / 4+2, dn5+dn6 kill 후 GET 복원 PASS) + `blog/06-erasure-coding.md`. GC `buildClaimedSet` 가 Stripes iterate |
-| 2026-04-26 | Season 3 Ep.1 — ADR-013 Auto-trigger 구현 완료 | `internal/edge` 에 `AutoConfig` + `StartAuto(ctx)` + 두 개 `time.Ticker` 루프 (rebalance + GC). 기존 `rebalanceMu` / `gcMu` 공유로 수동/자동 직렬화. ring buffer 32 entries 의 `AutoRun` 기록 + `GET /v1/admin/auto/status` + `kvfs-cli auto --status`. `EDGE_AUTO=1` opt-in default. `scripts/demo-lambda.sh` (10s/12s interval, 운영자 명령 0번에 클러스터 정렬 PASS) + `blog/07-auto-trigger.md`. Season 3 운영성 트랙 시작 |
-| 2026-04-26 | /simplify 리뷰 패스 — auto-trigger 코드 정리 | 3 agent 병렬 리뷰 후 6 항목 적용: `executeRebalance` / `executeGC` 헬퍼 추출 (handler+auto runner 공유), ring buffer no-op pollution fix (empty cycle은 lastCheck 만 갱신), redundant state 제거 (`autoLast/Next` → `autoLastCheck`), `autoLoop` 단일화, `parseAutoDur` / `mustGet` / `intQuery` 헬퍼, `AutoJob` typed enum. 246+/250- net -4 LOC, 0 behavior change, 66 tests PASS, demo-lambda 회귀 PASS |
-| 2026-04-26 | P1-01 GitHub 발행 + push | `https://github.com/HardcoreMonk/kvfs` private, 12 commits push (`076ba27..main`) |
-| 2026-04-26 | P2-03 CI workflow + P2-01 LICENSE 헤더 + P2-02 CONTRIBUTING (부분) | `.github/workflows/ci.yml` (3 jobs: test/staticcheck/govulncheck, Go 1.26 fix), `scripts/add-license-headers.sh` (idempotent + trailing-newline 보존), 23 .go 파일 SPDX 헤더, `Makefile` `license`/`bench` targets, `CONTRIBUTING.md`. /simplify 후 trailing newline 보존 fix 동반 |
-| 2026-04-26 | Season 3 Ep.2 — ADR-024 EC stripe rebalance 구현 완료 | `internal/rebalance/` 확장 (planEC + migrateShard, set-based 최소 이동), Migration 에 `Kind`/`StripeIndex`/`ShardIndex`/`OldAddr`/`NewAddr` 추가, `Coordinator.PlaceN` + `ObjectStore.UpdateShardReplicas` 인터페이스 확장, CLI `[shard]` 렌더링. EC 전용 7 tests PASS (총 73). `scripts/demo-mu.sh` 라이브: 6 DN + dn7 추가 → 정확히 stripe 당 1 migration → GET sha256 일치 + 멱등 + `blog/08-ec-rebalance.md`. ADR-013 auto-trigger 와 자동 통합 |
-| 2026-04-26 | P2-02 마무리 (CODE_OF_CONDUCT) + P2-06 Benchmark suite | `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1 by reference, content filter 회피 위해 본문 link). 4 패키지 bench: placement Pick O(N), urlkey Sign/Verify ~µs, RS Encode (4+2) 515 MB/s · (10+4) 264 MB/s, chunker Split 2350 MB/s. ADR-008/blog Ep.6 의 ~50 MB/s 추정치를 실측으로 정정 |
-| 2026-04-26 | P3-04 public 전환 + repo 삭제·재생성으로 옛 SHA 영구 폐기 | `HardcoreMonk/kvfs` PRIVATE → PUBLIC, 사전 정체성 scrub commit + `git filter-branch` history rewrite + repo delete/recreate (옛 SHA HTTP 422 검증). 식별성 단어 자동 합성 차단 위해 `claude-project-mgmt/llm-wiki-poc/` skip-list 정책 추가 |
-| 2026-04-26 | Season 3 Ep.4 — ADR-014 Meta backup 구현 완료 | `internal/store/snapshot.go` (`Snapshot(io.Writer)` + `Stats()`, 2 tests PASS) · `GET /v1/admin/meta/snapshot|info` · `kvfs-cli meta snapshot/restore/info` (lock-probe + auto backup) · `scripts/demo-xi.sh` (PUT 3 → snapshot → bbolt 강제 삭제 → restore → GET 모두 복원 라이브 PASS) · `blog/10-meta-backup.md` |
-| 2026-04-26 | Season 3 Ep.5 — ADR-030 DN heartbeat 구현 완료 | `internal/heartbeat/` (Probe interface + Monitor, 6 tests PASS), `EDGE_HEARTBEAT_INTERVAL/THRESHOLD` env, `GET /v1/admin/heartbeat`, `kvfs-cli heartbeat` 사람-친화 표 출력. `scripts/demo-omicron.sh` (3 DN: kill dn3 → 4s 후 unhealthy 표시 → restart → 즉시 recovery 라이브 PASS). `blog/11-dn-heartbeat.md` |
-| 2026-04-26 | Season 3 Ep.6 — ADR-016 Auto-snapshot scheduler 구현 완료 | `internal/store/scheduler.go` (`SnapshotScheduler.Run` ticker + atomic temp+rename + mtime-based prune, 4 tests PASS). `EDGE_SNAPSHOT_DIR/INTERVAL/KEEP` env, `GET /v1/admin/snapshot/history`, `kvfs-cli meta history`. `scripts/demo-pi.sh` (interval=2s, keep=3 → 5 ticks 후 정확히 newest 3 file 잔존, 회전 검증 라이브 PASS). `blog/12-auto-snapshot.md` |
-| 2026-04-26 | Season 3 Ep.7 — ADR-022 Multi-edge HA 구현 완료 (Season 3 close) | `internal/store/store.go` `atomic.Pointer[bbolt.DB]` 리팩토링 + `Reload(path)` (~30 LOC 변경). `internal/edge/replica.go` Role/FollowerConfig/snapshot-pull loop/rejectIfFollowerWrite middleware (~210 LOC). `EDGE_ROLE/PRIMARY_URL/PULL_INTERVAL` env, `GET /v1/admin/role`, `kvfs-cli role`. `scripts/demo-rho.sh` 라이브: primary + 1 follower (pull=2s) → PUT primary → 2s 후 follower GET 성공 (4 syncs 0 errors), follower PUT → 503 + X-KVFS-Primary 헤더. `blog/13-multi-edge-ha.md` |
-| 2026-04-26 | Season 4 Ep.1 — ADR-017 Streaming PUT/GET 구현 완료 | `internal/chunker/stream.go` `Reader.Next()` (io.ReadFull 기반, defensive copy, 5 tests PASS). `handlePut` replication path → streaming chunker 루프, `handleGet` → ResponseWriter 에 직접 write. EC mode 는 본 ep 비범위 (encoder 인터페이스 변경 필요). `scripts/demo-sigma.sh` 64 MiB random body 라이브: 16 chunks, edge mem **22.74 MiB** (object size ≫ memory), sha256 round-trip 일치. `blog/14-streaming.md` |
-| 2026-04-26 | Season 4 Ep.2 — ADR-018 Content-defined chunking 구현 완료 | `internal/chunker/cdc.go` FastCDC + GearTable + 3-region cutpoint (~180 LOC, 7 tests PASS: deterministic / shift invariance / min-max bounds / round-trip / empty / short / smaller-than-min). `Server.CDCEnabled` + `pieceReader` 인터페이스로 fixed/CDC 분기, `EDGE_CHUNK_MODE=cdc` 활성. EC mode 는 본 ep 비범위 (uniform shard 필요). `scripts/demo-tau.sh` shift-by-1 시나리오 라이브: fixed 0% dedup vs **CDC 40% dedup (4/5 chunk 재사용)**. `blog/15-cdc.md` |
-| 2026-04-26 | Season 4 Ep.3 — ADR-031 Auto leader election 구현 완료 | `internal/election/election.go` Raft-style 3-state machine + vote/heartbeat RPC (~440 LOC, 6 tests PASS: vote stale / vote 1-per-term / higher-term step-down / HB reset / stale HB / live 3-edge cluster). `Server.Elector` + `effectiveRole`/`effectivePrimaryURL` 동적 분기, ADR-022 manual mode 호환 유지. `EDGE_PEERS/SELF_URL/ELECTION_*` env. `scripts/demo-upsilon.sh` 3 edge 라이브: edge1 leader (term 1) → kill → ~4s 후 edge3 새 leader (term 2), PUT 재개 PASS. `blog/16-leader-election.md` |
-| 2026-04-26 | Season 4 Ep.4 — ADR-019 WAL 구현 완료 | `internal/store/wal.go` append-only JSON-lines + ApplyEntry replay (~270 LOC, 6 tests PASS: append + Since + LastSeq recovery + Truncate + WriteSinceTo streaming + ApplyAll round-trip). 4 mutation methods (PutObject/DeleteObject/Add+RemoveRuntimeDN) split into internal version with writeWAL flag. `GET /v1/admin/wal?since=N` + `wal/info`, snapshot endpoint 헤더 `X-KVFS-WAL-Seq`. `kvfs-cli wal {info,stream}`. `scripts/demo-phi.sh` 라이브: 7 entries (5 PUT + 2 DELETE) audit + snapshot 헤더 동봉. `blog/17-wal.md` |
-| 2026-04-26 | Season 4 Ep.5 — Follower WAL auto-pull (ADR-019 follow-up) | `followerSyncOnce` 가 lastWALSeq>0 이면 `GET /v1/admin/wal?since=lastSeq` 시도, snapshot fallback. snapshot 응답의 `X-KVFS-WAL-Seq` 헤더로 lastWALSeq seed. `scripts/demo-chi.sh` 라이브: PUT 3 → snapshot pull → PUT 2 더 → follower WAL apply 만으로 catch-up (last_size 0 = 추가 snapshot 없이) PASS |
-| 2026-04-26 | Season 4 Ep.6 — EC streaming PUT/GET (ADR-017 follow-up to ADR-008) | handlePutECStream replaces handlePutEC (io.ReadFull stripe pump, io.ErrUnexpectedEOF → padded last stripe). handleGetEC streams data shards directly to ResponseWriter, trim by remaining. Memory bound (K+M)×shardSize 만, object size 무관. demo-kappa regression PASS |
-| 2026-04-26 | Season 4 Ep.7 — EC + CDC combined mode (ADR-018 follow-up) | `Stripe.DataLen int64 omitempty` 신규 필드. handlePutECStream 안에 nextStripe closure (fixed: io.ReadFull / CDC: chunker.NewCDCReader, per-stripe ceil-padded to K). handleGetEC trim mode per-stripe (CDC: by Stripe.DataLen; fixed: by remaining DataSize). `scripts/demo-psi.sh` EC(4+2)+CDC F1+F2 round-trip PASS |
-| 2026-04-26 | Season 4 Ep.8 — Synchronous Raft-style WAL replication (ADR-031 follow-up) | `Elector.AppendEntryFunc` + `HandleAppendWAL` (`POST /v1/election/append-wal?term=X`) + `ReplicateEntry(ctx, body, timeout)` parallel push to peers, quorum ack (best-effort, leader local commit 가 이미 끝난 후). `MetaStore.SetWALHook` + `fireHook` 으로 WAL.Append 후 leader-only push. `scripts/demo-omega.sh`: 3-edge cluster, PUT to leader → 100ms 후 follower GET 성공 (replicated bbolt 직접 read, no pull) PASS |
+| 2026-04-25 | 출범 + Season 1 MVP | clean-slate identity (ADR-001) · 2-daemon (ADR-002) · HTTP REST (ADR-003) · bbolt 메타 (ADR-004) · CA chunks (ADR-005) · UrlKey (ADR-007) · 첫 데모 α/ε PASS · 첫 commit |
+| 2026-04-25 | Season 2 Ep.1 | Rendezvous Hashing (ADR-009) · placement-sim CLI · demo-zeta · blog Ep.2 |
+| 2026-04-26 | Season 2 Ep.2~5 (closed) | Rebalance worker (ADR-010) · Surplus GC (ADR-012) · Chunking (ADR-011, supersedes ADR-006) · Reed-Solomon EC from-scratch (ADR-008). demo-eta/theta/iota/kappa · blog Ep.3~6 |
+| 2026-04-26 | Season 3 Ep.1~7 (closed) | Auto-trigger (ADR-013) · EC stripe rebalance (ADR-024) · EC repair queue (ADR-025) · Meta backup (ADR-014) · DN heartbeat (ADR-030) · Auto-snapshot scheduler (ADR-016) · Multi-edge HA read-replica (ADR-022). + 운영 보강: Dynamic DN registry (ADR-027) · UrlKey rotation (ADR-028) · Optional TLS (ADR-029). demo-lambda/mu/nu/xi/omicron/pi/rho · blog Ep.7~13 |
+| 2026-04-26 | Season 4 Ep.1~8 (closed) | Streaming PUT/GET (ADR-017) · Content-defined chunking (ADR-018) · Auto leader election (ADR-031) · WAL (ADR-019) · Follower WAL auto-pull (Ep.5 follow-up) · EC streaming (Ep.6 follow-up) · EC+CDC combined (Ep.7 follow-up) · Synchronous Raft-style WAL replication (Ep.8 follow-up). demo-sigma/tau/upsilon/phi/chi/psi/omega |
+| 2026-04-26 | P4-09 wave (post-Season-4) | Prometheus /metrics · SIMD-style RS (mul-by-constant + 8-byte unroll, 2.3× ↑) · Hot/Cold tier (admin label + placement bias) · NFS gateway deferred (ADR-032) · WAL log compaction · Strict replication informational (ADR-033) · Transactional Raft commit-before-quorum (ADR-034) · S3-compatible API (HEAD + ListBucket) |
+| 2026-04-26 | ADR-035 micro-opt bundle | WAL group commit (`EDGE_WAL_BATCH_INTERVAL=5ms`, ~15× write throughput) · 3-region FastCDC (`MaskBitsRelax > 0`, MaxSize cap 빈도 ↓) · chunker sync.Pool (alloc churn ↓). +/simplify pass: Truncate-during-wait deadlock fix · flushOnce mu-during-fsync release · pool oversize cap reject |
+| 2026-04-26 | Doc·CI 정리 | CLAUDE.md L4 (-28% 줄, drift 제거) · ADR README 번호 오름차순 정렬 + missing 4건 추가 (032/033/034/035) · 아키텍처 가이드 GUIDE.md + guide.html (13장 walkthrough, mermaid 다이어그램, 자체 포함 HTML) · doc-drift CI (`scripts/check-doc-drift.sh` + `.github/workflows/doc-drift.yml`, 월별 cron + path-trigger). FOLLOWUP.md 자체 갱신 (본 commit) |
+| 2026-04-26 | OSS 발행 | repo private→public + history rewrite + repo recreate (옛 SHA 영구 폐기) · LICENSE 헤더 23 .go 파일 · CONTRIBUTING + CODE_OF_CONDUCT · CI workflow (build/vet/test on Go 1.26, staticcheck, govulncheck) · benchmark suite 4 패키지 · chaos-dn-killer |
 
 ---
 
 ## 현재 상태 요약 (2026-04-26)
 
-- **Git**: main branch, **GitHub `HardcoreMonk/kvfs` PUBLIC** (https://github.com/HardcoreMonk/kvfs, repo 신규 재생성 후 fresh history)
-- **테스트**: 핵심 패키지 모두 = **129 unit tests PASS**, `go vet` 클린 (Ep.5/6/7/8 = 통합 + 데모 추가, 신규 unit test 0)
-- **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ, ν, ξ, ο, π, ρ 전부 라이브 통과 (15종)
-- **ADR**: 22건 Accepted (022 추가)
-- **Blog**: Ep.1~Ep.13 완성 (Ep.13 = Multi-edge HA)
-- **Season 3 closed** (운영성 7 ep: auto-trigger → EC rebalance → EC repair → meta backup → DN heartbeat → auto-snapshot → multi-edge HA). 다음은 Season 4 (성능·효율) 진입 ([P4-01])
+- **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `f9a28b1` (doc-drift CI)
+- **테스트**: **138 unit tests PASS** (chunker +3 / store +3 ADR-035 회귀 추가). `go vet` 클린
+- **데모**: α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ φ χ ψ ω = 21개 (greek letter 전부) 라이브 PASS
+- **ADR**: 35 Accepted (ADR-001~035, 미작성 015/020/021/023/026/036/037)
+- **Blog**: Ep.1~17 완성. Ep.18~25 가 P5-06 punch list
+- **시즌**: S1·S2·S3·S4 모두 closed. S5 진입은 P5-03 (Coordinator 분리) 채택 시 자동 트리거
 
 ## 업데이트 규칙
 
-- 새 P0/P1/P2/P3 추가: 번호 이어서 부여 (재활용 금지)
-- 항목 완료: ✅ + 완료일 표기 후 "완료된 주요 작업 기록" 테이블에 1줄 이관
+- 새 P0/P1/P2/P3/P5 추가: 각 시리즈 안에서 번호 이어서 부여 (재활용 금지)
+- 항목 완료: ✅ + 완료일 표기 후 "완료된 주요 작업 기록" 표에 1줄 이관 (시즌 단위 압축 OK)
 - 우선순위 변경: P 라벨만 교체, 번호 유지
 - 스펙 변경으로 작업 무의미해짐: `~~항목~~` 취소선 + 폐기 사유 한 줄
+- **본 파일 자체 갱신은 commit 별 작은 diff** 로. 시즌 close · ADR landing 시 즉시.
