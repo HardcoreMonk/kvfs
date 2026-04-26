@@ -43,14 +43,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	"crypto/tls"
 
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
+	"github.com/HardcoreMonk/kvfs/internal/cliutil"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/edge"
 	"github.com/HardcoreMonk/kvfs/internal/election"
@@ -512,36 +511,12 @@ func main() {
 	log.Info("kvfs-edge stopped")
 }
 
-func envOr(k, def string) string {
-	if v, ok := os.LookupEnv(k); ok {
-		return v
-	}
-	return def
-}
-
-func atoiOr(s string, def int) int {
-	if n, err := strconv.Atoi(s); err == nil {
-		return n
-	}
-	return def
-}
-
-func splitTrim(s string) []string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func fatal(msg string) {
-	fmt.Fprintln(os.Stderr, "kvfs-edge: "+msg)
-	os.Exit(2)
-}
+// Local thin shims so existing callsites stay tight; helpers in
+// internal/cliutil for cross-binary reuse (P6-09).
+func envOr(k, def string) string  { return cliutil.EnvOr(k, def) }
+func atoiOr(s string, def int) int { return cliutil.AtoiOr(s, def) }
+func splitTrim(s string) []string  { return cliutil.SplitCSV(s) }
+func fatal(msg string)             { cliutil.Fatal("kvfs-edge: " + msg) }
 
 // buildDNTLSConfig assembles edge → DN TLS config from EDGE_DN_TLS_* env
 // (ADR-029). Returns (nil, "http", nil) when TLS is not opted in.

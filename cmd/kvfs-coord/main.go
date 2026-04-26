@@ -36,10 +36,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/HardcoreMonk/kvfs/internal/cliutil"
 	"github.com/HardcoreMonk/kvfs/internal/coord"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/election"
@@ -217,25 +217,14 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 }
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
-func splitCSV(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func fatal(msg string) {
-	fmt.Fprintln(os.Stderr, "kvfs-coord:", msg)
-	os.Exit(1)
-}
+// Local thin shims so existing call sites stay tight. Helpers themselves
+// live in internal/cliutil for cross-binary reuse (P6-09).
+//
+// Note: the extracted EnvOr uses os.LookupEnv (treats empty strings as
+// "set"), which is slightly different from the prior local envOr that
+// used os.Getenv (treats empty as unset). All COORD_* defaults are
+// safe under the lookup behavior — operator setting an empty env was
+// a misconfig either way. Coord-specific Fatal prefix preserved here.
+func envOr(k, def string) string  { return cliutil.EnvOr(k, def) }
+func splitCSV(s string) []string  { return cliutil.SplitCSV(s) }
+func fatal(msg string)            { cliutil.Fatal("kvfs-coord: " + msg) }

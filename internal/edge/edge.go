@@ -47,6 +47,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/gc"
 	"github.com/HardcoreMonk/kvfs/internal/heartbeat"
+	"github.com/HardcoreMonk/kvfs/internal/httputil"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/reedsolomon"
@@ -1189,14 +1190,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // ---- helpers ----
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
+// Local shims so the existing call sites stay terse. Helpers themselves
+// live in internal/httputil for cross-daemon reuse.
+func writeJSON(w http.ResponseWriter, code int, v any) { httputil.WriteJSON(w, code, v) }
 func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+	httputil.WriteError(w, code, msg)
 }
 
 func logRequests(h http.Handler) http.Handler {

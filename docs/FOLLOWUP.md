@@ -8,11 +8,11 @@
 
 - **P0**: 차단·긴급 — 현재 **0건**
 - **P1**: 명확한 스펙, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
-- **P2**: 리뷰·개선 — 모두 완료 (P2-01~09 done)
+- **P2**: 리뷰·개선 — 모두 완료
 - **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02 OTel)
-- **P5**: post-Season-4 wave — 모두 완료 (P5-01~09 done; FOLLOWUP 동기화 2026-04-27)
-- **P6**: Season 5 (coord 분리) — Ep.1~7 모두 완료. 잔여: 3건 (P6-09 reserved, P6-10/11 저우선)
-- **P7**: Season 6 (coord operational migration) — Ep.1~6 모두 완료. 잔여: 3건 (P7-07 저우선, P7-08 저우선, P7-09 중간)
+- **P5**: post-Season-4 wave — 모두 완료
+- **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
+- **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -114,9 +114,8 @@
 - **스펙**: `start_dns N`, `start_coord <name> <port> [peers]`, `start_edge <coord_url>`, `wait_healthz <url>` helpers. S5 demos + 향후 S6 demos 에서 source.
 - **부수 작업**: S5 demos 가 `lib/common.sh` 의 `sign_url` 사용 (현재는 `docker run kvfs-cli sign` 호출 — 무거움).
 
-### [P6-09] internal/{cliutil,httputil} 추출 (저우선)
-- **배경**: cmd/kvfs-{edge,coord}/main.go 의 envOr/splitCSV/fatal 중복 + internal/coord/coord.go 와 internal/edge/edge.go 의 writeJSON/writeError 중복. /simplify 발견.
-- **스펙**: 5+ 바이너리 또는 4+ HTTP 패키지 가 생기면 진행. 현재 (4 binaries / 2 HTTP packages) 는 자체 보유가 더 readable. 트리거 조건 만족 시 진행.
+### ~~[P6-09] internal/{cliutil,httputil} 추출~~
+- **DONE 2026-04-27**: `internal/cliutil` (EnvOr / AtoiOr / SplitCSV / Fatal) + `internal/httputil` (WriteJSON / WriteError / WriteErr). cmd/kvfs-{edge,coord,dn}/main.go + internal/{edge,coord} 모두 thin shims 로 교체. 트리거 임계 (4 binaries / 2 HTTP packages) 거의 도달했고 P6-10/P7-09 가 같은 패턴 또 늘릴 가능성에 선제 정리.
 
 ### ~~[P6-05] edge 의 placement 코드 완전 제거~~
 - **DONE 2026-04-27**: ADR-041 작성 + 구현. `CoordClient.PlaceN` 추가, `Server.placeN` helper 분기, `writeChunkPreferClass` 와 `handlePutECStream` 모두 placeN 경유. 1 unit test (TestCoordClient_PlaceN_ReturnsCoordsView). 데모 demo-vav.sh (히브리 ו) — coord 가 dn1/2/3 만, edge 가 dn1/2/3/4 알 때 chunks 가 dn4 에 절대 안 감 (proof of routing). 149 tests PASS. `internal/coordinator/` 의 placement 부분은 fallback 용 그대로 (CoordClient nil 일 때). 완전 제거는 후속 정리.

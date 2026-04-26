@@ -28,7 +28,6 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -36,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/HardcoreMonk/kvfs/internal/cliutil"
 	"github.com/HardcoreMonk/kvfs/internal/dn"
 	"github.com/HardcoreMonk/kvfs/internal/tlsutil"
 )
@@ -102,17 +102,9 @@ func main() {
 	log.Info("kvfs-dn stopped")
 }
 
-func envOr(k, def string) string {
-	if v, ok := os.LookupEnv(k); ok {
-		return v
-	}
-	return def
-}
-
-func fatal(msg string) {
-	fmt.Fprintln(os.Stderr, "kvfs-dn: "+msg)
-	os.Exit(2)
-}
+// Local thin shims (P6-09); helpers in internal/cliutil for cross-binary reuse.
+func envOr(k, def string) string { return cliutil.EnvOr(k, def) }
+func fatal(msg string)           { cliutil.Fatal("kvfs-dn: " + msg) }
 
 // buildServerTLS returns a TLS config when DN_TLS_CLIENT_CA is set (mTLS).
 // Pure server TLS (no mTLS) is configured via httpSrv.ListenAndServeTLS path,
