@@ -93,6 +93,7 @@ func main() {
 		flagStrict   = flag.Bool("strict-repl", envOr("EDGE_STRICT_REPL", "") == "1", "ADR-033: surface quorum-replication failure as 503 to client (informational; bbolt commits regardless)")
 		flagTxnRaft  = flag.Bool("transactional-raft", envOr("EDGE_TRANSACTIONAL_RAFT", "") == "1", "ADR-034: replicate-then-commit semantics for PutObject (true Raft-style; rejects writes when quorum unavailable)")
 		flagPrefer   = flag.String("placement-prefer-class", envOr("EDGE_PLACEMENT_PREFER", ""), "Hot/Cold tier (ADR-035 follow-up): bias new writes toward DNs with this class label (empty = no bias)")
+		flagCoordURL = flag.String("coord-url", envOr("EDGE_COORD_URL", ""), "ADR-015 Season 5 Ep.2: kvfs-coord base URL (e.g. http://coord:9000). Empty = inline meta mode (legacy default).")
 		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
 		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
 		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
@@ -348,6 +349,26 @@ func main() {
 			"hb", hbInt, "timeout_min", etMin, "timeout_max", etMax)
 	}
 
+	var coordClient *edge.CoordClient
+	if *flagCoordURL != "" {
+		coordClient = edge.NewCoordClient(*flagCoordURL)
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := coordClient.Healthz(probeCtx); err != nil {
+			probeCancel()
+			fatal("EDGE_COORD_URL set but coord unreachable: " + err.Error())
+		}
+		probeCancel()
+		log.Info("kvfs-edge: coord-proxy mode (Ep.2)", "coord_url", *flagCoordURL,
+			"note", "metadata commit/lookup/delete RPC; inline auto-trigger disabled")
+	}
+
+	if coordClient != nil && autoCfg.Enabled {
+		// Auto-trigger walks the local Store; in coord-proxy mode that store
+		// is empty (writes go to coord). Disable to avoid silently no-op runs.
+		log.Warn("EDGE_AUTO disabled in coord-proxy mode (auto-trigger will move to coord in a later ep)")
+		autoCfg.Enabled = false
+	}
+
 	srv := &edge.Server{
 		Store:             ms,
 		Coord:             coord,
@@ -362,6 +383,7 @@ func main() {
 		Elector:              elector,
 		StrictReplication:    *flagTxnRaft,
 		PlacementPreferClass: *flagPrefer,
+		CoordClient:          coordClient,
 	}
 
 	if elector != nil {

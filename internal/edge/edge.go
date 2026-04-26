@@ -163,6 +163,12 @@ type Server struct {
 	// the full set when the subset has fewer than R nodes.
 	PlacementPreferClass string
 
+	// CoordClient, when non-nil (EDGE_COORD_URL set, ADR-015 Season 5 Ep.2),
+	// routes ALL metadata operations (Commit/Lookup/Delete) through the
+	// kvfs-coord daemon instead of the local bbolt. Edge becomes a thin
+	// gateway. nil = legacy inline mode (Season 1~4 behavior, default).
+	CoordClient *CoordClient
+
 	// StrictReplication enables ADR-034's transactional commit path:
 	// PutObject pre-marshals the WAL entry, replicates to peers, waits for
 	// quorum-ack, THEN commits locally + writes WAL (with hook suppressed
@@ -228,7 +234,7 @@ func (s *Server) handleHead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	meta, err := s.Store.GetObject(r.PathValue("bucket"), r.PathValue("key"))
+	meta, err := s.lookupMeta(r.Context(), r.PathValue("bucket"), r.PathValue("key"))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "", http.StatusNotFound)
@@ -346,6 +352,12 @@ func (s *Server) writeChunkPreferClass(ctx context.Context, chunkID string, data
 //     wait → on success Store.PutObjectAfterReplicate (no hook re-push).
 //     On quorum failure: return error WITHOUT committing — caller responds 503.
 func (s *Server) commitPutMeta(ctx context.Context, meta *store.ObjectMeta) error {
+	// Coord-proxy mode (Ep.2): all metadata writes go through the coord
+	// daemon. Strict / transactional Raft happens coord-side in later eps;
+	// for Ep.2 the edge just calls commit and treats network errors as 5xx.
+	if s.CoordClient != nil {
+		return s.CoordClient.CommitObject(ctx, meta)
+	}
 	if s.StrictReplication && s.Elector != nil && s.Elector.IsLeader() {
 		body, err := s.Store.MarshalPutObjectEntry(meta)
 		if err != nil {
@@ -357,6 +369,24 @@ func (s *Server) commitPutMeta(ctx context.Context, meta *store.ObjectMeta) erro
 		return s.Store.PutObjectAfterReplicate(meta)
 	}
 	return s.Store.PutObject(meta)
+}
+
+// lookupMeta picks coord vs local Store for object metadata reads. Mirrors
+// commitPutMeta's split. errors.Is(err, store.ErrNotFound) is preserved
+// across both paths so handlers don't need to special-case.
+func (s *Server) lookupMeta(ctx context.Context, bucket, key string) (*store.ObjectMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.LookupObject(ctx, bucket, key)
+	}
+	return s.Store.GetObject(bucket, key)
+}
+
+// deleteMeta picks coord vs local Store for metadata removal.
+func (s *Server) deleteMeta(ctx context.Context, bucket, key string) error {
+	if s.CoordClient != nil {
+		return s.CoordClient.DeleteObject(ctx, bucket, key)
+	}
+	return s.Store.DeleteObject(bucket, key)
 }
 
 // pieceReader is the common interface for both fixed and CDC streaming
@@ -525,7 +555,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	key := r.PathValue("key")
 
-	meta, err := s.Store.GetObject(bucket, key)
+	meta, err := s.lookupMeta(r.Context(), bucket, key)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "object not found")
@@ -594,7 +624,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	key := r.PathValue("key")
 
-	meta, err := s.Store.GetObject(bucket, key)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	meta, err := s.lookupMeta(ctx, bucket, key)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "object not found")
@@ -604,8 +637,6 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
 	// best-effort per-chunk/per-shard delete; continue even if some fail (dead DN)
 	for _, c := range meta.Chunks {
 		_ = s.Coord.DeleteChunk(ctx, c.ChunkID, c.Replicas)
@@ -616,7 +647,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.Store.DeleteObject(bucket, key); err != nil {
+	if err := s.deleteMeta(ctx, bucket, key); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

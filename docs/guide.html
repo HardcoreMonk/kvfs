@@ -694,6 +694,7 @@ type Stripe struct {
 <tr><td><code>EDGE_HEARTBEAT_INTERVAL</code></td><td>(off)</td><td>DN heartbeat</td></tr>
 <tr><td><code>EDGE_ROLE</code> / <code>EDGE_PRIMARY_URL</code> / <code>EDGE_FOLLOWER_PULL_INTERVAL</code></td><td><code>primary</code> / — / 30s</td><td>follower 모드: read-only + snapshot pull (ADR-022)</td></tr>
 <tr><td><code>EDGE_TLS_CERT</code> / <code>EDGE_TLS_KEY</code></td><td>(off)</td><td>설정 시 HTTPS 활성 (ADR-029, <code>internal/tlsutil</code>)</td></tr>
+<tr><td><code>EDGE_COORD_URL</code></td><td>(off)</td><td>Season 5 Ep.2: 설정 시 edge 가 메타 RPC 를 coord 로 위임 (proxy mode)</td></tr>
 </tbody>
 </table>
 <blockquote><p>운영 디테일 (election timing, DN-side TLS CA 등) 은 <code>README.md</code> § "환경 변수" 의 전체 표.</p></blockquote>
@@ -775,8 +776,9 @@ type Stripe struct {
 <h3>12.3 Season 5 — coord 분리 (in progress)</h3>
 <p>ADR-015 Accept (2026-04-26). <code>kvfs-coord</code> daemon 신설 — placement + 메타 ownership 이 edge 에서 떨어져 나간다. ADR-002 supersede.</p>
 <ul>
-  <li>Ep.1 (현재): <code>cmd/kvfs-coord/</code> skeleton + 4 RPC (<code>/v1/coord/{place,commit,lookup,delete}</code>). 데모 <code>scripts/demo-aleph.sh</code>. <code>internal/coord/</code>. backward compat 100% — <code>EDGE_COORD_URL</code> 미설정 시 edge inline 유지.</li>
-  <li>후속: Ep.2 coord 자체 Raft, Ep.3 coord 간 메타 sync, Ep.4 edge 의 placement 코드 제거.</li>
+  <li>Ep.1: <code>cmd/kvfs-coord/</code> skeleton + 4 RPC (<code>/v1/coord/{place,commit,lookup,delete}</code>). 데모 <code>scripts/demo-aleph.sh</code>.</li>
+  <li>Ep.2 (현재): edge → coord client 통합. <code>EDGE_COORD_URL</code> 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임 (<code>internal/edge/coord_client.go</code>). edge.bbolt unused, coord.bbolt single source. 데모 <code>scripts/demo-bet.sh</code> (히브리 ב).</li>
+  <li>후속: Ep.3 coord 자체 Raft, Ep.4 coord 간 메타 sync, Ep.5 edge 의 placement 코드 제거.</li>
 </ul>
 <p>이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.</p>
 

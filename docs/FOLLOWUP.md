@@ -67,9 +67,8 @@
 ### ~~[P6-01] Season 5 Ep.1 — kvfs-coord skeleton~~
 - **DONE 2026-04-26**: `cmd/kvfs-coord/main.go` + `internal/coord/` (4 RPC: place/commit/lookup/delete + healthz). 2 unit tests PASS. demo-aleph.sh 라이브. Dockerfile + Makefile + down.sh 갱신. backward compat 100% (edge 코드 0 변경).
 
-### [P6-02] Edge → coord client 통합
-- **다음 단계**: edge 가 `EDGE_COORD_URL` 보면 placement + commit RPC 를 coord 로 위임. inline 모드 fallback 유지.
-- **스코프**: `internal/edge/coord_client.go` + `commitPutMeta` 분기 추가. 데모 demo-bet.sh.
+### ~~[P6-02] Edge → coord client 통합~~
+- **DONE 2026-04-27**: `internal/edge/coord_client.go` (CommitObject/LookupObject/DeleteObject/Healthz). edge.Server 에 `CoordClient` 필드, `commitPutMeta`/`lookupMeta`/`deleteMeta` 헬퍼 분기. handleHead/handleGet/handleDelete 모두 lookupMeta 경유. cmd/kvfs-edge/main.go: `EDGE_COORD_URL` env, boot 시 healthz fail-fast, coord-proxy 모드면 auto-trigger 자동 비활성. 데모 demo-bet.sh: edge.db vs coord.db 크기 비교로 단일 source 검증. 2 unit tests (round-trip + healthz fast-fail). 기존 동작 0 변경 (env unset 시 인라인).
 
 ### [P6-03] coord 자체의 Raft (peer set, election 재사용)
 - **다음 단계**: coord HA. ADR-031 의 Elector 를 coord 가 가져와 다중 coord 구성. ADR 신규 (예상 ADR-038).
