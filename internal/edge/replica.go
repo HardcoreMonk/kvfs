@@ -118,22 +118,14 @@ func (s *Server) runFollowerSync(ctx context.Context) {
 	if client == nil {
 		client = &http.Client{Timeout: 60 * time.Second}
 	}
-	// Run an initial sync immediately so a fresh follower has data ASAP.
-	if err := s.followerSyncOnce(ctx, client, cfg); err != nil {
-		s.logger().Warn("follower initial sync failed", slog.String("err", err.Error()))
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if err := s.followerSyncOnce(ctx, client, cfg); err != nil {
-				s.logger().Warn("follower sync failed", slog.String("err", err.Error()))
-			}
+	syncOnce := func() {
+		if err := s.followerSyncOnce(ctx, client, cfg); err != nil {
+			s.logger().Warn("follower sync failed", slog.String("err", err.Error()))
 		}
 	}
+	// Immediate sync so a fresh follower gets data ASAP.
+	syncOnce()
+	tickerLoop(ctx, interval, syncOnce)
 }
 
 func (s *Server) followerSyncOnce(ctx context.Context, client *http.Client, cfg FollowerConfig) error {
@@ -200,39 +192,39 @@ func (s *Server) followerSyncOnce(ctx context.Context, client *http.Client, cfg 
 // roleStatus returns the current role + (follower) sync stats.
 func (s *Server) roleStatus() roleSnapshot {
 	if s.Role == RoleFollower && s.followerSt != nil {
-		s.followerSt.mu.RLock()
-		defer s.followerSt.mu.RUnlock()
-		return roleSnapshot{
-			Role:         RoleFollower,
-			PrimaryURL:   s.followerSt.cfg.PrimaryURL,
-			PullInterval: s.followerSt.cfg.PullInterval.String(),
-			LastSync:     s.followerSt.lastSync,
-			LastSize:     s.followerSt.lastSize,
-			LastErr:      s.followerSt.lastErr,
-			TotalSyncs:   s.followerSt.totalRuns,
-			TotalErrors:  s.followerSt.totalErrs,
-		}
+		return s.followerSt.snapshot()
 	}
 	return roleSnapshot{Role: RolePrimary}
 }
 
-// rejectIfFollowerWrite is the middleware-style guard mounted on PUT/DELETE
-// data-path handlers. Returns true if it wrote a 503 response.
+// snapshot returns the follower's current sync stats. Holds RLock for the
+// read-side fields and copies cfg references (immutable post-construction).
+func (st *followerState) snapshot() roleSnapshot {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return roleSnapshot{
+		Role:         RoleFollower,
+		PrimaryURL:   st.cfg.PrimaryURL,
+		PullInterval: st.cfg.PullInterval.String(),
+		LastSync:     st.lastSync,
+		LastSize:     st.lastSize,
+		LastErr:      st.lastErr,
+		TotalSyncs:   st.totalRuns,
+		TotalErrors:  st.totalErrs,
+	}
+}
+
+// rejectIfFollowerWrite is the middleware-style guard mounted on the PUT and
+// DELETE data-path handlers. The handlers themselves are bound to those
+// methods and the /v1/o/ prefix, so we only need the role check here.
+// Returns true if it wrote a 503 response.
 func (s *Server) rejectIfFollowerWrite(w http.ResponseWriter, r *http.Request) bool {
 	if s.Role != RoleFollower {
 		return false
 	}
-	switch r.Method {
-	case http.MethodPut, http.MethodPost, http.MethodDelete, http.MethodPatch:
-		// Allow admin PUT/POST/DELETE (URL key rotation, dns admin etc.) only
-		// against the primary; data-path writes route through this guard.
-		if strings.HasPrefix(r.URL.Path, "/v1/o/") {
-			if s.followerSt != nil && s.followerSt.cfg.PrimaryURL != "" {
-				w.Header().Set("X-KVFS-Primary", s.followerSt.cfg.PrimaryURL)
-			}
-			writeError(w, http.StatusServiceUnavailable, "edge is in follower role; route writes to primary (see X-KVFS-Primary header)")
-			return true
-		}
+	if s.followerSt != nil && s.followerSt.cfg.PrimaryURL != "" {
+		w.Header().Set("X-KVFS-Primary", s.followerSt.cfg.PrimaryURL)
 	}
-	return false
+	writeError(w, http.StatusServiceUnavailable, "edge is in follower role; route writes to primary (see X-KVFS-Primary header)")
+	return true
 }

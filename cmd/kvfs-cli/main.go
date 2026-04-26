@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"go.etcd.io/bbolt"
+
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
@@ -1092,7 +1094,7 @@ func cmdMetaHistory(args []string) {
 	jsonOut := fs.Bool("json", false, "raw JSON output")
 	_ = fs.Parse(args)
 
-	body := mustHTTP("GET", *edge+"/v1/admin/snapshot/history")
+	body := mustGet(*edge+"/v1/admin/snapshot/history")
 	if *jsonOut {
 		fmt.Println(string(body))
 		return
@@ -1169,7 +1171,7 @@ func cmdMetaInfo(args []string) {
 	jsonOut := fs.Bool("json", false, "raw JSON output")
 	_ = fs.Parse(args)
 
-	body := mustHTTP("GET", *edge+"/v1/admin/meta/info")
+	body := mustGet(*edge+"/v1/admin/meta/info")
 	if *jsonOut {
 		fmt.Println(string(body))
 		return
@@ -1247,11 +1249,15 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-// bboltProbeLock tries to open the file with bbolt for 200ms. Returns (db, nil)
-// on success; the caller must close it. If another process holds the lock,
-// returns an error.
+// bboltProbeLock tries to acquire the bbolt file lock briefly. Read-only +
+// short timeout so the snapshot file is not mutated (store.Open's
+// CreateBucketIfNotExists would write pages even on a healthy snapshot).
+// Returns (closer, nil) when the lock is free; caller must Close.
 func bboltProbeLock(path string) (io.Closer, error) {
-	db, err := store.Open(path)
+	db, err := bbolt.Open(path, 0o600, &bbolt.Options{
+		Timeout:  200 * time.Millisecond,
+		ReadOnly: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1266,7 +1272,7 @@ func cmdHeartbeat(args []string) {
 	jsonOut := fs.Bool("json", false, "raw JSON output")
 	_ = fs.Parse(args)
 
-	body := mustHTTP("GET", *edge+"/v1/admin/heartbeat")
+	body := mustGet(*edge+"/v1/admin/heartbeat")
 	if *jsonOut {
 		fmt.Println(string(body))
 		return
@@ -1325,7 +1331,7 @@ func cmdRole(args []string) {
 	jsonOut := fs.Bool("json", false, "raw JSON output")
 	_ = fs.Parse(args)
 
-	body := mustHTTP("GET", *edge+"/v1/admin/role")
+	body := mustGet(*edge+"/v1/admin/role")
 	if *jsonOut {
 		fmt.Println(string(body))
 		return

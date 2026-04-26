@@ -71,6 +71,10 @@ func New(probe Probe, failThreshold int, probeTimeout time.Duration) *Monitor {
 
 // Tick fans out probes to all addrs in parallel and updates statuses.
 // Synchronous — caller (ticker goroutine) drives cadence.
+//
+// addrs MUST be the complete current registry (e.g. coord.DNs()). Statuses
+// for addrs not in the slice are evicted, so passing a filtered subset will
+// silently lose ConsecFails / TotalProbes history for the omitted DNs.
 func (m *Monitor) Tick(ctx context.Context, addrs []string) {
 	if len(addrs) == 0 {
 		return

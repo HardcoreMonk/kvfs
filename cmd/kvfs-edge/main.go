@@ -197,7 +197,10 @@ func main() {
 	parseAutoDur("EDGE_AUTO_GC_INTERVAL", *flagAutoGC, &autoCfg.GCInterval)
 	parseAutoDur("EDGE_AUTO_GC_MIN_AGE", *flagAutoMin, &autoCfg.GCMinAge)
 
-	hbInterval, _ := time.ParseDuration(*flagHB)
+	hbInterval, perr := time.ParseDuration(*flagHB)
+	if perr != nil {
+		fatal("invalid EDGE_HEARTBEAT_INTERVAL: " + perr.Error())
+	}
 	var hbMon *heartbeat.Monitor
 	if hbInterval > 0 {
 		hbMon = heartbeat.New(httpHealthProbe(dnScheme, dnTLSCfg), *flagHBFail, 2*time.Second)

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -117,8 +118,12 @@ type DNInfo struct {
 // sync) without invalidating concurrent readers — readers load the current
 // pointer per call, and the swapped-out DB is closed only after pending tx
 // finish (bbolt.Close blocks; we run it in a goroutine).
+//
+// reloadMu serializes Reload so back-to-back follower syncs cannot race on
+// the open + swap + async-close sequence.
 type MetaStore struct {
-	db atomic.Pointer[bbolt.DB]
+	db       atomic.Pointer[bbolt.DB]
+	reloadMu sync.Mutex
 }
 
 // Open opens or creates a bbolt database file at path.
@@ -161,6 +166,8 @@ func openInitialized(path string) (*bbolt.DB, error) {
 // the data dir via atomic temp+rename. If Reload fails, the previous DB
 // remains active.
 func (m *MetaStore) Reload(path string) error {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
 	newDB, err := openInitialized(path)
 	if err != nil {
 		return fmt.Errorf("reload: %w", err)

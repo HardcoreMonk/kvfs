@@ -905,14 +905,22 @@ func (s *Server) StartAuto(ctx context.Context) {
 	go s.autoLoop(ctx, JobGC, gci, func() { s.runAutoGC(ctx, minAge, conc) })
 }
 
-// autoLoop is the shared ticker driver for both jobs. exec runs one cycle.
+// autoLoop is the auto-trigger ticker driver. Wraps tickerLoop with a
+// per-job stop log.
 func (s *Server) autoLoop(ctx context.Context, job AutoJob, interval time.Duration, exec func()) {
+	tickerLoop(ctx, interval, exec)
+	s.logger().Info("auto loop stopping", "job", job)
+}
+
+// tickerLoop is the bare ticker driver shared by auto-trigger, heartbeat,
+// and follower-sync goroutines. exec runs once per tick; loop exits when
+// ctx is cancelled.
+func tickerLoop(ctx context.Context, interval time.Duration, exec func()) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			s.logger().Info("auto loop stopping", "job", job)
 			return
 		case <-t.C:
 			exec()
@@ -1124,20 +1132,12 @@ func (s *Server) StartHeartbeat(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 10 * time.Second
 	}
+	tick := func() { s.Heartbeat.Tick(ctx, s.Coord.DNs()) }
 	go func() {
-		// Run one probe immediately so the first /v1/admin/heartbeat call is
-		// non-empty even if the user hits it before the first tick.
-		s.Heartbeat.Tick(ctx, s.Coord.DNs())
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				s.Heartbeat.Tick(ctx, s.Coord.DNs())
-			}
-		}
+		// Immediate probe so the first /v1/admin/heartbeat call is non-empty
+		// even if the user hits it before the first tick fires.
+		tick()
+		tickerLoop(ctx, interval, tick)
 	}()
 }
 

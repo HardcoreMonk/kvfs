@@ -17,6 +17,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -39,6 +40,25 @@ func (m *MetaStore) Snapshot(w io.Writer) (int64, error) {
 	return n, nil
 }
 
+// statsObjectsAndSize folds the object scan + bbolt size read into one View
+// so the two reads see the same point-in-time DB even across a Reload().
+func (m *MetaStore) statsObjectsAndSize() ([]*ObjectMeta, int64, error) {
+	var objs []*ObjectMeta
+	var size int64
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		size = tx.Size()
+		return tx.Bucket(bucketObjects).ForEach(func(_, v []byte) error {
+			var o ObjectMeta
+			if err := json.Unmarshal(v, &o); err != nil {
+				return err
+			}
+			objs = append(objs, &o)
+			return nil
+		})
+	})
+	return objs, size, err
+}
+
 // MetaStats summarizes the current store contents (read-only).
 type MetaStats struct {
 	Objects     int   `json:"objects"`
@@ -55,11 +75,12 @@ type MetaStats struct {
 // Stats returns aggregate counts for /v1/admin/meta/info and CLI display.
 func (m *MetaStore) Stats() (MetaStats, error) {
 	var s MetaStats
-	objs, err := m.ListObjects()
+	objs, size, err := m.statsObjectsAndSize()
 	if err != nil {
 		return s, fmt.Errorf("stats: list objects: %w", err)
 	}
 	s.Objects = len(objs)
+	s.BBoltBytes = size
 	for _, o := range objs {
 		if o.IsEC() {
 			s.ECObjects++
@@ -80,10 +101,5 @@ func (m *MetaStore) Stats() (MetaStats, error) {
 	if keys, err := m.ListURLKeys(); err == nil {
 		s.URLKeys = len(keys)
 	}
-	// bbolt logical size = pages × pageSize via a read tx (cheap).
-	_ = m.db.Load().View(func(tx *bbolt.Tx) error {
-		s.BBoltBytes = tx.Size()
-		return nil
-	})
 	return s, nil
 }
