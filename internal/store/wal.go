@@ -331,9 +331,17 @@ func (m *MetaStore) WAL() *WAL { return m.wal }
 //
 // The hook receives the raw JSON entry body (already serialized for the
 // WAL file) so it can be reused as the replication payload without
-// re-marshal. Errors are logged by the caller, not surfaced to the
-// mutation method (best-effort replication).
-type WALHook func(entryJSON []byte)
+// re-marshal.
+//
+// Hook return semantics:
+//   - nil (default async hook implementation) — best-effort, mutation
+//     proceeds even if peers fall behind; operator monitors via metrics.
+//   - error (strict-replication mode, EDGE_STRICT_REPL=1) — surfaced as
+//     the mutation method's return; edge handlers respond 503. Note: the
+//     bbolt commit has already happened, so this is "informational strict"
+//     not transactional rollback. Followers heal via snapshot+WAL on next
+//     pull. See ADR-033.
+type WALHook func(entryJSON []byte) error
 
 // SetWALHook registers a callback fired after each WAL.Append. Pass nil to
 // disable. Called synchronously from PutObject / DeleteObject etc.
@@ -343,17 +351,22 @@ func (m *MetaStore) SetWALHook(h WALHook) { m.walHook = h }
 // method. Reuses the JSON line returned by WAL.Append so the hook payload
 // is byte-identical to the on-disk entry (same seq, same timestamp).
 // No-op when WAL is disabled.
-func (m *MetaStore) appendWAL(op WALOp, args any) {
+//
+// Returns the hook's error (if any) so strict-replication mode can surface
+// quorum failure to the mutation method's caller. Async hooks should
+// return nil unconditionally.
+func (m *MetaStore) appendWAL(op WALOp, args any) error {
 	if m.wal == nil {
-		return
+		return nil
 	}
 	_, line, err := m.wal.Append(string(op), args)
 	if err != nil || line == nil {
-		return
+		return err
 	}
 	if m.walHook != nil {
-		m.walHook(line)
+		return m.walHook(line)
 	}
+	return nil
 }
 
 // Errors returned by WAL operations.

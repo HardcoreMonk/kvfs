@@ -88,6 +88,7 @@ func main() {
 		flagElectMax = flag.String("election-timeout-max", envOr("EDGE_ELECTION_TIMEOUT_MAX", "3000ms"), "follower → candidate timeout (max)")
 		flagWALPath  = flag.String("wal-path", envOr("EDGE_WAL_PATH", ""), "ADR-019 WAL file path (empty disables WAL)")
 		flagMetrics  = flag.Bool("metrics", envOr("EDGE_METRICS", "1") == "1", "expose /metrics Prometheus endpoint (default on)")
+		flagStrict   = flag.Bool("strict-repl", envOr("EDGE_STRICT_REPL", "") == "1", "ADR-033: surface quorum-replication failure as 503 to client (default off — async best-effort)")
 		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
 		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
 		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
@@ -305,16 +306,30 @@ func main() {
 			},
 		})
 		// Leader-side: every local WAL.Append fires this hook → push to
-		// peers (best-effort, quorum-ack within Config.ReplicateTimeout).
-		ms.SetWALHook(func(entryJSON []byte) {
+		// peers. Two modes via EDGE_STRICT_REPL:
+		//   - async (default): goroutine; mutation always returns nil
+		//   - strict: synchronous; quorum failure surfaced to caller (503)
+		ms.SetWALHook(func(entryJSON []byte) error {
 			if !elector.IsLeader() {
-				return // followers don't replicate
+				return nil // followers don't replicate
+			}
+			if !*flagStrict {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := elector.ReplicateEntry(ctx, entryJSON); err != nil {
+						log.Warn("replication failed", "err", err.Error())
+					}
+				}()
+				return nil
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := elector.ReplicateEntry(ctx, entryJSON); err != nil {
-				log.Warn("replication failed", "err", err.Error())
+				log.Warn("strict replication failed", "err", err.Error())
+				return err
 			}
+			return nil
 		})
 		log.Info("election enabled", "self", *flagSelfURL, "peers", len(peers),
 			"hb", hbInt, "timeout_min", etMin, "timeout_max", etMax)
