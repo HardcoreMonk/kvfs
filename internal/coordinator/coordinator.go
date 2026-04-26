@@ -22,6 +22,7 @@ package coordinator
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +45,7 @@ type Coordinator struct {
 	replicationFactor int
 	quorumWrite       int
 	client            *http.Client
+	dnScheme          string // "http" or "https" — ADR-029
 }
 
 // Config bundles Coordinator construction parameters.
@@ -63,6 +65,14 @@ type Config struct {
 
 	// Timeout: per-request HTTP deadline.
 	Timeout time.Duration
+
+	// TLSConfig is the TLS config for outgoing edge → DN HTTPS calls (ADR-029).
+	// nil = plain http://. Set DNScheme="https" if non-nil.
+	TLSConfig *tls.Config
+
+	// DNScheme is "http" or "https" (default "http"). When "https", URLs to
+	// DNs use https:// and TLSConfig is applied.
+	DNScheme string
 }
 
 // New builds a Coordinator. Defaults:
@@ -91,11 +101,20 @@ func New(cfg Config) (*Coordinator, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	scheme := cfg.DNScheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	httpClient := &http.Client{Timeout: timeout}
+	if cfg.TLSConfig != nil {
+		httpClient.Transport = &http.Transport{TLSClientConfig: cfg.TLSConfig}
+	}
 	return &Coordinator{
 		placer:            placement.New(cfg.Nodes),
 		replicationFactor: r,
 		quorumWrite:       q,
-		client:            &http.Client{Timeout: timeout},
+		client:            httpClient,
+		dnScheme:          scheme,
 	}, nil
 }
 
@@ -276,7 +295,7 @@ type ChunkInfo struct {
 // ListChunks fetches all chunk_ids on disk at the given DN.
 // Used by GC (ADR-012) to enumerate per-DN inventory.
 func (c *Coordinator) ListChunks(ctx context.Context, addr string) ([]ChunkInfo, error) {
-	url := fmt.Sprintf("http://%s/chunks", addr)
+	url := fmt.Sprintf("%s://%s/chunks", c.dnScheme, addr)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -331,7 +350,7 @@ func (c *Coordinator) DeleteChunk(ctx context.Context, chunkID string, replicas 
 // ---- low-level HTTP helpers ----
 
 func (c *Coordinator) putChunk(ctx context.Context, addr, chunkID string, data []byte) error {
-	url := fmt.Sprintf("http://%s/chunk/%s", addr, chunkID)
+	url := fmt.Sprintf("%s://%s/chunk/%s", c.dnScheme, addr, chunkID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -350,7 +369,7 @@ func (c *Coordinator) putChunk(ctx context.Context, addr, chunkID string, data [
 }
 
 func (c *Coordinator) getChunk(ctx context.Context, addr, chunkID string) ([]byte, error) {
-	url := fmt.Sprintf("http://%s/chunk/%s", addr, chunkID)
+	url := fmt.Sprintf("%s://%s/chunk/%s", c.dnScheme, addr, chunkID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -367,7 +386,7 @@ func (c *Coordinator) getChunk(ctx context.Context, addr, chunkID string) ([]byt
 }
 
 func (c *Coordinator) deleteChunk(ctx context.Context, addr, chunkID string) error {
-	url := fmt.Sprintf("http://%s/chunk/%s", addr, chunkID)
+	url := fmt.Sprintf("%s://%s/chunk/%s", c.dnScheme, addr, chunkID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		return err

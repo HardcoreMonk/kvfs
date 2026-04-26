@@ -59,6 +59,7 @@ Accepted · YYYY-MM-DD
 | [024](ADR-024-ec-stripe-rebalance.md) | EC stripe rebalance (set-based, min-migration) | Accepted · 2026-04-26 | `internal/rebalance/` 확장 |
 | [027](ADR-027-dynamic-dn-registry.md) | Dynamic DN registry (admin endpoint + bbolt 영속) | Accepted · 2026-04-26 | `internal/coordinator/` UpdateNodes + `dns_runtime` 버킷 |
 | [028](ADR-028-urlkey-rotation.md) | UrlKey kid rotation (multi-key Signer + bbolt 영속) | Accepted · 2026-04-26 | `internal/urlkey/` multi-key + `urlkey_secrets` 버킷 |
+| [029](ADR-029-optional-tls.md) | Optional TLS / mTLS (env-driven opt-in) | Accepted · 2026-04-26 | `cmd/kvfs-{edge,dn}/` TLS env + `scripts/gen-tls-certs.sh` |
 
 ## Season 3+ 예상 ADR (pending)
 - ADR-014: Meta backup/HA (bbolt 메타 손실 시 복구)

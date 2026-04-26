@@ -9,6 +9,9 @@ edge-data/
 *.db
 dn-data*/
 
+# TLS certs (ADR-029) — generated locally via scripts/gen-tls-certs.sh
+certs/
+
 # Go
 *.test
 *.out

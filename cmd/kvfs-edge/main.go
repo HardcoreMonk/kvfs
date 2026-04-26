@@ -34,9 +34,13 @@ import (
 	"syscall"
 	"time"
 
+	"crypto/tls"
+	"crypto/x509"
+
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/edge"
+	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
 )
@@ -101,8 +105,25 @@ func main() {
 			"addrs", dns)
 	}
 
+	// ADR-029: optional TLS for edge → DN HTTPS. EDGE_DN_TLS_CA enables.
+	dnTLSCfg, dnScheme, terr := buildDNTLSConfig(log)
+	if terr != nil {
+		fatal("DN TLS: " + terr.Error())
+	}
+
 	// ReplicationFactor = 3 by default for 3-way replication MVP.
-	coord, err := coordinator.NewWithAddrs(dns, 3, *flagQuorum, 10*time.Second)
+	nodes := make([]placement.Node, len(dns))
+	for i, a := range dns {
+		nodes[i] = placement.Node{ID: a, Addr: a}
+	}
+	coord, err := coordinator.New(coordinator.Config{
+		Nodes:             nodes,
+		ReplicationFactor: 3,
+		QuorumWrite:       *flagQuorum,
+		Timeout:           10 * time.Second,
+		TLSConfig:         dnTLSCfg,
+		DNScheme:          dnScheme,
+	})
 	if err != nil {
 		fatal(err.Error())
 	}
@@ -204,7 +225,14 @@ func main() {
 	srv.StartAuto(ctx)
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- httpSrv.ListenAndServe() }()
+	tlsCert := envOr("EDGE_TLS_CERT", "")
+	tlsKey := envOr("EDGE_TLS_KEY", "")
+	if tlsCert != "" && tlsKey != "" {
+		log.Info("kvfs-edge HTTPS enabled (ADR-029)", "cert", tlsCert)
+		go func() { errCh <- httpSrv.ListenAndServeTLS(tlsCert, tlsKey) }()
+	} else {
+		go func() { errCh <- httpSrv.ListenAndServe() }()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -250,4 +278,38 @@ func splitTrim(s string) []string {
 func fatal(msg string) {
 	fmt.Fprintln(os.Stderr, "kvfs-edge: "+msg)
 	os.Exit(2)
+}
+
+// buildDNTLSConfig assembles edge → DN TLS config from EDGE_DN_TLS_* env
+// (ADR-029). Returns (nil, "http", nil) when TLS is not opted in.
+//
+// CA env enables HTTPS to DNs. Optional client cert env adds mTLS.
+func buildDNTLSConfig(log *slog.Logger) (*tls.Config, string, error) {
+	caPath := envOr("EDGE_DN_TLS_CA", "")
+	if caPath == "" {
+		return nil, "http", nil
+	}
+	caBytes, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("read CA %s: %w", caPath, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caBytes) {
+		return nil, "", fmt.Errorf("CA %s: no PEM blocks", caPath)
+	}
+	cfg := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+
+	clientCert := envOr("EDGE_DN_TLS_CLIENT_CERT", "")
+	clientKey := envOr("EDGE_DN_TLS_CLIENT_KEY", "")
+	if clientCert != "" && clientKey != "" {
+		cert, err := tls.LoadX509KeyPair(clientCert, clientKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("load client cert: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+		log.Info("edge → DN mTLS enabled", "client_cert", clientCert)
+	} else {
+		log.Info("edge → DN HTTPS enabled (no mTLS client cert)", "ca", caPath)
+	}
+	return cfg, "https", nil
 }

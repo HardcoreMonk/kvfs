@@ -8,7 +8,7 @@
 
 - **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
 - **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **2건**
-- **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **4건** (P2-01/02/03/04/06/07 완료)
+- **P2**: 리뷰·개선 권고, 개인 프로젝트 여유 시 처리 — 현재 **0건** (P2-01~09 모두 완료)
 - **P3**: 별도 스펙·사용자 결정 필요 — 현재 **3건** (P3-05/06 obsolete · 취소선; P3-07 ADR-024 완료 → P3-09 신규)
 
 ---
@@ -64,10 +64,8 @@
 ### ~~[P2-08] Secret rotation (UrlKey `kid`)~~
 - **DONE 2026-04-26 (ADR-028)**: multi-key `urlkey.Signer` (Add/Remove/SetPrimary/Kids), `urlkey_secrets` bbolt 버킷 영속, URL `?kid=` 파라미터, kid 누락 시 try-all-kids fallback (legacy/shell 클라이언트 호환). `POST /v1/admin/urlkey/rotate` + `DELETE /v1/admin/urlkey?kid=`. `kvfs-cli urlkey list/rotate/remove --kid X`. 라이브 검증: rotate 후 옛 v1-signed URL 정상 verify, v1 remove 후 401. 11 unit tests PASS (5 기존 + 6 rotation)
 
-### [P2-09] TLS / mTLS
-- 현재: 모든 통신 평문 HTTP
-- 개선: edge 에 TLS 서버 (cert-manager 또는 self-signed), edge↔DN mTLS
-- 데모 순수성 때문에 Season 2 에서는 보류. Season 3+
+### ~~[P2-09] TLS / mTLS~~
+- **DONE 2026-04-26 (ADR-029)**: env-driven opt-in TLS. `EDGE_TLS_CERT/KEY` (HTTPS server), `EDGE_DN_TLS_CA + CLIENT_CERT/KEY` (edge → DN mTLS), `DN_TLS_CERT/KEY + CLIENT_CA` (DN HTTPS + mTLS). Coordinator 에 DNScheme + TLSConfig 추가, URL build 시 scheme 적용. `scripts/gen-tls-certs.sh` (self-signed CA + edge/dn/client certs), `scripts/up-tls.sh` (TLS 클러스터 데모). 라이브: healthz with CA → 200, without CA → curl exit 60 (verify fail), TLS PUT/GET round-trip 일치, edge→DN mTLS 로그 확인. 11 기존 데모는 plain HTTP 그대로 (TLS env 없으면 평문)
 
 ---
 
