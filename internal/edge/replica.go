@@ -25,15 +25,19 @@ package edge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/HardcoreMonk/kvfs/internal/store"
 )
 
 // Role identifies edge mode (ADR-022).
@@ -85,6 +89,12 @@ type followerState struct {
 	// activePath is the most recently Reload-ed snapshot file, retained so
 	// the next sync can unlink it after the new file is loaded.
 	activePath string
+
+	// lastWALSeq tracks the highest WAL seq we've successfully applied
+	// (ADR-019 follow-up). 0 means we haven't done a snapshot pull yet —
+	// next sync will snapshot+seed. >0 means we can attempt incremental
+	// WAL pull instead of a full snapshot.
+	lastWALSeq int64
 }
 
 func (s *followerState) recordOK(n int64) {
@@ -141,7 +151,28 @@ func (s *Server) followerSyncOnce(ctx context.Context, client *http.Client, cfg 
 			return nil
 		}
 	}
-	url := strings.TrimRight(primaryURL, "/") + "/v1/admin/meta/snapshot"
+	primaryURL = strings.TrimRight(primaryURL, "/")
+
+	// ADR-019 follow-up: if we've already snapshot-pulled once and we have
+	// a WAL seq baseline, try to fetch only the delta. WAL pull is much
+	// cheaper than re-pulling the whole bbolt every interval.
+	s.followerSt.mu.RLock()
+	lastSeq := s.followerSt.lastWALSeq
+	s.followerSt.mu.RUnlock()
+	if lastSeq > 0 {
+		applied, err := s.followerWALPull(ctx, client, primaryURL, lastSeq)
+		if err == nil {
+			// WAL pull succeeded; update stats but skip snapshot.
+			s.followerSt.recordOK(applied)
+			return nil
+		}
+		// WAL endpoint may be disabled on primary, or seq gap exceeded the
+		// retained WAL — fall through to full snapshot pull.
+		s.logger().Debug("WAL pull failed, falling back to snapshot",
+			slog.String("err", err.Error()))
+	}
+
+	url := primaryURL + "/v1/admin/meta/snapshot"
 	pctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(pctx, http.MethodGet, url, nil)
@@ -191,14 +222,80 @@ func (s *Server) followerSyncOnce(ctx context.Context, client *http.Client, cfg 
 		s.followerSt.recordErr(err)
 		return err
 	}
+	// Seed lastWALSeq from the X-KVFS-WAL-Seq header so subsequent ticks
+	// can request only the delta via /v1/admin/wal?since=N (ADR-019).
+	walSeed := int64(0)
+	if h := resp.Header.Get("X-Kvfs-Wal-Seq"); h != "" {
+		if v, perr := strconv.ParseInt(h, 10, 64); perr == nil {
+			walSeed = v
+		}
+	}
 	s.followerSt.mu.Lock()
 	s.followerSt.activePath = tmp
+	s.followerSt.lastWALSeq = walSeed
 	s.followerSt.mu.Unlock()
 	if prevActive != "" {
 		_ = os.Remove(prevActive)
 	}
 	s.followerSt.recordOK(n)
 	return nil
+}
+
+// followerWALPull fetches WAL entries since lastSeq from the primary and
+// applies them to the local store. Returns bytes-fetched (for stats) or an
+// error indicating the caller should fall back to a full snapshot pull.
+//
+// Errors that trigger snapshot fallback:
+//   - HTTP 404 / 501 (primary has WAL disabled)
+//   - apply error (entry op unknown — schema bump)
+//   - any HTTP error other than 200
+func (s *Server) followerWALPull(ctx context.Context, client *http.Client, primaryURL string, sinceSeq int64) (int64, error) {
+	url := fmt.Sprintf("%s/v1/admin/wal?since=%d", primaryURL, sinceSeq)
+	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(pctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("WAL pull HTTP %d", resp.StatusCode)
+	}
+	dec := json.NewDecoder(resp.Body)
+	var entries []store.WALEntry
+	var bytesRead int64
+	for dec.More() {
+		var e store.WALEntry
+		if derr := dec.Decode(&e); derr != nil {
+			return bytesRead, fmt.Errorf("decode wal entry: %w", derr)
+		}
+		entries = append(entries, e)
+	}
+	if len(entries) == 0 {
+		// Nothing new since last pull — still success, just record stats.
+		// Use header for current seq if present so we can advance baseline.
+		if h := resp.Header.Get("X-Kvfs-Wal-Last-Seq"); h != "" {
+			if v, perr := strconv.ParseInt(h, 10, 64); perr == nil && v > sinceSeq {
+				s.followerSt.mu.Lock()
+				s.followerSt.lastWALSeq = v
+				s.followerSt.mu.Unlock()
+			}
+		}
+		return 0, nil
+	}
+	if err := s.Store.ApplyAll(entries); err != nil {
+		return bytesRead, fmt.Errorf("apply wal: %w", err)
+	}
+	maxSeq := entries[len(entries)-1].Seq
+	s.followerSt.mu.Lock()
+	s.followerSt.lastWALSeq = maxSeq
+	s.followerSt.mu.Unlock()
+	// Approximate bytesRead: count == len(entries); just use that as a proxy.
+	return int64(len(entries)), nil
 }
 
 // roleStatus returns the current role + (follower) sync stats.

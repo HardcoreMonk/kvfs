@@ -121,15 +121,15 @@
 ### ~~[P4-04] Season 4 Ep.4 주제 결정~~
 - **DONE 2026-04-26**: ADR-019 WAL 채택 + 구현 완료
 
-### [P4-05] Season 4 Ep.5 주제 결정
-- **현**: Ep.4 ADR-019 완료. Season 4 다음 ep 미정
-- **남은 후보**:
-  - **EC streaming PUT/GET** (ADR-017 follow-up): per-stripe streaming, encoder 인터페이스 변경
-  - **EC + CDC 조합** (ADR-018 follow-up): variable shard size 디자인
-  - **진짜 Raft log replication** (ADR-031 follow-up): WAL 기반 follower 자동 pull, write loss window 제거
-  - **Follower WAL auto-pull integration** (ADR-019 follow-up): RPO 분 → 초
-- **추천**: ADR-019 follow-up (작고 즉시 가치) → Raft log replication (큰 작업, Season 4 close)
-- **결정 시 P1 로 승격**
+### ~~[P4-05] Season 4 Ep.5 주제 결정~~
+- **DONE 2026-04-26**: ADR-019 follow-up (Follower WAL auto-pull) 채택 + 구현 완료
+
+### [P4-06] Season 4 Ep.6+ 진행 — EC streaming · EC+CDC · Raft log repl
+- **현**: Ep.5 follower WAL auto-pull 완료. 남은 후보 3개
+  - **EC streaming PUT/GET** (ADR-017 follow-up)
+  - **EC + CDC 조합** (ADR-018 follow-up)
+  - **진짜 Raft log replication** (ADR-031 follow-up)
+- 진행 중
 
 ---
 
@@ -170,6 +170,7 @@
 | 2026-04-26 | Season 4 Ep.2 — ADR-018 Content-defined chunking 구현 완료 | `internal/chunker/cdc.go` FastCDC + GearTable + 3-region cutpoint (~180 LOC, 7 tests PASS: deterministic / shift invariance / min-max bounds / round-trip / empty / short / smaller-than-min). `Server.CDCEnabled` + `pieceReader` 인터페이스로 fixed/CDC 분기, `EDGE_CHUNK_MODE=cdc` 활성. EC mode 는 본 ep 비범위 (uniform shard 필요). `scripts/demo-tau.sh` shift-by-1 시나리오 라이브: fixed 0% dedup vs **CDC 40% dedup (4/5 chunk 재사용)**. `blog/15-cdc.md` |
 | 2026-04-26 | Season 4 Ep.3 — ADR-031 Auto leader election 구현 완료 | `internal/election/election.go` Raft-style 3-state machine + vote/heartbeat RPC (~440 LOC, 6 tests PASS: vote stale / vote 1-per-term / higher-term step-down / HB reset / stale HB / live 3-edge cluster). `Server.Elector` + `effectiveRole`/`effectivePrimaryURL` 동적 분기, ADR-022 manual mode 호환 유지. `EDGE_PEERS/SELF_URL/ELECTION_*` env. `scripts/demo-upsilon.sh` 3 edge 라이브: edge1 leader (term 1) → kill → ~4s 후 edge3 새 leader (term 2), PUT 재개 PASS. `blog/16-leader-election.md` |
 | 2026-04-26 | Season 4 Ep.4 — ADR-019 WAL 구현 완료 | `internal/store/wal.go` append-only JSON-lines + ApplyEntry replay (~270 LOC, 6 tests PASS: append + Since + LastSeq recovery + Truncate + WriteSinceTo streaming + ApplyAll round-trip). 4 mutation methods (PutObject/DeleteObject/Add+RemoveRuntimeDN) split into internal version with writeWAL flag. `GET /v1/admin/wal?since=N` + `wal/info`, snapshot endpoint 헤더 `X-KVFS-WAL-Seq`. `kvfs-cli wal {info,stream}`. `scripts/demo-phi.sh` 라이브: 7 entries (5 PUT + 2 DELETE) audit + snapshot 헤더 동봉. `blog/17-wal.md` |
+| 2026-04-26 | Season 4 Ep.5 — Follower WAL auto-pull (ADR-019 follow-up) | `followerSyncOnce` 가 lastWALSeq>0 이면 `GET /v1/admin/wal?since=lastSeq` 시도, snapshot fallback. snapshot 응답의 `X-KVFS-WAL-Seq` 헤더로 lastWALSeq seed. `scripts/demo-chi.sh` 라이브: PUT 3 → snapshot pull → PUT 2 더 → follower WAL apply 만으로 catch-up (last_size 0 = 추가 snapshot 없이) PASS |
 
 ---
 
