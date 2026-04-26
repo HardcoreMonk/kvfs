@@ -127,6 +127,15 @@ func (s *SnapshotScheduler) runOnce() {
 	if err := s.prune(); err != nil {
 		s.recordErr(fmt.Errorf("prune: %w", err))
 	}
+	// Log compaction (ADR-019 follow-up): the fresh snapshot embeds all
+	// current state, so any pre-snapshot WAL entry is redundant. Truncate
+	// the WAL to seq=0; followers pulling WAL since-N before this point
+	// will fall back to a full snapshot pull (their existing path).
+	if w := s.store.WAL(); w != nil {
+		if _, err := w.Truncate(); err != nil {
+			s.recordErr(fmt.Errorf("wal truncate: %w", err))
+		}
+	}
 }
 
 // prune deletes oldest snapshot files beyond `keep`. Newest are kept by mtime.
