@@ -564,6 +564,15 @@ type Stripe struct {
 
 ---
 
+### 12.3 Season 5 — coord 분리 (in progress)
+
+ADR-015 Accept (2026-04-26). `kvfs-coord` daemon 신설 — placement + 메타 ownership 이 edge 에서 떨어져 나간다. ADR-002 supersede.
+
+- Ep.1 (현재): `cmd/kvfs-coord/` skeleton + 4 RPC (`/v1/coord/{place,commit,lookup,delete}`). 데모 `scripts/demo-aleph.sh`. `internal/coord/`. backward compat 100% — `EDGE_COORD_URL` 미설정 시 edge 가 inline 동작 유지.
+- 후속: Ep.2 coord 자체 Raft, Ep.3 coord 간 메타 sync, Ep.4 edge 의 placement 코드 제거.
+
+이 트랙이 완료되면 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.
+
 ## 13. 다음에 읽을 것
 
 ### 13.1 코드 진입점 (추천 순서)

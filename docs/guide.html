@@ -772,6 +772,14 @@ type Stripe struct {
   <li><strong>NFS / POSIX gateway</strong> — 한번 평가 후 deferred (ADR-032). FUSE 마운트는 메타데이터 모델이 안 맞고, NFS 서버를 박으면 kvfs 가 stateful filesystem 로 변질됨.</li>
 </ul>
 
+<h3>12.3 Season 5 — coord 분리 (in progress)</h3>
+<p>ADR-015 Accept (2026-04-26). <code>kvfs-coord</code> daemon 신설 — placement + 메타 ownership 이 edge 에서 떨어져 나간다. ADR-002 supersede.</p>
+<ul>
+  <li>Ep.1 (현재): <code>cmd/kvfs-coord/</code> skeleton + 4 RPC (<code>/v1/coord/{place,commit,lookup,delete}</code>). 데모 <code>scripts/demo-aleph.sh</code>. <code>internal/coord/</code>. backward compat 100% — <code>EDGE_COORD_URL</code> 미설정 시 edge inline 유지.</li>
+  <li>후속: Ep.2 coord 자체 Raft, Ep.3 coord 간 메타 sync, Ep.4 edge 의 placement 코드 제거.</li>
+</ul>
+<p>이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.</p>
+
 <h2 id="s13"><span class="num">13</span>다음에 읽을 것</h2>
 
 <h3>13.1 코드 진입점 (추천 순서)</h3>

@@ -16,9 +16,10 @@ help:
 	@echo '  clean         Remove ./bin and local bbolt files'
 
 build:
-	go build -trimpath -ldflags='-s -w' -o bin/kvfs-edge ./cmd/kvfs-edge
-	go build -trimpath -ldflags='-s -w' -o bin/kvfs-dn   ./cmd/kvfs-dn
-	go build -trimpath -ldflags='-s -w' -o bin/kvfs-cli  ./cmd/kvfs-cli
+	go build -trimpath -ldflags='-s -w' -o bin/kvfs-edge  ./cmd/kvfs-edge
+	go build -trimpath -ldflags='-s -w' -o bin/kvfs-dn    ./cmd/kvfs-dn
+	go build -trimpath -ldflags='-s -w' -o bin/kvfs-cli   ./cmd/kvfs-cli
+	go build -trimpath -ldflags='-s -w' -o bin/kvfs-coord ./cmd/kvfs-coord
 
 test:
 	go test ./...
