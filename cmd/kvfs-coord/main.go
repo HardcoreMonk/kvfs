@@ -58,6 +58,9 @@ func main() {
 		// peers; followers ApplyEntry to keep bbolt in sync. Empty = no WAL
 		// (Ep.3 behavior — followers' bbolt stays empty after election).
 		flagWALPath = flag.String("wal-path", envOr("COORD_WAL_PATH", ""), "WAL file (ADR-019). Required for coord-to-coord sync (ADR-039)")
+		// Transactional commit (Ep.5, ADR-040): replicate-then-commit, no
+		// phantom writes on leader-loss. Requires both -peers and -wal-path.
+		flagTxnRaft = flag.Bool("transactional-raft", envOr("COORD_TRANSACTIONAL_RAFT", "") == "1", "ADR-040: replicate-then-commit semantics. Requires COORD_PEERS + COORD_WAL_PATH.")
 	)
 	flag.Parse()
 
@@ -151,11 +154,23 @@ func main() {
 			"wal_replication", st.WAL() != nil)
 	}
 
+	if *flagTxnRaft {
+		switch {
+		case elector == nil:
+			fatal("COORD_TRANSACTIONAL_RAFT=1 requires COORD_PEERS")
+		case st.WAL() == nil:
+			fatal("COORD_TRANSACTIONAL_RAFT=1 requires COORD_WAL_PATH")
+		}
+		log.Info("kvfs-coord transactional commit (Ep.5, ADR-040)",
+			"semantics", "replicate-then-commit; quorum failure → 503 + no local commit")
+	}
+
 	srv := &coord.Server{
-		Store:   st,
-		Placer:  placer,
-		Log:     log,
-		Elector: elector,
+		Store:               st,
+		Placer:              placer,
+		Log:                 log,
+		Elector:             elector,
+		TransactionalCommit: *flagTxnRaft,
 	}
 
 	httpSrv := &http.Server{

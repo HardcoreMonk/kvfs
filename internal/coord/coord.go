@@ -31,11 +31,13 @@
 package coord
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
@@ -55,6 +57,18 @@ type Server struct {
 	// header pointing at the leader's URL — clients (edge.CoordClient)
 	// transparently follow.
 	Elector *election.Elector
+
+	// TransactionalCommit (Season 5 Ep.5, ADR-040) flips PutObject from
+	// "commit-then-push" (best-effort, ADR-039) to "replicate-then-commit"
+	// (true Raft-style). Closes the leader-loss-mid-write phantom-write
+	// window: if quorum push fails, the leader's bbolt is NOT touched.
+	// Requires Elector + WAL to be active. Default false (Ep.4 behavior).
+	TransactionalCommit bool
+
+	// ReplicateTimeout caps each transactional commit's quorum wait.
+	// Default 2s (matches election.Config default). Override only if
+	// peer RTT is unusually high.
+	ReplicateTimeout time.Duration
 }
 
 // HeaderCoordLeader names the redirect header used when a follower coord
@@ -146,6 +160,22 @@ type CommitResponse struct {
 // this is the single point of serialization in the cluster — a property
 // edge multi-instance setups didn't have. In HA mode (Ep.3), only the
 // current leader accepts this; followers reply 503 + X-COORD-LEADER.
+//
+// Two commit paths (selected by Server.TransactionalCommit):
+//
+//	default (best-effort, ADR-039):  PutObject → bbolt commit → walHook
+//	                                 (push to peers) → respond. Phantom
+//	                                 write possible if leadership lost
+//	                                 between commit and push.
+//
+//	transactional (ADR-040):         MarshalPutObjectEntry → ReplicateEntry
+//	                                 (wait for quorum ack) → only on
+//	                                 success, PutObjectAfterReplicate
+//	                                 (commits + writes WAL with hook
+//	                                 suppressed since peers already have
+//	                                 the entry). Quorum failure → 503,
+//	                                 NO local commit. Closes the phantom-
+//	                                 write window.
 func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	if s.requireLeader(w) {
 		return
@@ -159,11 +189,36 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("meta.bucket+key required"))
 		return
 	}
-	if err := s.Store.PutObject(req.Meta); err != nil {
+	if err := s.commit(r.Context(), req.Meta); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, CommitResponse{OK: true, Version: req.Meta.Version})
+}
+
+// commit dispatches between the best-effort and transactional commit paths.
+// Both paths require leadership (already checked by handleCommit). The
+// transactional path additionally requires Elector + WAL — without WAL
+// there's nothing to replicate, so it falls back to the legacy path with
+// a one-time warning at startup (logged by main when wiring detects it).
+func (s *Server) commit(ctx context.Context, meta *store.ObjectMeta) error {
+	if !s.TransactionalCommit || s.Elector == nil || s.Store.WAL() == nil {
+		return s.Store.PutObject(meta)
+	}
+	body, err := s.Store.MarshalPutObjectEntry(meta)
+	if err != nil {
+		return fmt.Errorf("marshal entry: %w", err)
+	}
+	timeout := s.ReplicateTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	repCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := s.Elector.ReplicateEntry(repCtx, body); err != nil {
+		return fmt.Errorf("transactional replicate: %w", err)
+	}
+	return s.Store.PutObjectAfterReplicate(meta)
 }
 
 // handleLookup returns the ObjectMeta for (bucket, key) or 404.

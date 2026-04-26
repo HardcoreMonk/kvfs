@@ -76,10 +76,8 @@
 ### ~~[P6-04] coord 간 메타 sync (WAL replication 재사용)~~
 - **DONE 2026-04-27**: ADR-039 작성 + 구현. coord daemon 이 `COORD_WAL_PATH` 설정 시 `store.OpenWAL` + leader-side `MetaStore.SetWALHook` (Elector.ReplicateEntry 호출) + follower-side `Elector.AppendEntryFn` (MetaStore.ApplyEntry 호출). `coord.Server.Routes()` 가 `/v1/election/append-wal` 마운트. 새 메커니즘 0 — ADR-031 follow-up (Ep.8) 의 패턴 그대로 location 만 이동. ~50 LOC + ADR + demo-dalet.sh (히브리 ד) — pre-failover write 가 새 leader 에서 200 으로 복원 (gimel 의 404 갭 메움). 146 tests PASS.
 
-### [P6-07] coord transactional commit (ADR-034 port)
-- **배경**: ADR-039 의 walHook 패턴은 best-effort. coord 가 commit 도중 leadership 잃으면 phantom write 가능 (옛 leader 의 bbolt 에만 존재, peers 에 미도달). /simplify (2026-04-27) 발견.
-- **스펙**: ADR-034 의 `MarshalPutObjectEntry → ReplicateEntry → PutObjectAfterReplicate` 를 coord 에 port. coord.handleCommit 이 transactional path 사용. `COORD_TRANSACTIONAL_RAFT=1` opt-in.
-- **참조**: ADR-039 본문 "Leader-loss-mid-write divergence" 섹션.
+### ~~[P6-07] coord transactional commit (ADR-034 port)~~
+- **DONE 2026-04-27**: ADR-040 작성 + 구현. `coord.Server.{TransactionalCommit, ReplicateTimeout}` field, `commit()` helper 가 분기. `COORD_TRANSACTIONAL_RAFT=1` env (Elector + WAL 둘 다 필수, mismatch 시 startup fatal). 2 unit tests: quorum failure → bbolt 무변화 + WAL.LastSeq 무변화, prerequisite 누락 시 fallback. 데모 demo-he.sh (히브리 ה) — 2/3 coord kill 후 PUT 503 + lookup 404 + 복구 후 PUT 200. 148 tests PASS.
 
 ### [P6-08] scripts/lib/cluster.sh 추출
 - **배경**: demo-bet/gimel/dalet 의 docker-build + DN-spawn boilerplate (~50줄) 가 반복. 기존 `scripts/lib/common.sh` 는 sign_url 만 제공. /simplify 가 발견.

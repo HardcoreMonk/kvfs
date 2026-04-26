@@ -494,6 +494,7 @@ type Stripe struct {
 | `EDGE_COORD_URL` | (off) | Season 5 Ep.2 (ADR-015): 설정 시 edge 가 메타 RPC 를 coord 로 위임 (proxy mode) |
 | `COORD_PEERS` / `COORD_SELF_URL` | (off) | Season 5 Ep.3 (ADR-038): coord-side election. 설정 시 coord 가 HA cluster 일원이 됨 |
 | `COORD_WAL_PATH` | (off) | Season 5 Ep.4 (ADR-039): coord-to-coord WAL sync 활성. peer 들 간 메타 일관성 보장 |
+| `COORD_TRANSACTIONAL_RAFT` | 0 | Season 5 Ep.5 (ADR-040): replicate-then-commit. quorum 실패 시 503 + leader bbolt 무변화 (Elector + WAL 필수) |
 
 > 운영 디테일 (election timing, DN-side TLS CA 등) 은 `README.md` § "환경 변수" 의 전체 표.
 
@@ -574,8 +575,9 @@ ADR-015 Accept (2026-04-26). `kvfs-coord` daemon 신설 — placement + 메타 o
 - Ep.1: `cmd/kvfs-coord/` skeleton + 4 RPC (`/v1/coord/{place,commit,lookup,delete}`). 데모 `scripts/demo-aleph.sh`.
 - Ep.2: edge → coord client 통합. `EDGE_COORD_URL` 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임. 데모 demo-bet (히브리 ב).
 - Ep.3: coord HA via Raft (ADR-038). election + leader-redirect. 데모 demo-gimel.
-- Ep.4 (현재): coord-to-coord WAL replication (ADR-039). `COORD_WAL_PATH` 설정 시 leader 가 매 commit 마다 follower coord 에 WAL push (ADR-031 follow-up 메커니즘 재사용). follower 의 `Elector.AppendEntryFn` 이 `MetaStore.ApplyEntry` 호출 → bbolt sync. 데모 demo-dalet (히브리 ד) — gimel 의 404 갭이 200 으로 회복.
-- 후속: Ep.5 edge 의 placement 코드 제거 (placement 도 coord 가 단일 출처).
+- Ep.4: coord-to-coord WAL replication (ADR-039). `COORD_WAL_PATH` 설정 시 best-effort sync. 데모 demo-dalet (히브리 ד).
+- Ep.5 (현재): coord transactional commit (ADR-040). `COORD_TRANSACTIONAL_RAFT=1` 설정 시 replicate-then-commit — quorum 실패 시 503 + leader bbolt 무변화. ADR-034 의 패턴을 coord 에 port. ADR-039 의 phantom-write window 닫음. 데모 demo-he (히브리 ה).
+- 후속: Ep.6 edge 의 placement 코드 제거.
 
 이 트랙이 완료되면 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.
 

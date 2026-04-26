@@ -697,6 +697,7 @@ type Stripe struct {
 <tr><td><code>EDGE_COORD_URL</code></td><td>(off)</td><td>Season 5 Ep.2: 설정 시 edge 가 메타 RPC 를 coord 로 위임 (proxy mode)</td></tr>
 <tr><td><code>COORD_PEERS</code> / <code>COORD_SELF_URL</code></td><td>(off)</td><td>Season 5 Ep.3 (ADR-038): coord-side election. 설정 시 coord 가 HA cluster 일원이 됨</td></tr>
 <tr><td><code>COORD_WAL_PATH</code></td><td>(off)</td><td>Season 5 Ep.4 (ADR-039): coord-to-coord WAL sync 활성. peer 들 간 메타 일관성 보장</td></tr>
+<tr><td><code>COORD_TRANSACTIONAL_RAFT</code></td><td>0</td><td>Season 5 Ep.5 (ADR-040): replicate-then-commit. quorum 실패 시 503 + leader bbolt 무변화 (Elector + WAL 필수)</td></tr>
 </tbody>
 </table>
 <blockquote><p>운영 디테일 (election timing, DN-side TLS CA 등) 은 <code>README.md</code> § "환경 변수" 의 전체 표.</p></blockquote>
@@ -781,8 +782,9 @@ type Stripe struct {
   <li>Ep.1: <code>cmd/kvfs-coord/</code> skeleton + 4 RPC (<code>/v1/coord/{place,commit,lookup,delete}</code>). 데모 <code>scripts/demo-aleph.sh</code>.</li>
   <li>Ep.2: edge → coord client 통합. <code>EDGE_COORD_URL</code> 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임. 데모 demo-bet (히브리 ב).</li>
   <li>Ep.3: coord HA via Raft (ADR-038). election + leader-redirect. 데모 demo-gimel.</li>
-  <li>Ep.4 (현재): coord-to-coord WAL replication (ADR-039). <code>COORD_WAL_PATH</code> 설정 시 leader 가 매 commit 마다 follower coord 에 WAL push (ADR-031 follow-up 메커니즘 재사용). follower 의 <code>AppendEntryFn</code> → <code>ApplyEntry</code> → bbolt sync. 데모 demo-dalet (히브리 ד) — gimel 의 404 갭이 200 으로 회복.</li>
-  <li>후속: Ep.5 edge 의 placement 코드 제거.</li>
+  <li>Ep.4: coord-to-coord WAL replication (ADR-039). <code>COORD_WAL_PATH</code> 설정 시 best-effort sync. 데모 demo-dalet (ד).</li>
+  <li>Ep.5 (현재): coord transactional commit (ADR-040). <code>COORD_TRANSACTIONAL_RAFT=1</code> 설정 시 replicate-then-commit — quorum 실패 시 503 + leader bbolt 무변화. ADR-034 패턴을 coord 에 port. ADR-039 의 phantom-write window 닫음. 데모 demo-he (히브리 ה).</li>
+  <li>후속: Ep.6 edge 의 placement 코드 제거.</li>
 </ul>
 <p>이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.</p>
 

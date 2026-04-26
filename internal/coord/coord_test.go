@@ -5,11 +5,13 @@ package coord
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
@@ -181,6 +183,99 @@ func TestRequireLeader_FollowerRejectsWritesPropagatesLeaderHint(t *testing.T) {
 	hresp, _ := http.Get(hs.URL + "/v1/coord/healthz")
 	if hresp.StatusCode != 200 {
 		t.Errorf("follower healthz = %d, want 200", hresp.StatusCode)
+	}
+}
+
+// ADR-040 transactional commit: when no quorum can be reached, the leader
+// must reject the commit (return error from commit(), 5xx to client) AND
+// MUST NOT touch its bbolt. This guards the phantom-write window that the
+// best-effort path (ADR-039) leaves open.
+func TestTransactionalCommit_QuorumFailureLeavesBboltUntouched(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	wal, err := store.OpenWAL(filepath.Join(dir, "coord.wal"))
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	defer wal.Close()
+	st.SetWAL(wal)
+
+	// 3-peer election where the only reachable node is self → ReplicateEntry
+	// can never get quorum (needs 2 acks, only 1 self-ack possible).
+	el := election.New(election.Config{
+		SelfID: "http://self:9000",
+		Peers: []election.Peer{
+			{ID: "http://self:9000", URL: "http://self:9000"},
+			{ID: "http://dead1:9000", URL: "http://dead1:9000"},
+			{ID: "http://dead2:9000", URL: "http://dead2:9000"},
+		},
+		ReplicateTimeout: 200 * time.Millisecond,
+	})
+
+	srv := &Server{
+		Store:               st,
+		Placer:              placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}}),
+		Elector:             el,
+		TransactionalCommit: true,
+		ReplicateTimeout:    200 * time.Millisecond,
+	}
+
+	// Force the test elector into Leader state by directly handling a
+	// vote-RPC call — too much. Easier: bypass the requireLeader gate by
+	// calling commit() directly. The test exercises the transactional path
+	// itself, not the leader gate (which TestRequireLeader_... covers).
+	meta := &store.ObjectMeta{
+		Bucket: "b", Key: "txn-fail",
+		Chunks: []store.ChunkRef{{ChunkID: "c1", Replicas: []string{"dn1"}}},
+	}
+	beforeSeq := wal.LastSeq()
+
+	err = srv.commit(context.Background(), meta)
+	if err == nil {
+		t.Fatalf("commit succeeded under no-quorum, want error")
+	}
+
+	// bbolt MUST NOT contain the entry.
+	if _, lerr := st.GetObject("b", "txn-fail"); lerr == nil {
+		t.Errorf("phantom write: bbolt has txn-fail after failed transactional commit")
+	}
+	// WAL.LastSeq must not advance (no entry was appended locally).
+	if afterSeq := wal.LastSeq(); afterSeq != beforeSeq {
+		t.Errorf("WAL advanced from %d to %d on failed commit", beforeSeq, afterSeq)
+	}
+}
+
+// When TransactionalCommit is set but no Elector / no WAL, commit must
+// fall back to the legacy path (best-effort) without crashing — config-trap
+// guard. Mirrors the early-return in commit().
+func TestTransactionalCommit_FallsBackWhenPrerequisitesMissing(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	srv := &Server{
+		Store:               st,
+		Placer:              placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}}),
+		TransactionalCommit: true, // set but Elector + WAL both nil
+	}
+
+	meta := &store.ObjectMeta{
+		Bucket: "b", Key: "fallback",
+		Chunks: []store.ChunkRef{{ChunkID: "c1", Replicas: []string{"dn1"}}},
+	}
+	if err := srv.commit(context.Background(), meta); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := st.GetObject("b", "fallback"); err != nil {
+		t.Errorf("fallback path didn't write: %v", err)
 	}
 }
 
