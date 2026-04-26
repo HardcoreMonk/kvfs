@@ -500,6 +500,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		Size:        totalSize,
 		Chunks:      chunkRefs,
 		ContentType: contentType,
+		Class:       s.PlacementPreferClass,
 	}
 	if err := s.commitPutMeta(ctx, meta); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -956,7 +957,7 @@ func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
 // handleRebalancePlan computes (read-only) the migration plan and returns it.
 // Safe to call concurrently — no side effects.
 func (s *Server) handleRebalancePlan(w http.ResponseWriter, r *http.Request) {
-	plan, err := rebalance.ComputePlan(s.Coord, s.Store)
+	plan, err := rebalance.ComputePlan(s.Coord, s.Store, s.Store)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -993,7 +994,7 @@ func (s *Server) executeRebalance(ctx context.Context, concurrency int) (rebalan
 	s.rebalanceMu.Lock()
 	defer s.rebalanceMu.Unlock()
 
-	plan, err := rebalance.ComputePlan(s.Coord, s.Store)
+	plan, err := rebalance.ComputePlan(s.Coord, s.Store, s.Store)
 	if err != nil {
 		return rebalanceOutcome{}, fmt.Errorf("ComputePlan: %w", err)
 	}
@@ -1683,6 +1684,7 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 		Key:         key,
 		Size:        dataLen,
 		ContentType: contentType,
+		Class:       s.PlacementPreferClass,
 		EC: &store.ECParams{
 			K:         k,
 			M:         m,

@@ -594,10 +594,11 @@ stateDiagram-v2
   <li>mu 는 fsync 동안 release (다음 batch 가 bufio 채울 수 있게).</li>
 </ul>
 
-<h3>8.4 Hot/cold tier (ADR-035 follow-up)</h3>
+<h3>8.4 Hot/cold tier (ADR-035 follow-up · P5-04)</h3>
 <ul>
   <li>DN 마다 class 라벨 (<code>hot</code> / <code>cold</code>) — admin endpoint 로 등록.</li>
   <li><code>EDGE_PLACEMENT_PREFER=hot</code> → 신규 PUT 은 hot DN 들로 우선 placement.</li>
+  <li><strong>Rebalance 통합 (P5-04)</strong>: <code>ObjectMeta.Class</code> 가 PUT 시점 class 를 기록 → rebalance 가 ideal placement 계산 시 그 class 의 DN subset 으로 한정. 토폴로지 drift 자동 회복. resolver 가 R 미만이면 default placement 로 fallback.</li>
   <li>배치 변경 없음 — placement 알고리즘은 동일, <strong>노드 부분집합</strong> 만 바꾼다.</li>
 </ul>
 

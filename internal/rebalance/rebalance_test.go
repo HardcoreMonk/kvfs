@@ -58,6 +58,27 @@ func (f *fakeCoord) PlaceChunk(chunkID string) []string {
 	return out
 }
 
+// PlaceNFromAddrs is the rebalance.Coordinator extension point for class-aware
+// placement (P5-04). Tests don't exercise the class subset path, so this just
+// returns the configured PlaceN result intersected with `addrs` to satisfy
+// the interface without changing existing test expectations.
+func (f *fakeCoord) PlaceNFromAddrs(key string, n int, addrs []string) []string {
+	allowed := map[string]struct{}{}
+	for _, a := range addrs {
+		allowed[a] = struct{}{}
+	}
+	var out []string
+	for _, a := range f.placeNMap[key] {
+		if _, ok := allowed[a]; ok {
+			out = append(out, a)
+		}
+	}
+	if n < len(out) {
+		out = out[:n]
+	}
+	return out
+}
+
 func (f *fakeCoord) ReadChunk(_ context.Context, chunkID string, candidates []string) ([]byte, string, error) {
 	if err, ok := f.readErr[chunkID]; ok {
 		return nil, "", err
@@ -202,7 +223,7 @@ func TestComputePlan_AllOK(t *testing.T) {
 			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, 10),
 		},
 	}
-	plan, err := ComputePlan(coord, st)
+	plan, err := ComputePlan(coord, st, nil)
 	if err != nil {
 		t.Fatalf("ComputePlan error: %v", err)
 	}
@@ -222,7 +243,7 @@ func TestComputePlan_OneMisplaced(t *testing.T) {
 			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, 100),
 		},
 	}
-	plan, err := ComputePlan(coord, st)
+	plan, err := ComputePlan(coord, st, nil)
 	if err != nil {
 		t.Fatalf("ComputePlan error: %v", err)
 	}
@@ -253,7 +274,7 @@ func TestRun_HappyPath_CopiesAndUpdatesMeta(t *testing.T) {
 			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, int64(len(body))),
 		},
 	}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	stats := Run(context.Background(), coord, st, plan, 1)
 	if stats.Migrated != 1 {
 		t.Errorf("Migrated = %d, want 1", stats.Migrated)
@@ -296,7 +317,7 @@ func TestRun_PartialCopyFailure_KeepsOldRetriesNext(t *testing.T) {
 			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, int64(len(body))),
 		},
 	}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	stats := Run(context.Background(), coord, st, plan, 2)
 	if stats.Failed != 1 {
 		t.Errorf("Failed = %d, want 1 (dn5 PUT failed)", stats.Failed)
@@ -333,7 +354,7 @@ func TestRun_SourceUnavailable_FailsCleanly(t *testing.T) {
 			makeObj("b", "k", "c1", []string{"dn1"}, 5),
 		},
 	}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	stats := Run(context.Background(), coord, st, plan, 1)
 	if stats.Failed != 1 {
 		t.Errorf("Failed = %d, want 1", stats.Failed)
@@ -355,10 +376,10 @@ func TestRun_Idempotent_SecondRunZeroMigrations(t *testing.T) {
 			makeObj("b", "k", "c1", []string{"dn1", "dn2", "dn3"}, 1),
 		},
 	}
-	plan1, _ := ComputePlan(coord, st)
+	plan1, _ := ComputePlan(coord, st, nil)
 	Run(context.Background(), coord, st, plan1, 1)
 
-	plan2, _ := ComputePlan(coord, st)
+	plan2, _ := ComputePlan(coord, st, nil)
 	if len(plan2.Migrations) != 0 {
 		t.Errorf("second plan should be empty, got %d migrations", len(plan2.Migrations))
 	}
@@ -386,7 +407,7 @@ func TestRun_Concurrency_ParallelBatch(t *testing.T) {
 		st.objects = append(st.objects,
 			makeObj("b", chunkName(i), cid, []string{"dn1", "dn3"}, int64(len(body))))
 	}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	stats := Run(context.Background(), coord, st, plan, 8)
 	if stats.Migrated != N {
 		t.Errorf("Migrated = %d, want %d", stats.Migrated, N)
@@ -421,7 +442,7 @@ func TestECPlan_AllInDesired_NoMigrations(t *testing.T) {
 				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16),
 		},
 	}
-	plan, err := ComputePlan(coord, st)
+	plan, err := ComputePlan(coord, st, nil)
 	if err != nil {
 		t.Fatalf("ComputePlan: %v", err)
 	}
@@ -440,7 +461,7 @@ func TestECPlan_OneSurplusOneMissing_OneMigration(t *testing.T) {
 				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16),
 		},
 	}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	if len(plan.Migrations) != 1 {
 		t.Fatalf("Migrations = %d, want 1", len(plan.Migrations))
 	}
@@ -467,7 +488,7 @@ func TestECPlan_DeterministicAssignment(t *testing.T) {
 				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16),
 		},
 	}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	if len(plan.Migrations) != 2 {
 		t.Fatalf("Migrations = %d, want 2", len(plan.Migrations))
 	}
@@ -493,7 +514,7 @@ func TestECRun_HappyPath_MovesShardAndUpdatesMeta(t *testing.T) {
 				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, int64(len(body))),
 		},
 	}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	stats := Run(context.Background(), coord, st, plan, 1)
 	if stats.Migrated != 1 || stats.Failed != 0 {
 		t.Errorf("Migrated=%d Failed=%d, want 1 0", stats.Migrated, stats.Failed)
@@ -526,7 +547,7 @@ func TestECRun_ReadFails_NoMetaChange(t *testing.T) {
 				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 16),
 		},
 	}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	stats := Run(context.Background(), coord, st, plan, 1)
 	if stats.Failed != 1 || stats.Migrated != 0 {
 		t.Errorf("Failed=%d Migrated=%d, want 1 0", stats.Failed, stats.Migrated)
@@ -549,10 +570,10 @@ func TestECRun_Idempotent_SecondRunZero(t *testing.T) {
 				[]string{"dn1", "dn2", "dn3", "dn4", "dn5", "dn6"}, 1),
 		},
 	}
-	plan1, _ := ComputePlan(coord, st)
+	plan1, _ := ComputePlan(coord, st, nil)
 	Run(context.Background(), coord, st, plan1, 1)
 
-	plan2, _ := ComputePlan(coord, st)
+	plan2, _ := ComputePlan(coord, st, nil)
 	if len(plan2.Migrations) != 0 {
 		t.Errorf("second plan = %d migrations, want 0", len(plan2.Migrations))
 	}
@@ -572,7 +593,7 @@ func TestECPlan_MultipleStripes(t *testing.T) {
 		},
 	}
 	st := &fakeStore{objects: []*store.ObjectMeta{obj}}
-	plan, _ := ComputePlan(coord, st)
+	plan, _ := ComputePlan(coord, st, nil)
 	if len(plan.Migrations) != 1 {
 		t.Fatalf("Migrations = %d, want 1 (only s1 needs work)", len(plan.Migrations))
 	}
@@ -592,4 +613,82 @@ func ecShards(stripeID string, addrs []string, size int64) []store.ChunkRef {
 		}
 	}
 	return out
+}
+
+// fakeClassResolver routes class label → static DN list for P5-04 tests.
+type fakeClassResolver struct{ byClass map[string][]string }
+
+func (f *fakeClassResolver) ListRuntimeDNsByClass(class string) ([]string, error) {
+	return append([]string(nil), f.byClass[class]...), nil
+}
+
+// P5-04: when an object has Class set and the resolver lists ≥ R DNs of that
+// class, desired placement must come from the class subset only — even if
+// PlaceChunk would have picked off-class DNs.
+func TestComputePlan_ClassFiltered(t *testing.T) {
+	coord := newFakeCoord()
+	// Off-class default placement would land on dn1/dn2/dn3.
+	coord.placeMap["c1"] = []string{"dn1", "dn2", "dn3"}
+	// Class-filtered HRW lands on hot1/hot2/hot3 (the only DNs in the subset).
+	coord.placeNMap["c1"] = []string{"hot1", "hot2", "hot3"}
+
+	st := &fakeStore{
+		objects: []*store.ObjectMeta{
+			{
+				Bucket: "b", Key: "k", Size: 100,
+				Class:  "hot",
+				Chunks: []store.ChunkRef{
+					{ChunkID: "c1", Size: 100, Replicas: []string{"dn1", "dn2", "dn3"}},
+				},
+			},
+		},
+	}
+	resolver := &fakeClassResolver{byClass: map[string][]string{
+		"hot": {"hot1", "hot2", "hot3"},
+	}}
+
+	plan, err := ComputePlan(coord, st, resolver)
+	if err != nil {
+		t.Fatalf("ComputePlan: %v", err)
+	}
+	if len(plan.Migrations) != 1 {
+		t.Fatalf("want 1 migration (chunk on dn* should move to hot*), got %d", len(plan.Migrations))
+	}
+	got := plan.Migrations[0]
+	wantDesired := []string{"hot1", "hot2", "hot3"}
+	if !reflect.DeepEqual(got.Desired, wantDesired) {
+		t.Errorf("Desired = %v, want %v (must come from class subset)", got.Desired, wantDesired)
+	}
+	wantMissing := []string{"hot1", "hot2", "hot3"}
+	if !reflect.DeepEqual(got.Missing, wantMissing) {
+		t.Errorf("Missing = %v, want %v", got.Missing, wantMissing)
+	}
+}
+
+// When the resolver returns fewer DNs than R, planChunks must fall back to
+// the legacy (unfiltered) placement so we don't strand chunks below R.
+func TestComputePlan_ClassUndersized_FallsBackToDefault(t *testing.T) {
+	coord := newFakeCoord()
+	coord.placeMap["c1"] = []string{"dn1", "dn2", "dn3"}
+	st := &fakeStore{
+		objects: []*store.ObjectMeta{
+			{
+				Bucket: "b", Key: "k", Size: 100,
+				Class:  "hot",
+				Chunks: []store.ChunkRef{
+					{ChunkID: "c1", Size: 100, Replicas: []string{"dn1", "dn2", "dn3"}},
+				},
+			},
+		},
+	}
+	resolver := &fakeClassResolver{byClass: map[string][]string{
+		"hot": {"hot1"}, // only 1 DN, < R=3
+	}}
+	plan, err := ComputePlan(coord, st, resolver)
+	if err != nil {
+		t.Fatalf("ComputePlan: %v", err)
+	}
+	if len(plan.Migrations) != 0 {
+		t.Errorf("want 0 migrations (resolver undersized → fall back to default placement which already matches), got %d", len(plan.Migrations))
+	}
 }

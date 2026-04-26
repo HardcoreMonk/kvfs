@@ -384,10 +384,11 @@ Client ──GET──┬──────┘
 - Append 측: write line under mu → cond.Wait → durable 확인 후 return.
 - mu 는 fsync 동안 release (다음 batch 가 bufio 채울 수 있게).
 
-### 8.4 Hot/cold tier (ADR-035 follow-up)
+### 8.4 Hot/cold tier (ADR-035 follow-up · P5-04)
 
 - DN 마다 class 라벨 (`hot` / `cold`) — admin endpoint 로 등록.
 - `EDGE_PLACEMENT_PREFER=hot` → 신규 PUT 은 hot DN 들로 우선 placement.
+- **Rebalance 통합 (P5-04)**: `ObjectMeta.Class` 가 PUT 시점 의 class 를 기록 → rebalance 가 ideal placement 계산 시 그 class 의 DN subset 으로 한정. 토폴로지 drift 자동 회복. resolver 가 R 미만 DN 만 알면 default placement 로 fallback (deadlock 방지).
 - 배치 변경 없음 — placement 알고리즘은 동일, **노드 부분집합** 만 바꾼다.
 
 ### 8.5 sync.Pool 버퍼 재사용

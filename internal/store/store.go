@@ -89,6 +89,13 @@ type ObjectMeta struct {
 	Version   int64     `json:"version"`
 	CreatedAt time.Time `json:"created_at"`
 
+	// Class is the placement-tier label this object was written under
+	// (ADR-035 follow-up + P5-04 rebalance integration). Empty = default
+	// (any DN). Non-empty = chunks should live on DNs with this class
+	// label only; rebalance migrates them if topology drifts. Set at PUT
+	// time from EDGE_PLACEMENT_PREFER.
+	Class string `json:"class,omitempty"`
+
 	// Legacy single-chunk fields. Read-only; never written by current code.
 	// Present so that old bbolt records still decode without error.
 	LegacyChunkID  string   `json:"chunk_id,omitempty"`

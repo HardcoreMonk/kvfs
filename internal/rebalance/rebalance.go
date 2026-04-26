@@ -64,12 +64,26 @@ type Coordinator interface {
 	// stripe-level placement (ADR-024 EC stripe rebalance).
 	PlaceN(key string, n int) []string
 
+	// PlaceNFromAddrs runs HRW against an arbitrary subset of DN addresses.
+	// Used by class-aware rebalance (P5-04) when the object's Class label
+	// restricts placement to a subset of the runtime DN list.
+	PlaceNFromAddrs(key string, n int, addrs []string) []string
+
 	// ReadChunk fetches the chunk body from the first responsive candidate.
 	// Returns body, address-served-from, error.
 	ReadChunk(ctx context.Context, chunkID string, candidates []string) ([]byte, string, error)
 
 	// PutChunkTo writes a chunk to a single DN address (no fanout, no quorum).
 	PutChunkTo(ctx context.Context, addr, chunkID string, data []byte) error
+}
+
+// ClassResolver maps a class label ("hot", "cold") to the list of DN
+// addresses currently registered with that label. Empty class returns the
+// full DN set (no filtering). P5-04: lets rebalance compute desired
+// placement for class-tagged objects without coupling to the runtime
+// MetaStore directly.
+type ClassResolver interface {
+	ListRuntimeDNsByClass(class string) ([]string, error)
 }
 
 // ObjectStore is the subset of *store.MetaStore used by rebalance.
@@ -141,7 +155,12 @@ type RunStats struct {
 // Scanned counts objects. Migrations are per-chunk (replication) or per-shard
 // (EC) — a 100-chunk object or a 50-stripe EC object can contribute many
 // entries.
-func ComputePlan(coord Coordinator, st ObjectStore) (Plan, error) {
+//
+// Backward-compatible: pass `class` as nil to disable class-aware filtering
+// (legacy behavior). When non-nil, objects with `Meta.Class != ""` get their
+// desired placement computed from the class-filtered DN subset (P5-04 hot/
+// cold rebalance integration).
+func ComputePlan(coord Coordinator, st ObjectStore, class ClassResolver) (Plan, error) {
 	objs, err := st.ListObjects()
 	if err != nil {
 		return Plan{}, fmt.Errorf("rebalance: list objects: %w", err)
@@ -149,18 +168,48 @@ func ComputePlan(coord Coordinator, st ObjectStore) (Plan, error) {
 	plan := Plan{Scanned: len(objs)}
 	for _, obj := range objs {
 		if obj.IsEC() {
-			plan.Migrations = append(plan.Migrations, planEC(coord, obj)...)
+			plan.Migrations = append(plan.Migrations, planEC(coord, obj, class)...)
 			continue
 		}
-		plan.Migrations = append(plan.Migrations, planChunks(coord, obj)...)
+		plan.Migrations = append(plan.Migrations, planChunks(coord, obj, class)...)
 	}
 	return plan, nil
 }
 
-func planChunks(coord Coordinator, obj *store.ObjectMeta) []Migration {
+// classedDNs returns the class-filtered DN list for obj, or nil if class
+// filtering doesn't apply (no resolver, empty class label, or fewer DNs in
+// that class than R). Caller falls back to the full DN set when nil.
+func classedDNs(class ClassResolver, label string, want int) []string {
+	if class == nil || label == "" {
+		return nil
+	}
+	dns, err := class.ListRuntimeDNsByClass(label)
+	if err != nil || len(dns) < want {
+		return nil
+	}
+	return dns
+}
+
+func planChunks(coord Coordinator, obj *store.ObjectMeta, class ClassResolver) []Migration {
 	var out []Migration
+	// Replication factor inferred from any chunk's existing replica count;
+	// if the object has no chunks yet, fall back to the class subset's full
+	// length later. For a class-tagged object, compute desired by picking
+	// from the class subset so off-class DNs never appear in Desired.
+	r := 0
+	for _, c := range obj.Chunks {
+		if len(c.Replicas) > r {
+			r = len(c.Replicas)
+		}
+	}
+	subset := classedDNs(class, obj.Class, r)
 	for ci, chunk := range obj.Chunks {
-		desired := sortedCopy(coord.PlaceChunk(chunk.ChunkID))
+		var desired []string
+		if subset != nil {
+			desired = sortedCopy(coord.PlaceNFromAddrs(chunk.ChunkID, len(chunk.Replicas), subset))
+		} else {
+			desired = sortedCopy(coord.PlaceChunk(chunk.ChunkID))
+		}
 		actual := sortedCopy(chunk.Replicas)
 		missing := setDiff(desired, actual)
 		surplus := setDiff(actual, desired)
@@ -181,11 +230,20 @@ func planChunks(coord Coordinator, obj *store.ObjectMeta) []Migration {
 // planEC implements ADR-024 set-based stripe rebalance:
 // for each stripe, find shards whose addr is no longer in the desired set and
 // schedule them onto sorted unused desired-set slots (deterministic).
-func planEC(coord Coordinator, obj *store.ObjectMeta) []Migration {
+//
+// P5-04: when obj.Class is set and the resolver returns ≥ K+M DNs of that
+// class, desired placement is computed against the class subset only.
+func planEC(coord Coordinator, obj *store.ObjectMeta, class ClassResolver) []Migration {
 	var out []Migration
 	want := obj.EC.K + obj.EC.M
+	subset := classedDNs(class, obj.Class, want)
 	for si, stripe := range obj.Stripes {
-		desired := coord.PlaceN(stripe.StripeID, want)
+		var desired []string
+		if subset != nil {
+			desired = coord.PlaceNFromAddrs(stripe.StripeID, want, subset)
+		} else {
+			desired = coord.PlaceN(stripe.StripeID, want)
+		}
 		desiredSet := make(map[string]struct{}, len(desired))
 		for _, a := range desired {
 			desiredSet[a] = struct{}{}
