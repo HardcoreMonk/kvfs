@@ -1,7 +1,7 @@
 # kvfs — Key-Value File System
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스.
-> **Go 1.26 · Apache 2.0 · 25 ADR · 16 blog episode · 18 라이브 데모 · 123 unit test**
+> **Go 1.26 · Apache 2.0 · 26 ADR · 17 blog episode · 19 라이브 데모 · 129 unit test**
 
 ## 이것은 무엇인가
 
@@ -13,7 +13,7 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **1** | MVP | ✅ closed | 2-daemon · 3-way replication · UrlKey · CA chunk |
 | **2** | 분산 알고리즘 | ✅ closed | HRW placement · rebalance · GC · chunking · EC |
 | **3** | 운영성 | ✅ closed | auto-trigger · EC repair · meta backup · heartbeat · multi-edge HA |
-| **4** | 성능·효율 | ▶ Ep.3 (auto leader election) | streaming · CDC chunking · WAL · auto leader election |
+| **4** | 성능·효율 | ▶ Ep.4 (WAL) | streaming · CDC chunking · WAL · auto leader election |
 
 이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 목표는 production 이 아니라
 **이해 가능한 레퍼런스**.
@@ -96,6 +96,7 @@ cd kvfs
 | [017](docs/adr/ADR-017-streaming-put-get.md) | Streaming PUT/GET (io.Reader 기반) | σ | [14](blog/14-streaming.md) |
 | [018](docs/adr/ADR-018-content-defined-chunking.md) | Content-defined chunking (FastCDC, opt-in) | τ | [15](blog/15-cdc.md) |
 | [031](docs/adr/ADR-031-auto-leader-election.md) | Auto leader election (Raft-style, multi-edge HA) | υ | [16](blog/16-leader-election.md) |
+| [019](docs/adr/ADR-019-wal-incremental-backup.md) | WAL of metadata mutations (audit + replay) | φ | [17](blog/17-wal.md) |
 
 ### 운영 보강 (Accepted)
 
@@ -135,6 +136,7 @@ ADR-018 CDC chunking · ADR-019 WAL/incremental · ADR-031 자동 leader electio
 | `EDGE_SELF_URL` | (req for election) | 031 | this edge's own peer URL |
 | `EDGE_ELECTION_HB_INTERVAL` | 500ms | 031 | leader heartbeat 주기 |
 | `EDGE_ELECTION_TIMEOUT_MIN/MAX` | 1500ms / 3000ms | 031 | follower election timer (jitter range) |
+| `EDGE_WAL_PATH` | (off) | 019 | metadata mutation WAL file (opt-in audit log) |
 | `EDGE_TLS_CERT/KEY`, `EDGE_DN_TLS_CA/CLIENT_CERT/KEY` | (off) | 029 | TLS / mTLS |
 | `EDGE_SKIP_AUTH` | 0 | — | DEMO 전용 (production 금지) |
 | `DN_DATA_DIR`, `DN_TLS_CERT/KEY/CLIENT_CA` | — | 002/029 | DN 측 |

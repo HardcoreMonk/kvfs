@@ -242,6 +242,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("GET /v1/admin/snapshot/history", s.handleSnapshotHistory)
 	mux.HandleFunc("GET /v1/admin/role", s.handleRole)
+	mux.HandleFunc("GET /v1/admin/wal", s.handleWAL)
+	mux.HandleFunc("GET /v1/admin/wal/info", s.handleWALInfo)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
@@ -1156,9 +1158,15 @@ func zeroOr(t time.Time, d time.Duration) time.Time {
 // bbolt file as application/octet-stream. Suggested filename via
 // Content-Disposition. Safe while writers are active (bbolt single-writer +
 // many-readers).
+//
+// Header X-KVFS-WAL-Seq carries the WAL seq at snapshot time (ADR-019) so
+// followers can fetch only the delta since this snapshot via /v1/admin/wal.
 func (s *Server) handleMetaSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="kvfs-meta-snapshot.bbolt"`)
+	if wal := s.Store.WAL(); wal != nil {
+		w.Header().Set("X-KVFS-WAL-Seq", fmt.Sprintf("%d", wal.LastSeq()))
+	}
 	if _, err := s.Store.Snapshot(w); err != nil {
 		// Headers already sent — log only; client sees truncated body.
 		s.Log.Error("meta snapshot failed", slog.String("err", err.Error()))
@@ -1188,6 +1196,45 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":  true,
 		"statuses": s.Heartbeat.Snapshot(),
+	})
+}
+
+// handleWAL streams WAL entries since the given seq as JSON-lines (ADR-019).
+// Query: ?since=<int> (default 0 = full WAL).
+//
+// Followers use this for incremental catch-up between snapshot pulls.
+func (s *Server) handleWAL(w http.ResponseWriter, r *http.Request) {
+	wal := s.Store.WAL()
+	if wal == nil {
+		writeError(w, http.StatusNotImplemented, "WAL not enabled (set EDGE_WAL_DIR)")
+		return
+	}
+	sinceSeq := int64(intQuery(r, "since", 0))
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-KVFS-WAL-Last-Seq", fmt.Sprintf("%d", wal.LastSeq()))
+	if _, err := wal.WriteSinceTo(sinceSeq, w); err != nil {
+		s.logger().Error("WAL stream failed", slog.String("err", err.Error()))
+	}
+}
+
+// handleWALInfo returns last_seq + path + a small recent-tail (last 10
+// entries) without streaming the whole file. Diagnostic endpoint.
+func (s *Server) handleWALInfo(w http.ResponseWriter, r *http.Request) {
+	wal := s.Store.WAL()
+	if wal == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	last := wal.LastSeq()
+	from := last - 10
+	if from < 0 {
+		from = 0
+	}
+	tail, _ := wal.Since(from)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":  true,
+		"last_seq": last,
+		"recent":   tail,
 	})
 }
 

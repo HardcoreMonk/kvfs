@@ -118,14 +118,17 @@
 ### ~~[P4-03] Season 4 Ep.3 주제 결정~~
 - **DONE 2026-04-26**: ADR-031 Auto leader election 채택 + 구현 완료
 
-### [P4-04] Season 4 Ep.4 주제 결정
-- **현**: Ep.3 ADR-031 완료. Season 4 다음 ep 미정
+### ~~[P4-04] Season 4 Ep.4 주제 결정~~
+- **DONE 2026-04-26**: ADR-019 WAL 채택 + 구현 완료
+
+### [P4-05] Season 4 Ep.5 주제 결정
+- **현**: Ep.4 ADR-019 완료. Season 4 다음 ep 미정
 - **남은 후보**:
-  - **ADR-019 — WAL / incremental backup**: 분 단위 RPO, ADR-016 후속
-  - **EC streaming PUT/GET** (ADR-017 follow-up): per-stripe streaming, encoder 인터페이스 변경 필요
-  - **EC + CDC 조합** (ADR-018 follow-up): variable shard size 디자인 필요
-  - **진짜 Raft log replication** (ADR-031 follow-up): write loss window 제거
-- **추천**: 019 (운영성 확장, 작은 작업) → ADR-031 follow-up (Raft full)
+  - **EC streaming PUT/GET** (ADR-017 follow-up): per-stripe streaming, encoder 인터페이스 변경
+  - **EC + CDC 조합** (ADR-018 follow-up): variable shard size 디자인
+  - **진짜 Raft log replication** (ADR-031 follow-up): WAL 기반 follower 자동 pull, write loss window 제거
+  - **Follower WAL auto-pull integration** (ADR-019 follow-up): RPO 분 → 초
+- **추천**: ADR-019 follow-up (작고 즉시 가치) → Raft log replication (큰 작업, Season 4 close)
 - **결정 시 P1 로 승격**
 
 ---
@@ -166,13 +169,14 @@
 | 2026-04-26 | Season 4 Ep.1 — ADR-017 Streaming PUT/GET 구현 완료 | `internal/chunker/stream.go` `Reader.Next()` (io.ReadFull 기반, defensive copy, 5 tests PASS). `handlePut` replication path → streaming chunker 루프, `handleGet` → ResponseWriter 에 직접 write. EC mode 는 본 ep 비범위 (encoder 인터페이스 변경 필요). `scripts/demo-sigma.sh` 64 MiB random body 라이브: 16 chunks, edge mem **22.74 MiB** (object size ≫ memory), sha256 round-trip 일치. `blog/14-streaming.md` |
 | 2026-04-26 | Season 4 Ep.2 — ADR-018 Content-defined chunking 구현 완료 | `internal/chunker/cdc.go` FastCDC + GearTable + 3-region cutpoint (~180 LOC, 7 tests PASS: deterministic / shift invariance / min-max bounds / round-trip / empty / short / smaller-than-min). `Server.CDCEnabled` + `pieceReader` 인터페이스로 fixed/CDC 분기, `EDGE_CHUNK_MODE=cdc` 활성. EC mode 는 본 ep 비범위 (uniform shard 필요). `scripts/demo-tau.sh` shift-by-1 시나리오 라이브: fixed 0% dedup vs **CDC 40% dedup (4/5 chunk 재사용)**. `blog/15-cdc.md` |
 | 2026-04-26 | Season 4 Ep.3 — ADR-031 Auto leader election 구현 완료 | `internal/election/election.go` Raft-style 3-state machine + vote/heartbeat RPC (~440 LOC, 6 tests PASS: vote stale / vote 1-per-term / higher-term step-down / HB reset / stale HB / live 3-edge cluster). `Server.Elector` + `effectiveRole`/`effectivePrimaryURL` 동적 분기, ADR-022 manual mode 호환 유지. `EDGE_PEERS/SELF_URL/ELECTION_*` env. `scripts/demo-upsilon.sh` 3 edge 라이브: edge1 leader (term 1) → kill → ~4s 후 edge3 새 leader (term 2), PUT 재개 PASS. `blog/16-leader-election.md` |
+| 2026-04-26 | Season 4 Ep.4 — ADR-019 WAL 구현 완료 | `internal/store/wal.go` append-only JSON-lines + ApplyEntry replay (~270 LOC, 6 tests PASS: append + Since + LastSeq recovery + Truncate + WriteSinceTo streaming + ApplyAll round-trip). 4 mutation methods (PutObject/DeleteObject/Add+RemoveRuntimeDN) split into internal version with writeWAL flag. `GET /v1/admin/wal?since=N` + `wal/info`, snapshot endpoint 헤더 `X-KVFS-WAL-Seq`. `kvfs-cli wal {info,stream}`. `scripts/demo-phi.sh` 라이브: 7 entries (5 PUT + 2 DELETE) audit + snapshot 헤더 동봉. `blog/17-wal.md` |
 
 ---
 
 ## 현재 상태 요약 (2026-04-26)
 
 - **Git**: main branch, **GitHub `HardcoreMonk/kvfs` PUBLIC** (https://github.com/HardcoreMonk/kvfs, repo 신규 재생성 후 fresh history)
-- **테스트**: 핵심 패키지 모두 = **123 unit tests PASS** (election 6 추가), `go vet` 클린
+- **테스트**: 핵심 패키지 모두 = **129 unit tests PASS** (WAL 6 추가), `go vet` 클린
 - **데모**: α, ε, dedup, ζ, η, θ, ι, κ, λ, μ, ν, ξ, ο, π, ρ 전부 라이브 통과 (15종)
 - **ADR**: 22건 Accepted (022 추가)
 - **Blog**: Ep.1~Ep.13 완성 (Ep.13 = Multi-edge HA)

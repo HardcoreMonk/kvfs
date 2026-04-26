@@ -144,9 +144,14 @@ type DNInfo struct {
 //
 // reloadMu serializes Reload so back-to-back follower syncs cannot race on
 // the open + swap + async-close sequence.
+//
+// wal (ADR-019) is an optional append-only mutation log. When non-nil, every
+// successful mutation method (PutObject / DeleteObject / Add+Remove RuntimeDN)
+// emits one entry after the bbolt commit returns. SetWAL toggles this on/off.
 type MetaStore struct {
 	db       atomic.Pointer[bbolt.DB]
 	reloadMu sync.Mutex
+	wal      *WAL
 }
 
 // Open opens or creates a bbolt database file at path.
@@ -208,8 +213,12 @@ func (m *MetaStore) Close() error { return m.db.Load().Close() }
 // PutObject stores or overwrites an object's metadata.
 // Version is auto-incremented if an existing record is found.
 func (m *MetaStore) PutObject(obj *ObjectMeta) error {
+	return m.putObjectInternal(obj, true)
+}
+
+func (m *MetaStore) putObjectInternal(obj *ObjectMeta, writeWAL bool) error {
 	k := objKey(obj.Bucket, obj.Key)
-	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketObjects)
 		if prev := b.Get(k); prev != nil {
 			var prevObj ObjectMeta
@@ -229,6 +238,10 @@ func (m *MetaStore) PutObject(obj *ObjectMeta) error {
 		}
 		return b.Put(k, buf)
 	})
+	if err == nil && writeWAL && m.wal != nil {
+		_, _ = m.wal.Append("put_object", obj)
+	}
+	return err
 }
 
 // GetObject fetches an object's metadata. Legacy single-chunk records
@@ -341,7 +354,11 @@ func (m *MetaStore) UpdateShardReplicas(bucket, key string, stripeIndex, shardIn
 
 // DeleteObject removes an object's metadata. Returns ErrNotFound if absent.
 func (m *MetaStore) DeleteObject(bucket, key string) error {
-	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+	return m.deleteObjectInternal(bucket, key, true)
+}
+
+func (m *MetaStore) deleteObjectInternal(bucket, key string, writeWAL bool) error {
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketObjects)
 		k := objKey(bucket, key)
 		if b.Get(k) == nil {
@@ -349,6 +366,10 @@ func (m *MetaStore) DeleteObject(bucket, key string) error {
 		}
 		return b.Delete(k)
 	})
+	if err == nil && writeWAL && m.wal != nil {
+		_, _ = m.wal.Append("delete_object", map[string]string{"Bucket": bucket, "Key": key})
+	}
+	return err
 }
 
 // ListObjects returns all objects (MVP: no pagination).
@@ -408,10 +429,14 @@ func objKey(bucket, key string) []byte {
 // AddRuntimeDN registers an addr as part of the live DN set. Idempotent
 // (re-add updates registered_at).
 func (m *MetaStore) AddRuntimeDN(addr string) error {
+	return m.addRuntimeDNInternal(addr, true)
+}
+
+func (m *MetaStore) addRuntimeDNInternal(addr string, writeWAL bool) error {
 	if addr == "" {
 		return errors.New("store: empty addr")
 	}
-	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
 		buf, err := json.Marshal(map[string]any{
 			"addr":          addr,
 			"registered_at": time.Now().UTC(),
@@ -421,16 +446,28 @@ func (m *MetaStore) AddRuntimeDN(addr string) error {
 		}
 		return tx.Bucket(bucketDNsRuntime).Put([]byte(addr), buf)
 	})
+	if err == nil && writeWAL && m.wal != nil {
+		_, _ = m.wal.Append("add_runtime_dn", addr)
+	}
+	return err
 }
 
 // RemoveRuntimeDN deletes addr from the live DN set. Returns nil if absent.
 func (m *MetaStore) RemoveRuntimeDN(addr string) error {
+	return m.removeRuntimeDNInternal(addr, true)
+}
+
+func (m *MetaStore) removeRuntimeDNInternal(addr string, writeWAL bool) error {
 	if addr == "" {
 		return errors.New("store: empty addr")
 	}
-	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketDNsRuntime).Delete([]byte(addr))
 	})
+	if err == nil && writeWAL && m.wal != nil {
+		_, _ = m.wal.Append("remove_runtime_dn", addr)
+	}
+	return err
 }
 
 // ListRuntimeDNs returns sorted addrs from the live DN set.

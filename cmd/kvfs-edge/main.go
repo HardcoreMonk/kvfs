@@ -85,6 +85,7 @@ func main() {
 		flagElectHB  = flag.String("election-heartbeat-interval", envOr("EDGE_ELECTION_HB_INTERVAL", "500ms"), "leader heartbeat cadence (election mode)")
 		flagElectMin = flag.String("election-timeout-min", envOr("EDGE_ELECTION_TIMEOUT_MIN", "1500ms"), "follower → candidate timeout (min)")
 		flagElectMax = flag.String("election-timeout-max", envOr("EDGE_ELECTION_TIMEOUT_MAX", "3000ms"), "follower → candidate timeout (max)")
+		flagWALPath  = flag.String("wal-path", envOr("EDGE_WAL_PATH", ""), "ADR-019 WAL file path (empty disables WAL)")
 		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
 		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
 		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
@@ -110,6 +111,16 @@ func main() {
 		fatal(err.Error())
 	}
 	defer ms.Close()
+
+	if *flagWALPath != "" {
+		wal, werr := store.OpenWAL(*flagWALPath)
+		if werr != nil {
+			fatal("WAL open: " + werr.Error())
+		}
+		ms.SetWAL(wal)
+		defer wal.Close()
+		log.Info("WAL enabled", "path", *flagWALPath, "last_seq", wal.LastSeq())
+	}
 
 	envDNs := splitTrim(*flagDNs)
 

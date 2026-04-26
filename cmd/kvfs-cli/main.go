@@ -83,6 +83,8 @@ func main() {
 		cmdHeartbeat(os.Args[2:])
 	case "role":
 		cmdRole(os.Args[2:])
+	case "wal":
+		cmdWAL(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -108,6 +110,7 @@ Subcommands:
   meta            snapshot / restore / info — metadata backup (ADR-014)
   heartbeat       per-DN liveness snapshot from edge (ADR-030)
   role            show edge role (primary/follower) + sync stats (ADR-022)
+  wal             stream / inspect metadata WAL (ADR-019)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -1388,5 +1391,81 @@ func cmdRole(args []string) {
 		if resp.LastErr != "" {
 			fmt.Printf("last error:     %s\n", resp.LastErr)
 		}
+	}
+}
+
+// ---- wal (ADR-019) ----
+
+func cmdWAL(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvfs-cli wal {info|stream} [flags]")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "info":
+		cmdWALInfo(args[1:])
+	case "stream":
+		cmdWALStream(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown wal subcommand: %s\n", args[0])
+		os.Exit(2)
+	}
+}
+
+func cmdWALInfo(args []string) {
+	fs := flag.NewFlagSet("wal info", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	body := mustGet(*edge + "/v1/admin/wal/info")
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+	var resp struct {
+		Enabled bool `json:"enabled"`
+		LastSeq int64 `json:"last_seq"`
+		Recent  []struct {
+			Seq       int64  `json:"seq"`
+			Timestamp string `json:"ts"`
+			Op        string `json:"op"`
+		} `json:"recent"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		fail(err)
+	}
+	if !resp.Enabled {
+		fmt.Println("WAL: DISABLED on edge (set EDGE_WAL_PATH)")
+		return
+	}
+	fmt.Printf("WAL last seq: %d\n", resp.LastSeq)
+	fmt.Printf("recent (%d entries):\n", len(resp.Recent))
+	for _, e := range resp.Recent {
+		fmt.Printf("  seq=%d  %s  %s\n", e.Seq, e.Timestamp, e.Op)
+	}
+}
+
+func cmdWALStream(args []string) {
+	fs := flag.NewFlagSet("wal stream", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	since := fs.Int64("since", 0, "stream entries with seq > this")
+	_ = fs.Parse(args)
+
+	url := fmt.Sprintf("%s/v1/admin/wal?since=%d", *edge, *since)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(url)
+	if err != nil {
+		fail(fmt.Errorf("GET %s: %w", url, err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fail(fmt.Errorf("GET %s: HTTP %d: %s", url, resp.StatusCode, string(body)))
+	}
+	if last := resp.Header.Get("X-Kvfs-Wal-Last-Seq"); last != "" {
+		fmt.Fprintf(os.Stderr, "(server last_seq=%s)\n", last)
+	}
+	if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
+		fail(err)
 	}
 }
