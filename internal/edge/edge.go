@@ -144,6 +144,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/admin/repair/plan", s.handleRepairPlan)
 	mux.HandleFunc("POST /v1/admin/repair/apply", s.handleRepairApply)
 	mux.HandleFunc("GET /v1/admin/auto/status", s.handleAutoStatus)
+	mux.HandleFunc("GET /v1/admin/meta/snapshot", s.handleMetaSnapshot)
+	mux.HandleFunc("GET /v1/admin/meta/info", s.handleMetaInfo)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }
@@ -1002,6 +1004,32 @@ func zeroOr(t time.Time, d time.Duration) time.Time {
 		return time.Time{}
 	}
 	return t.Add(d)
+}
+
+// ─── ADR-014 meta backup/HA handlers ───
+
+// handleMetaSnapshot streams a consistent point-in-time copy of the metadata
+// bbolt file as application/octet-stream. Suggested filename via
+// Content-Disposition. Safe while writers are active (bbolt single-writer +
+// many-readers).
+func (s *Server) handleMetaSnapshot(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="kvfs-meta-snapshot.bbolt"`)
+	if _, err := s.Store.Snapshot(w); err != nil {
+		// Headers already sent — log only; client sees truncated body.
+		s.Log.Error("meta snapshot failed", slog.String("err", err.Error()))
+	}
+}
+
+// handleMetaInfo returns aggregate counts (object/EC/chunk/stripe/shard/DN/key)
+// + bbolt logical size for capacity planning.
+func (s *Server) handleMetaInfo(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.Store.Stats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // ─── EC mode handlers (ADR-008) ───

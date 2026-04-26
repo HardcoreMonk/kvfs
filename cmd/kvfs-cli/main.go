@@ -50,6 +50,8 @@ func main() {
 		cmdURLKey(os.Args[2:])
 	case "repair":
 		cmdRepair(os.Args[2:])
+	case "meta":
+		cmdMeta(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -72,6 +74,7 @@ Subcommands:
   dns             list / add / remove DNs in the live registry (ADR-027)
   urlkey          list / rotate / remove signing kids (ADR-028)
   repair          rebuild EC shards on dead DNs via Reed-Solomon (ADR-025)
+  meta            snapshot / restore / info — metadata backup (ADR-014)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -1053,4 +1056,157 @@ func mustHTTPJSON(method, url, body string) []byte {
 		fail(fmt.Errorf("%s %s: HTTP %d: %s", method, url, resp.StatusCode, string(out)))
 	}
 	return out
+}
+
+// ---- meta (ADR-014) ----
+
+func cmdMeta(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvfs-cli meta {snapshot|restore|info} [flags]")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "snapshot":
+		cmdMetaSnapshot(args[1:])
+	case "info":
+		cmdMetaInfo(args[1:])
+	case "restore":
+		cmdMetaRestore(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown meta subcommand: %s\n", args[0])
+		os.Exit(2)
+	}
+}
+
+func cmdMetaSnapshot(args []string) {
+	fs := flag.NewFlagSet("meta snapshot", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	out := fs.String("out", "", "output file path (default: kvfs-meta-snapshot-<RFC3339>.bbolt)")
+	_ = fs.Parse(args)
+
+	if *out == "" {
+		*out = fmt.Sprintf("kvfs-meta-snapshot-%s.bbolt", time.Now().UTC().Format("20060102T150405Z"))
+	}
+	url := *edge + "/v1/admin/meta/snapshot"
+	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Get(url)
+	if err != nil {
+		fail(fmt.Errorf("GET %s: %w", url, err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fail(fmt.Errorf("GET %s: HTTP %d: %s", url, resp.StatusCode, string(body)))
+	}
+	tmp := *out + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		fail(err)
+	}
+	n, err := io.Copy(f, resp.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		fail(fmt.Errorf("write %s: %w", tmp, err))
+	}
+	if err := os.Rename(tmp, *out); err != nil {
+		fail(fmt.Errorf("rename %s -> %s: %w", tmp, *out, err))
+	}
+	fmt.Printf("snapshot saved: %s (%d bytes)\n", *out, n)
+}
+
+func cmdMetaInfo(args []string) {
+	fs := flag.NewFlagSet("meta info", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	body := mustHTTP("GET", *edge+"/v1/admin/meta/info")
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+	var s store.MetaStats
+	if err := json.Unmarshal(body, &s); err != nil {
+		fail(err)
+	}
+	fmt.Printf("objects:        %d (EC: %d, plain: %d)\n", s.Objects, s.ECObjects, s.Objects-s.ECObjects)
+	fmt.Printf("plain chunks:   %d\n", s.ChunkCount)
+	fmt.Printf("EC stripes:     %d (shards: %d)\n", s.StripeCount, s.ShardCount)
+	fmt.Printf("DNs (seed):     %d\n", s.DNs)
+	fmt.Printf("DNs (runtime):  %d\n", s.RuntimeDNs)
+	fmt.Printf("URL keys:       %d\n", s.URLKeys)
+	fmt.Printf("bbolt size:     %d bytes (%.1f KiB)\n", s.BBoltBytes, float64(s.BBoltBytes)/1024)
+}
+
+// cmdMetaRestore performs an offline restore: copies a snapshot file into the
+// edge data directory. Operator must stop the edge process first; this command
+// refuses to clobber if the destination is locked by a running bbolt.
+func cmdMetaRestore(args []string) {
+	fs := flag.NewFlagSet("meta restore", flag.ExitOnError)
+	from := fs.String("from", "", "snapshot file produced by 'meta snapshot'")
+	datadir := fs.String("datadir", "", "edge data directory containing edge.db")
+	keepBackup := fs.Bool("keep-backup", true, "rename existing edge.db to edge.db.bak before overwrite")
+	_ = fs.Parse(args)
+
+	if *from == "" || *datadir == "" {
+		fmt.Fprintln(os.Stderr, "usage: kvfs-cli meta restore --from <snapshot> --datadir <data>")
+		os.Exit(2)
+	}
+	if _, err := os.Stat(*from); err != nil {
+		fail(fmt.Errorf("snapshot not readable: %w", err))
+	}
+	dst := *datadir + "/edge.db"
+	// Sanity: try to obtain bbolt lock briefly. If it succeeds, edge is stopped.
+	if existing, err := os.Stat(dst); err == nil && existing.Mode().IsRegular() {
+		if probe, perr := bboltProbeLock(dst); perr != nil {
+			fail(fmt.Errorf("destination %s is locked (edge still running?): %w", dst, perr))
+		} else {
+			_ = probe.Close()
+		}
+		if *keepBackup {
+			bak := dst + ".bak"
+			if err := os.Rename(dst, bak); err != nil {
+				fail(fmt.Errorf("backup %s -> %s: %w", dst, bak, err))
+			}
+			fmt.Printf("backup saved: %s\n", bak)
+		}
+	}
+	if err := copyFile(*from, dst); err != nil {
+		fail(err)
+	}
+	if err := os.Chmod(dst, 0o600); err != nil {
+		fail(err)
+	}
+	fmt.Printf("restored: %s -> %s\n", *from, dst)
+	fmt.Println("Now (re)start kvfs-edge against this datadir.")
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// bboltProbeLock tries to open the file with bbolt for 200ms. Returns (db, nil)
+// on success; the caller must close it. If another process holds the lock,
+// returns an error.
+func bboltProbeLock(path string) (io.Closer, error) {
+	db, err := store.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
 }
