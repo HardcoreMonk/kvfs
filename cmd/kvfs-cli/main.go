@@ -491,11 +491,6 @@ func cmdRebalance(args []string) {
 		fmt.Fprintln(os.Stderr, "rebalance: --plan and --apply are mutually exclusive")
 		os.Exit(2)
 	}
-	if *doApply && *coordURL != "" {
-		fmt.Fprintln(os.Stderr, "rebalance: --apply not supported via --coord yet (Ep.1 ports plan only); use --edge")
-		os.Exit(2)
-	}
-
 	if *doPlan {
 		base := *edge
 		path := "/v1/admin/rebalance/plan"
@@ -505,7 +500,14 @@ func cmdRebalance(args []string) {
 		}
 		runRebalancePlan(base, path, *verbose)
 	} else {
-		runRebalanceApply(*edge, *concurrency, *verbose)
+		// ADR-044 (Ep.2): apply via coord when --coord is set.
+		base := *edge
+		path := "/v1/admin/rebalance/apply"
+		if *coordURL != "" {
+			base = *coordURL
+			path = "/v1/coord/admin/rebalance/apply"
+		}
+		runRebalanceApplyAt(base, path, *concurrency, *verbose)
 	}
 }
 
@@ -595,9 +597,11 @@ func printMigration(m planMigration, verbose bool) {
 	}
 }
 
-func runRebalanceApply(edge string, concurrency int, verbose bool) {
-	url := fmt.Sprintf("%s/v1/admin/rebalance/apply?concurrency=%d",
-		strings.TrimRight(edge, "/"), concurrency)
+// runRebalanceApplyAt issues the apply RPC to base+path. Lets the cli
+// target either edge (legacy) or coord (ADR-044).
+func runRebalanceApplyAt(base, path string, concurrency int, verbose bool) {
+	url := fmt.Sprintf("%s%s?concurrency=%d",
+		strings.TrimRight(base, "/"), path, concurrency)
 	body := mustPost(url)
 	var stats struct {
 		Scanned     int      `json:"scanned"`

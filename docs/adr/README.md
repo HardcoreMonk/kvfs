@@ -104,6 +104,7 @@ Accepted · YYYY-MM-DD
 | # | 제목 | 상태 | 연결 · demo |
 |---|---|---|---|
 | [043](ADR-043-coord-rebalance-plan.md) | Rebalance plan computed on coord | Accepted · 2026-04-27 | `coord /v1/coord/admin/rebalance/plan` + cli `rebalance --plan --coord` · demo-chet (Ep.1) |
+| [044](ADR-044-coord-rebalance-apply.md) | Rebalance apply on coord (DN I/O introduced) | Accepted · 2026-04-27 | `COORD_DN_IO` + `coord.Server.Coord` + `/v1/coord/admin/rebalance/apply` · demo-tet (Ep.2) |
 
 > Hebrew letters continue (chet = ח, 8th letter).
 

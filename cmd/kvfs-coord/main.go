@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/coord"
+	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/store"
@@ -61,6 +62,10 @@ func main() {
 		// Transactional commit (Ep.5, ADR-040): replicate-then-commit, no
 		// phantom writes on leader-loss. Requires both -peers and -wal-path.
 		flagTxnRaft = flag.Bool("transactional-raft", envOr("COORD_TRANSACTIONAL_RAFT", "") == "1", "ADR-040: replicate-then-commit semantics. Requires COORD_PEERS + COORD_WAL_PATH.")
+		// DN I/O (Ep.2, ADR-044): coord embeds a coordinator.Coordinator
+		// instance to do chunk Read/Put against DNs directly. Required for
+		// rebalance/gc/repair APPLY paths to run on coord.
+		flagDNIO = flag.Bool("dn-io", envOr("COORD_DN_IO", "") == "1", "ADR-044: enable coord-side DN I/O so apply paths (rebalance/gc/repair) run on coord")
 	)
 	flag.Parse()
 
@@ -165,12 +170,23 @@ func main() {
 			"semantics", "replicate-then-commit; quorum failure → 503 + no local commit")
 	}
 
+	var dnCoord *coordinator.Coordinator
+	if *flagDNIO {
+		dnCoord, err = coordinator.New(coordinator.Config{Nodes: nodes})
+		if err != nil {
+			fatal("coordinator.New: " + err.Error())
+		}
+		log.Info("kvfs-coord DN I/O enabled (Ep.2, ADR-044)",
+			"note", "rebalance/gc/repair apply paths runnable on coord")
+	}
+
 	srv := &coord.Server{
 		Store:               st,
 		Placer:              placer,
 		Log:                 log,
 		Elector:             elector,
 		TransactionalCommit: *flagTxnRaft,
+		Coord:               dnCoord,
 	}
 
 	httpSrv := &http.Server{

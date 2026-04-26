@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
@@ -51,6 +52,12 @@ type Server struct {
 	Store  *store.MetaStore
 	Placer *placement.Placer
 	Log    *slog.Logger
+
+	// Coord is the optional DN-I/O backend (Season 6 Ep.2, ADR-044).
+	// When non-nil, rebalance/gc/repair APPLY paths can run on coord
+	// directly instead of going back through edge. PLAN paths only need
+	// Placer + Store and work without it.
+	Coord *coordinator.Coordinator
 
 	// Elector is optional. When set (Season 5 Ep.3, ADR-038), this coord
 	// participates in a multi-coord election and only the current leader
@@ -96,6 +103,9 @@ func (s *Server) Routes() *http.ServeMux {
 	// ADR-043 (Season 6 Ep.1): rebalance plan computed by coord directly.
 	// Read-only — apply still on edge until coord grows DN I/O capability.
 	mux.HandleFunc("POST /v1/coord/admin/rebalance/plan", s.handleRebalancePlan)
+	// ADR-044 (Season 6 Ep.2): rebalance apply via coord's own DN I/O.
+	// Requires Coord field (which embeds the DN HTTP client). 503 if unset.
+	mux.HandleFunc("POST /v1/coord/admin/rebalance/apply", s.handleRebalanceApply)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
@@ -312,20 +322,55 @@ func (s *Server) handleAdminDNs(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleRebalancePlan computes a rebalance plan from coord's authoritative
-// metadata + placement. Read-only: no DN I/O happens — that's the apply
-// path (still on edge in Ep.1). Returns the JSON-encoded rebalance.Plan.
-//
-// ADR-043 rationale: edge's rebalance plan was computed against edge's
-// view of placement, which can drift from coord's. With coord as the
-// single source of truth (Ep.6), plan computation belongs here.
+// metadata + placement. Read-only: no DN I/O happens. When Coord is set
+// (Ep.2+), uses the real Coordinator directly — its PlaceN/PlaceChunk
+// answers match what apply would use. When Coord is nil (Ep.1 single-coord
+// mode), falls back to the placer-only adapter.
 func (s *Server) handleRebalancePlan(w http.ResponseWriter, _ *http.Request) {
-	adapter := &rebalancePlanCoord{placer: s.Placer}
-	plan, err := rebalance.ComputePlan(adapter, s.Store, s.Store)
+	rc := s.rebalanceCoord()
+	plan, err := rebalance.ComputePlan(rc, s.Store, s.Store)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, plan)
+}
+
+// handleRebalanceApply executes a freshly-computed rebalance plan using
+// coord's DN I/O. Requires Coord != nil; without it, the apply path
+// can't move chunks (placement-only adapter errors on Read/PutChunkTo).
+//
+// Concurrency knob via ?concurrency=N (default 4, matches edge default).
+func (s *Server) handleRebalanceApply(w http.ResponseWriter, r *http.Request) {
+	if s.Coord == nil {
+		writeErr(w, http.StatusServiceUnavailable,
+			errors.New("coord rebalance apply: COORD_DN_IO not enabled (no Coordinator wired)"))
+		return
+	}
+	concurrency := 4
+	if v := r.URL.Query().Get("concurrency"); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			concurrency = n
+		}
+	}
+	plan, err := rebalance.ComputePlan(s.Coord, s.Store, s.Store)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	stats := rebalance.Run(r.Context(), s.Coord, s.Store, plan, concurrency)
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// rebalanceCoord picks the rebalance.Coordinator implementation based on
+// what's wired: real Coord if available, placer-only adapter otherwise.
+// Plan path can use either; apply path only works with real Coord.
+func (s *Server) rebalanceCoord() rebalance.Coordinator {
+	if s.Coord != nil {
+		return s.Coord
+	}
+	return &rebalancePlanCoord{placer: s.Placer}
 }
 
 // rebalancePlanCoord adapts coord's Placer to rebalance.Coordinator for
