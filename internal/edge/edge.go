@@ -1347,31 +1347,81 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	stripeBuf := make([]byte, stripeBytes)
+	// Source produces stripe payloads. Two modes:
+	//   - fixed: io.ReadFull(stripeBytes) — uniform stripes; last short → pad
+	//   - CDC:   chunker.NewCDCReader → variable-length payloads, padded
+	//            to next multiple of K within each stripe (Stripe.DataLen
+	//            records the real length so GET can trim back).
+	//
+	// nextStripe returns (rawData, paddedData, isLast, error).
+	type stripePayload struct {
+		raw     []byte // real bytes (= dataLen contribution)
+		padded  []byte // length = ceil(len(raw)/k)*k, zero-padded
+		shardSz int    // padded / k
+	}
+	var nextStripe func() (*stripePayload, error)
+
+	if s.CDCEnabled {
+		cdc := chunker.NewCDCReader(r.Body, s.CDCConfig)
+		nextStripe = func() (*stripePayload, error) {
+			p, err := cdc.Next()
+			if err != nil {
+				return nil, err
+			}
+			ssz := (len(p.Data) + k - 1) / k
+			if ssz == 0 {
+				ssz = 1
+			}
+			padLen := ssz * k
+			padded := make([]byte, padLen)
+			copy(padded, p.Data)
+			return &stripePayload{raw: p.Data, padded: padded, shardSz: ssz}, nil
+		}
+	} else {
+		buf := make([]byte, stripeBytes)
+		nextStripe = func() (*stripePayload, error) {
+			n, rerr := io.ReadFull(r.Body, buf)
+			if rerr == io.EOF {
+				return nil, io.EOF
+			}
+			if rerr != nil && rerr != io.ErrUnexpectedEOF {
+				return nil, rerr
+			}
+			padded := make([]byte, stripeBytes)
+			copy(padded, buf[:n])
+			raw := make([]byte, n)
+			copy(raw, buf[:n])
+			p := &stripePayload{raw: raw, padded: padded, shardSz: shardSize}
+			if rerr == io.ErrUnexpectedEOF {
+				return p, io.ErrUnexpectedEOF
+			}
+			return p, nil
+		}
+	}
+
 	var stripes []store.Stripe
 	var dataLen int64
+	var lastStripeShortMarker error // only fixed mode uses this (sentinel)
 
 	for stripeIdx := 0; ; stripeIdx++ {
-		n, rerr := io.ReadFull(r.Body, stripeBuf)
+		p, rerr := nextStripe()
 		if rerr == io.EOF {
-			break // exact stripe boundary
+			break
 		}
-		// Last stripe: short read → pad with zeros to stripeBytes.
-		if rerr == io.ErrUnexpectedEOF {
-			for i := n; i < stripeBytes; i++ {
-				stripeBuf[i] = 0
-			}
-		} else if rerr != nil {
+		if rerr != nil && rerr != io.ErrUnexpectedEOF {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("read stripe %d: %v", stripeIdx, rerr))
 			return
 		}
-		dataLen += int64(n)
+		if rerr == io.ErrUnexpectedEOF {
+			lastStripeShortMarker = io.ErrUnexpectedEOF
+		}
+		dataLen += int64(len(p.raw))
 
 		// Slice K data shards (defensive copies — encoder/PutChunkTo may retain).
 		dataShards := make([][]byte, k)
 		for di := 0; di < k; di++ {
-			ds := make([]byte, shardSize)
-			copy(ds, stripeBuf[di*shardSize:(di+1)*shardSize])
+			ds := make([]byte, p.shardSz)
+			copy(ds, p.padded[di*p.shardSz:(di+1)*p.shardSz])
 			dataShards[di] = ds
 		}
 		parityShards, encErr := enc.Encode(dataShards)
@@ -1413,12 +1463,20 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 				Replicas: []string{addr},
 			}
 		}
-		stripes = append(stripes, store.Stripe{StripeID: stripeID, Shards: shardRefs})
+		stripe := store.Stripe{StripeID: stripeID, Shards: shardRefs}
+		// CDC mode (variable-size): record per-stripe data length so GET can
+		// trim padding correctly. Fixed mode leaves DataLen=0 — the legacy
+		// "trim only on the last stripe via DataSize" path applies.
+		if s.CDCEnabled {
+			stripe.DataLen = int64(len(p.raw))
+		}
+		stripes = append(stripes, stripe)
 
 		if rerr == io.ErrUnexpectedEOF {
 			break // last (padded) stripe processed
 		}
 	}
+	_ = lastStripeShortMarker // silence unused if path skipped
 
 	if dataLen == 0 {
 		writeError(w, http.StatusBadRequest, "empty body")
@@ -1517,16 +1575,34 @@ func (s *Server) handleGetEC(w http.ResponseWriter, r *http.Request, ctx context
 			s.logger().Error("EC GET reconstruct failed mid-stream", slog.Int("stripe", stripeIdx))
 			return
 		}
-		// Write K data shards in order, trimmed by remaining for the last stripe.
+		// Two trim modes:
+		//   - CDC EC (Stripe.DataLen > 0): trim THIS stripe to its recorded
+		//     DataLen exactly (variable per stripe).
+		//   - Fixed EC (legacy): write all K data shards; rely on remaining
+		//     counter to trim the LAST stripe via DataSize.
+		stripeRemaining := int64(-1)
+		if stripe.DataLen > 0 {
+			stripeRemaining = stripe.DataLen
+		}
 		for di := 0; di < k && remaining > 0; di++ {
 			toWrite := shards[di]
-			if int64(len(toWrite)) > remaining {
+			if stripeRemaining >= 0 {
+				if int64(len(toWrite)) > stripeRemaining {
+					toWrite = toWrite[:stripeRemaining]
+				}
+			} else if int64(len(toWrite)) > remaining {
 				toWrite = toWrite[:remaining]
 			}
 			if _, werr := w.Write(toWrite); werr != nil {
 				return // client disconnect
 			}
 			remaining -= int64(len(toWrite))
+			if stripeRemaining >= 0 {
+				stripeRemaining -= int64(len(toWrite))
+				if stripeRemaining <= 0 {
+					break
+				}
+			}
 		}
 	}
 }

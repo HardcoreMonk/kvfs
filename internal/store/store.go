@@ -122,9 +122,15 @@ type ECParams struct {
 // Shards length = K + M. Shards[0..K) are data, Shards[K..K+M) are parity.
 // StripeID is sha256 of the K data shards concatenated; used as the placement
 // key (Pick(StripeID, K+M) → K+M distinct DNs).
+//
+// DataLen (ADR-018 follow-up — EC + CDC combo) is the real number of body
+// bytes encoded into this stripe before zero-padding. Zero means "use
+// ECParams.ShardSize × K minus last-stripe padding" (legacy fixed mode).
+// Non-zero means per-stripe variable size (CDC mode).
 type Stripe struct {
 	StripeID string     `json:"stripe_id"`
 	Shards   []ChunkRef `json:"shards"`
+	DataLen  int64      `json:"data_len,omitempty"` // CDC mode: real bytes in this stripe
 }
 
 // DNInfo records a known DataNode (registry, heartbeats).
