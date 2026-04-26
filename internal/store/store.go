@@ -220,10 +220,24 @@ func (m *MetaStore) Close() error { return m.db.Load().Close() }
 // PutObject stores or overwrites an object's metadata.
 // Version is auto-incremented if an existing record is found.
 func (m *MetaStore) PutObject(obj *ObjectMeta) error {
-	return m.putObjectInternal(obj, true)
+	return m.putObjectInternalFull(obj, true, true)
 }
 
+// PutObjectAfterReplicate is the transactional-Raft commit path (ADR-034).
+// Caller has already replicated the entry to peers and got quorum-ack;
+// this commits locally + writes WAL but suppresses the WAL hook so we
+// don't push the entry to peers a second time.
+func (m *MetaStore) PutObjectAfterReplicate(obj *ObjectMeta) error {
+	return m.putObjectInternalFull(obj, true, false)
+}
+
+// putObjectInternal preserves the original 2-arg signature for ApplyEntry
+// and other internal callers that don't need to control the hook.
 func (m *MetaStore) putObjectInternal(obj *ObjectMeta, writeWAL bool) error {
+	return m.putObjectInternalFull(obj, writeWAL, true)
+}
+
+func (m *MetaStore) putObjectInternalFull(obj *ObjectMeta, writeWAL, fireHook bool) error {
 	k := objKey(obj.Bucket, obj.Key)
 	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketObjects)
@@ -246,7 +260,9 @@ func (m *MetaStore) putObjectInternal(obj *ObjectMeta, writeWAL bool) error {
 		return b.Put(k, buf)
 	})
 	if err == nil && writeWAL {
-		if walErr := m.appendWAL(OpPutObject, obj); walErr != nil { return walErr }
+		if walErr := m.appendWALControlled(OpPutObject, obj, fireHook); walErr != nil {
+			return walErr
+		}
 	}
 	return err
 }

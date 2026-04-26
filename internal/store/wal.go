@@ -356,6 +356,13 @@ func (m *MetaStore) SetWALHook(h WALHook) { m.walHook = h }
 // quorum failure to the mutation method's caller. Async hooks should
 // return nil unconditionally.
 func (m *MetaStore) appendWAL(op WALOp, args any) error {
+	return m.appendWALControlled(op, args, true)
+}
+
+// appendWALControlled is the same as appendWAL but lets the caller suppress
+// the hook (used by ADR-034 transactional Raft commit path: peer push
+// already happened pre-commit, so we don't want to push again).
+func (m *MetaStore) appendWALControlled(op WALOp, args any, fireHook bool) error {
 	if m.wal == nil {
 		return nil
 	}
@@ -363,10 +370,31 @@ func (m *MetaStore) appendWAL(op WALOp, args any) error {
 	if err != nil || line == nil {
 		return err
 	}
-	if m.walHook != nil {
+	if fireHook && m.walHook != nil {
 		return m.walHook(line)
 	}
 	return nil
+}
+
+// MarshalPutObjectEntry returns the WAL entry body that PutObject WOULD
+// emit, without persisting anything. Used by ADR-034 transactional Raft:
+// leader pre-marshals the entry, replicates to peers, waits for quorum,
+// then calls PutObjectAfterReplicate to commit locally.
+//
+// Seq is left 0 in this preview — followers don't need leader's seq for
+// ApplyEntry (they apply by op+args). Local seq is assigned at real
+// PutObjectAfterReplicate time.
+func (m *MetaStore) MarshalPutObjectEntry(obj *ObjectMeta) ([]byte, error) {
+	rawArgs, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	entry := WALEntry{
+		Op:        string(OpPutObject),
+		Args:      rawArgs,
+		Timestamp: time.Now().UTC(),
+	}
+	return json.Marshal(entry)
 }
 
 // Errors returned by WAL operations.

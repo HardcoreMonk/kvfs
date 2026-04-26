@@ -156,6 +156,13 @@ type Server struct {
 	// endpoint and no instrumentation overhead. Set via SetupMetrics.
 	Metrics *metricsHandle
 
+	// StrictReplication enables ADR-034's transactional commit path:
+	// PutObject pre-marshals the WAL entry, replicates to peers, waits for
+	// quorum-ack, THEN commits locally + writes WAL (with hook suppressed
+	// since peers already have it). Quorum failure returns 503 to client
+	// without committing — true strict semantics.
+	StrictReplication bool
+
 	// Role is "primary" (default) or "follower" (ADR-022 manual mode).
 	// When Elector != nil (ADR-031 election mode), this field is ignored —
 	// effectiveRole() consults the elector instead.
@@ -204,6 +211,27 @@ func (s *Server) chunkSize() int {
 		return chunker.DefaultChunkSize
 	}
 	return s.ChunkSize
+}
+
+// commitPutMeta is the unified PutObject path that picks transactional
+// (ADR-034) vs informational (ADR-033) replication based on Server config.
+//
+//   - Default + non-leader: plain Store.PutObject (legacy best-effort hook).
+//   - StrictReplication + leader: pre-marshal entry → ReplicateEntry quorum
+//     wait → on success Store.PutObjectAfterReplicate (no hook re-push).
+//     On quorum failure: return error WITHOUT committing — caller responds 503.
+func (s *Server) commitPutMeta(ctx context.Context, meta *store.ObjectMeta) error {
+	if s.StrictReplication && s.Elector != nil && s.Elector.IsLeader() {
+		body, err := s.Store.MarshalPutObjectEntry(meta)
+		if err != nil {
+			return fmt.Errorf("marshal entry: %w", err)
+		}
+		if err := s.Elector.ReplicateEntry(ctx, body); err != nil {
+			return fmt.Errorf("strict replicate: %w", err)
+		}
+		return s.Store.PutObjectAfterReplicate(meta)
+	}
+	return s.Store.PutObject(meta)
 }
 
 // pieceReader is the common interface for both fixed and CDC streaming
@@ -346,7 +374,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		Chunks:      chunkRefs,
 		ContentType: contentType,
 	}
-	if err := s.Store.PutObject(meta); err != nil {
+	if err := s.commitPutMeta(ctx, meta); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1536,7 +1564,7 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 		},
 		Stripes: stripes,
 	}
-	if err := s.Store.PutObject(meta); err != nil {
+	if err := s.commitPutMeta(ctx, meta); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
