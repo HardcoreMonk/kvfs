@@ -22,6 +22,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/gc"
+	"github.com/HardcoreMonk/kvfs/internal/heartbeat"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/reedsolomon"
@@ -108,6 +109,10 @@ type Server struct {
 	autoRuns                []AutoRun
 	autoLastCheckRebalance  time.Time
 	autoLastCheckGC         time.Time
+
+	// Heartbeat is the per-DN liveness monitor (ADR-030). nil disables it.
+	// StartHeartbeat wires up the periodic probe loop.
+	Heartbeat *heartbeat.Monitor
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -146,6 +151,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/auto/status", s.handleAutoStatus)
 	mux.HandleFunc("GET /v1/admin/meta/snapshot", s.handleMetaSnapshot)
 	mux.HandleFunc("GET /v1/admin/meta/info", s.handleMetaInfo)
+	mux.HandleFunc("GET /v1/admin/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }
@@ -1030,6 +1036,47 @@ func (s *Server) handleMetaInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// ─── ADR-030 heartbeat handlers ───
+
+// handleHeartbeat returns the current per-DN liveness snapshot. Returns an
+// empty list when the monitor isn't running.
+func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if s.Heartbeat == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "statuses": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":  true,
+		"statuses": s.Heartbeat.Snapshot(),
+	})
+}
+
+// StartHeartbeat runs a goroutine that probes all runtime DNs every
+// `interval`. No-op if s.Heartbeat is nil. Stops on ctx.Done.
+func (s *Server) StartHeartbeat(ctx context.Context, interval time.Duration) {
+	if s.Heartbeat == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	go func() {
+		// Run one probe immediately so the first /v1/admin/heartbeat call is
+		// non-empty even if the user hits it before the first tick.
+		s.Heartbeat.Tick(ctx, s.Coord.DNs())
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.Heartbeat.Tick(ctx, s.Coord.DNs())
+			}
+		}
+	}()
 }
 
 // ─── EC mode handlers (ADR-008) ───

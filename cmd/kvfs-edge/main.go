@@ -39,6 +39,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/edge"
+	"github.com/HardcoreMonk/kvfs/internal/heartbeat"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 	"github.com/HardcoreMonk/kvfs/internal/tlsutil"
@@ -59,6 +60,8 @@ func main() {
 		flagAutoMin = flag.String("auto-gc-min-age", envOr("EDGE_AUTO_GC_MIN_AGE", "60s"), "min chunk age for auto GC")
 		flagAutoCnc = flag.Int("auto-concurrency", atoiOr(envOr("EDGE_AUTO_CONCURRENCY", "4"), 4), "parallel ops per auto cycle")
 		flagSkip    = flag.Bool("skip-auth", envOr("EDGE_SKIP_AUTH", "") == "1", "DEMO ONLY: skip UrlKey verify")
+		flagHB      = flag.String("heartbeat-interval", envOr("EDGE_HEARTBEAT_INTERVAL", "10s"), "DN heartbeat probe interval (ADR-030); 0s disables")
+		flagHBFail  = flag.Int("heartbeat-fail-threshold", atoiOr(envOr("EDGE_HEARTBEAT_FAIL_THRESHOLD", "3"), 3), "consecutive probe failures before DN marked unhealthy")
 	)
 	flag.Parse()
 
@@ -188,6 +191,12 @@ func main() {
 	parseAutoDur("EDGE_AUTO_GC_INTERVAL", *flagAutoGC, &autoCfg.GCInterval)
 	parseAutoDur("EDGE_AUTO_GC_MIN_AGE", *flagAutoMin, &autoCfg.GCMinAge)
 
+	hbInterval, _ := time.ParseDuration(*flagHB)
+	var hbMon *heartbeat.Monitor
+	if hbInterval > 0 {
+		hbMon = heartbeat.New(httpHealthProbe(dnScheme, dnTLSCfg), *flagHBFail, 2*time.Second)
+	}
+
 	srv := &edge.Server{
 		Store:     ms,
 		Coord:     coord,
@@ -196,6 +205,7 @@ func main() {
 		ChunkSize: chunkSize,
 		AutoCfg:   autoCfg,
 		SkipAuth:  *flagSkip,
+		Heartbeat: hbMon,
 	}
 
 	log.Info("kvfs-edge starting",
@@ -223,6 +233,9 @@ func main() {
 	// Start auto-trigger loops (no-op if AutoCfg.Enabled is false). They
 	// exit when ctx is cancelled by signal.
 	srv.StartAuto(ctx)
+
+	// Start DN heartbeat (ADR-030). No-op if Heartbeat is nil.
+	srv.StartHeartbeat(ctx, hbInterval)
 
 	errCh := make(chan error, 1)
 	tlsCert := envOr("EDGE_TLS_CERT", "")
@@ -313,4 +326,35 @@ func buildDNTLSConfig(log *slog.Logger) (*tls.Config, string, error) {
 		log.Info("edge → DN HTTPS enabled (no mTLS client cert)", "ca", caPath)
 	}
 	return cfg, "https", nil
+}
+
+// httpHealthProbe returns a heartbeat.Probe that GETs <scheme>://<addr>/healthz.
+// scheme/tlsCfg come from buildDNTLSConfig (ADR-029) so probes use the same
+// transport as data-path coordinator calls.
+func httpHealthProbe(scheme string, tlsCfg *tls.Config) heartbeat.Probe {
+	transport := &http.Transport{TLSClientConfig: tlsCfg}
+	client := &http.Client{Transport: transport}
+	return probeFn(func(ctx context.Context, addr string) (time.Duration, error) {
+		start := time.Now()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+addr+"/healthz", nil)
+		if err != nil {
+			return 0, err
+		}
+		resp, err := client.Do(req)
+		lat := time.Since(start)
+		if err != nil {
+			return lat, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return lat, fmt.Errorf("healthz: HTTP %d", resp.StatusCode)
+		}
+		return lat, nil
+	})
+}
+
+type probeFn func(ctx context.Context, addr string) (time.Duration, error)
+
+func (f probeFn) Probe(ctx context.Context, addr string) (time.Duration, error) {
+	return f(ctx, addr)
 }

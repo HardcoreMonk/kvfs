@@ -62,6 +62,7 @@ Accepted · YYYY-MM-DD
 | [029](ADR-029-optional-tls.md) | Optional TLS / mTLS (env-driven opt-in) | Accepted · 2026-04-26 | `cmd/kvfs-{edge,dn}/` TLS env + `scripts/gen-tls-certs.sh` |
 | [025](ADR-025-ec-repair.md) | EC repair queue (Reed-Solomon Reconstruct K survivors) | Accepted · 2026-04-26 | `internal/repair/` + `kvfs-cli repair` |
 | [014](ADR-014-meta-backup.md) | Metadata backup (snapshot + offline restore) | Accepted · 2026-04-26 | `internal/store/snapshot.go` + `kvfs-cli meta` |
+| [030](ADR-030-dn-heartbeat.md) | DN heartbeat (in-edge pull-based liveness) | Accepted · 2026-04-26 | `internal/heartbeat/` + `kvfs-cli heartbeat` |
 
 ## Season 3+ 예상 ADR (pending)
 - ADR-015: Coordinator daemon 분리 + Raft HA
@@ -69,6 +70,5 @@ Accepted · YYYY-MM-DD
 - ADR-017: Streaming PUT/GET (io.Reader 기반)
 - ADR-018: Content-defined chunking
 - ADR-022: Multi-edge leader election
-- ADR-030: DN heartbeat (자동 dead 감지)
 
 작성 시점: 해당 기능 설계 직전.

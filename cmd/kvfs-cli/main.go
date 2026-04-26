@@ -52,6 +52,8 @@ func main() {
 		cmdRepair(os.Args[2:])
 	case "meta":
 		cmdMeta(os.Args[2:])
+	case "heartbeat":
+		cmdHeartbeat(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -75,6 +77,7 @@ Subcommands:
   urlkey          list / rotate / remove signing kids (ADR-028)
   repair          rebuild EC shards on dead DNs via Reed-Solomon (ADR-025)
   meta            snapshot / restore / info — metadata backup (ADR-014)
+  heartbeat       per-DN liveness snapshot from edge (ADR-030)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -1209,4 +1212,63 @@ func bboltProbeLock(path string) (io.Closer, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// ---- heartbeat (ADR-030) ----
+
+func cmdHeartbeat(args []string) {
+	fs := flag.NewFlagSet("heartbeat", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	body := mustHTTP("GET", *edge+"/v1/admin/heartbeat")
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+	var resp struct {
+		Enabled  bool `json:"enabled"`
+		Statuses []struct {
+			Addr        string    `json:"addr"`
+			Healthy     bool      `json:"healthy"`
+			LastSeen    time.Time `json:"last_seen"`
+			LastError   string    `json:"last_error"`
+			LatencyMS   int64     `json:"latency_ms"`
+			ConsecFails int       `json:"consec_fails"`
+			TotalProbes uint64    `json:"total_probes"`
+		} `json:"statuses"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		fail(err)
+	}
+	if !resp.Enabled {
+		fmt.Println("heartbeat: DISABLED on edge (set EDGE_HEARTBEAT_INTERVAL > 0s)")
+		return
+	}
+	if len(resp.Statuses) == 0 {
+		fmt.Println("heartbeat: no statuses yet (first probe pending)")
+		return
+	}
+	fmt.Printf("%-22s %-8s %-12s %-9s %-12s %s\n", "ADDR", "HEALTHY", "LAST_SEEN", "LATENCY", "CONSEC_FAILS", "LAST_ERROR")
+	for _, s := range resp.Statuses {
+		mark := "✅"
+		if !s.Healthy {
+			mark = "❌"
+		}
+		ago := "—"
+		if !s.LastSeen.IsZero() {
+			d := time.Since(s.LastSeen).Truncate(time.Second)
+			ago = d.String() + " ago"
+		}
+		fmt.Printf("%-22s %s %-7s %-12s %-9s %-12d %s\n",
+			s.Addr, mark, healthLabel(s.Healthy), ago, fmt.Sprintf("%d ms", s.LatencyMS), s.ConsecFails, s.LastError)
+	}
+}
+
+func healthLabel(h bool) string {
+	if h {
+		return "yes"
+	}
+	return "NO"
 }

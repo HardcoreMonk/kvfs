@@ -47,6 +47,7 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `internal/rebalance/` `planEC`/`migrateShard` | EC stripe rebalance (ADR-024, Season 3 Ep.2). set-based 최소 이동 |
 | `internal/repair/` | EC repair queue (ADR-025, Season 3 Ep.3). K survivors → Reed-Solomon Reconstruct |
 | `internal/store/snapshot.go` | Metadata snapshot + Stats (ADR-014, Season 3 Ep.4). bbolt `tx.WriteTo` hot snapshot, restore = offline |
+| `internal/heartbeat/` | DN liveness monitor (ADR-030, Season 3 Ep.5). pull-based ticker, Probe interface, Healthy=consec_fails<threshold |
 | `scripts/` | 클러스터 lifecycle + 데모 (bash, curl, docker, python3만) |
 | `docs/adr/` | 아키텍처 의사결정 기록 (불변) |
 | `docs/FOLLOWUP.md` | 우선순위별 pending 작업 단일 소스 |
@@ -73,6 +74,7 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `./scripts/demo-mu.sh` | EC stripe rebalance 라이브 데모 (Season 3 Ep.2) |
 | `./scripts/demo-nu.sh` | EC repair 라이브 데모 (Season 3 Ep.3) |
 | `./scripts/demo-xi.sh` | Meta backup + offline restore 라이브 데모 (Season 3 Ep.4) |
+| `./scripts/demo-omicron.sh` | DN heartbeat 라이브 데모 (Season 3 Ep.5) |
 | `./scripts/chaos-dn-killer.sh` | 주기적 random DN kill + GET 검증 (회귀 catch) |
 | `./scripts/down.sh` | 정리 (dn1~dn8 + edge 포함) |
 
