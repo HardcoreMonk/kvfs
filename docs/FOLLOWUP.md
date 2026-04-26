@@ -73,8 +73,8 @@
 ### ~~[P6-03] coord 자체의 Raft (peer set, election 재사용)~~
 - **DONE 2026-04-27**: ADR-038 작성 + 구현. `internal/election` 그대로 재사용 (새 state machine 0). `coord.Server.Elector` field, mounting at `/v1/election/{vote,heartbeat}`. follower coord 가 mutating RPC 받으면 503 + `X-COORD-LEADER`. edge.CoordClient 가 transparent 1-hop redirect (`MaxLeaderRedirects=1` default). `COORD_PEERS`/`COORD_SELF_URL` env. 데모 demo-gimel.sh (히브리 ג): 3-coord election + leader kill + new leader. **알려진 갭**: 새 leader bbolt 비어있음 (P6-04 가 sync). 1 unit test (TestRequireLeader_FollowerRejectsWritesPropagatesLeaderHint).
 
-### [P6-04] coord 간 메타 sync (WAL replication 재사용)
-- **다음 단계**: ADR-019 WAL + ADR-031 sync push 를 coord 간에. leader coord 가 follower coord 에 push.
+### ~~[P6-04] coord 간 메타 sync (WAL replication 재사용)~~
+- **DONE 2026-04-27**: ADR-039 작성 + 구현. coord daemon 이 `COORD_WAL_PATH` 설정 시 `store.OpenWAL` + leader-side `MetaStore.SetWALHook` (Elector.ReplicateEntry 호출) + follower-side `Elector.AppendEntryFn` (MetaStore.ApplyEntry 호출). `coord.Server.Routes()` 가 `/v1/election/append-wal` 마운트. 새 메커니즘 0 — ADR-031 follow-up (Ep.8) 의 패턴 그대로 location 만 이동. ~50 LOC + ADR + demo-dalet.sh (히브리 ד) — pre-failover write 가 새 leader 에서 200 으로 복원 (gimel 의 404 갭 메움). 146 tests PASS.
 
 ### [P6-05] edge 의 placement 코드 완전 제거
 - **다음 단계**: `internal/coordinator/` 의 placement 부분이 coord client wrapper 만 남음. ADR-002 기존 paragraph deprecate.

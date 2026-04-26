@@ -696,6 +696,7 @@ type Stripe struct {
 <tr><td><code>EDGE_TLS_CERT</code> / <code>EDGE_TLS_KEY</code></td><td>(off)</td><td>설정 시 HTTPS 활성 (ADR-029, <code>internal/tlsutil</code>)</td></tr>
 <tr><td><code>EDGE_COORD_URL</code></td><td>(off)</td><td>Season 5 Ep.2: 설정 시 edge 가 메타 RPC 를 coord 로 위임 (proxy mode)</td></tr>
 <tr><td><code>COORD_PEERS</code> / <code>COORD_SELF_URL</code></td><td>(off)</td><td>Season 5 Ep.3 (ADR-038): coord-side election. 설정 시 coord 가 HA cluster 일원이 됨</td></tr>
+<tr><td><code>COORD_WAL_PATH</code></td><td>(off)</td><td>Season 5 Ep.4 (ADR-039): coord-to-coord WAL sync 활성. peer 들 간 메타 일관성 보장</td></tr>
 </tbody>
 </table>
 <blockquote><p>운영 디테일 (election timing, DN-side TLS CA 등) 은 <code>README.md</code> § "환경 변수" 의 전체 표.</p></blockquote>
@@ -779,8 +780,9 @@ type Stripe struct {
 <ul>
   <li>Ep.1: <code>cmd/kvfs-coord/</code> skeleton + 4 RPC (<code>/v1/coord/{place,commit,lookup,delete}</code>). 데모 <code>scripts/demo-aleph.sh</code>.</li>
   <li>Ep.2: edge → coord client 통합. <code>EDGE_COORD_URL</code> 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임. 데모 demo-bet (히브리 ב).</li>
-  <li>Ep.3 (현재): coord HA via Raft (ADR-038). <code>internal/election</code> 재사용 — <code>COORD_PEERS</code>/<code>COORD_SELF_URL</code> 로 coord 끼리 leader election. follower coord 는 503 + <code>X-COORD-LEADER</code>, edge.CoordClient 가 transparent 1-hop redirect. 데모 demo-gimel (ג). 알려진 갭: leader 교체 시 새 leader bbolt 비어있음 (Ep.4 가 sync).</li>
-  <li>후속: Ep.4 coord 간 메타 sync (WAL replication 재사용), Ep.5 edge 의 placement 코드 제거.</li>
+  <li>Ep.3: coord HA via Raft (ADR-038). election + leader-redirect. 데모 demo-gimel.</li>
+  <li>Ep.4 (현재): coord-to-coord WAL replication (ADR-039). <code>COORD_WAL_PATH</code> 설정 시 leader 가 매 commit 마다 follower coord 에 WAL push (ADR-031 follow-up 메커니즘 재사용). follower 의 <code>AppendEntryFn</code> → <code>ApplyEntry</code> → bbolt sync. 데모 demo-dalet (히브리 ד) — gimel 의 404 갭이 200 으로 회복.</li>
+  <li>후속: Ep.5 edge 의 placement 코드 제거.</li>
 </ul>
 <p>이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.</p>
 

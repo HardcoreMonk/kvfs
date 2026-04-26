@@ -76,6 +76,10 @@ func (s *Server) Routes() *http.ServeMux {
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
+		// ADR-039: leader pushes each WAL entry to followers via this RPC.
+		// Wired only when election is active; the inbound side runs on every
+		// coord (followers receive, leader's own pushes go to peers).
+		mux.HandleFunc("POST /v1/election/append-wal", s.Elector.HandleAppendWAL)
 	}
 	return mux
 }

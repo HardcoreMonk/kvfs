@@ -27,6 +27,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,6 +54,10 @@ func main() {
 		// HA mode (Ep.3, ADR-038): set both to enable Raft-style leader election.
 		flagPeers   = flag.String("peers", envOr("COORD_PEERS", ""), "comma-separated peer URLs incl. self, e.g. http://coord1:9000,http://coord2:9000,http://coord3:9000 (empty = single-coord mode)")
 		flagSelfURL = flag.String("self-url", envOr("COORD_SELF_URL", ""), "this coord's own URL (must match an entry in -peers when -peers set)")
+		// WAL replication (Ep.4, ADR-039): leader pushes each WAL entry to
+		// peers; followers ApplyEntry to keep bbolt in sync. Empty = no WAL
+		// (Ep.3 behavior — followers' bbolt stays empty after election).
+		flagWALPath = flag.String("wal-path", envOr("COORD_WAL_PATH", ""), "WAL file (ADR-019). Required for coord-to-coord sync (ADR-039)")
 	)
 	flag.Parse()
 
@@ -73,6 +78,19 @@ func main() {
 	}
 	defer st.Close()
 
+	// Optional WAL — required for ADR-039 coord-to-coord sync. Without it,
+	// HA mode (COORD_PEERS) still elects but follower coords' bbolt stays
+	// empty (the Ep.3 known gap).
+	if *flagWALPath != "" {
+		wal, werr := store.OpenWAL(*flagWALPath)
+		if werr != nil {
+			fatal("WAL open: " + werr.Error())
+		}
+		st.SetWAL(wal)
+		defer wal.Close()
+		log.Info("kvfs-coord WAL enabled", "path", *flagWALPath, "last_seq", wal.LastSeq())
+	}
+
 	dnAddrs := splitCSV(*flagDNs)
 	nodes := make([]placement.Node, 0, len(dnAddrs))
 	for _, addr := range dnAddrs {
@@ -90,12 +108,47 @@ func main() {
 		for _, u := range peerURLs {
 			peers = append(peers, election.Peer{ID: u, URL: u})
 		}
+
+		// AppendEntryFn (ADR-039): a follower coord receives a pushed WAL
+		// entry from the current leader → decode → apply locally. This is
+		// what keeps follower bbolts in sync with the leader's, closing
+		// the Ep.3 gap. NOOP when no WAL is configured (sync requires WAL).
+		var appendFn election.AppendEntryFunc
+		if st.WAL() != nil {
+			appendFn = func(entryBody []byte) error {
+				var entry store.WALEntry
+				if err := json.Unmarshal(entryBody, &entry); err != nil {
+					return fmt.Errorf("decode wal entry: %w", err)
+				}
+				return st.ApplyEntry(entry)
+			}
+		}
+
 		elector = election.New(election.Config{
-			SelfID: *flagSelfURL,
-			Peers:  peers,
-			Log:    log,
+			SelfID:        *flagSelfURL,
+			Peers:         peers,
+			Log:           log,
+			AppendEntryFn: appendFn,
 		})
-		log.Info("kvfs-coord HA mode (Ep.3)", "self", *flagSelfURL, "peers", len(peers))
+
+		// WAL hook on the leader side (ADR-039): every successful local
+		// WAL.Append calls this with the raw JSON line. We push it to peers
+		// in parallel and wait for quorum. If we're not the leader we
+		// silently skip — followers shouldn't push anything.
+		if st.WAL() != nil {
+			st.SetWALHook(func(line []byte) error {
+				if !elector.IsLeader() {
+					return nil
+				}
+				ctxRep, cancelRep := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancelRep()
+				return elector.ReplicateEntry(ctxRep, line)
+			})
+		}
+
+		log.Info("kvfs-coord HA mode (Ep.3+Ep.4)",
+			"self", *flagSelfURL, "peers", len(peers),
+			"wal_replication", st.WAL() != nil)
 	}
 
 	srv := &coord.Server{
