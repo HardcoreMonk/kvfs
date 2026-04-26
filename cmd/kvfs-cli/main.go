@@ -669,6 +669,7 @@ func mustHTTP(method, url string) []byte {
 func cmdGC(args []string) {
 	fs := flag.NewFlagSet("gc", flag.ExitOnError)
 	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	coordURL := fs.String("coord", "", "ADR-045: ask coord directly (Season 6 Ep.3). Edge path used otherwise.")
 	doPlan := fs.Bool("plan", false, "show GC plan only (no changes)")
 	doApply := fs.Bool("apply", false, "execute the plan")
 	concurrency := fs.Int("concurrency", 4, "parallel deletes during apply")
@@ -685,16 +686,23 @@ func cmdGC(args []string) {
 		os.Exit(2)
 	}
 
+	base, planPath, applyPath, ageQuery := *edge, "/v1/admin/gc/plan", "/v1/admin/gc/apply", fmt.Sprintf("min_age_seconds=%d", *minAge)
+	if *coordURL != "" {
+		base = *coordURL
+		planPath = "/v1/coord/admin/gc/plan"
+		applyPath = "/v1/coord/admin/gc/apply"
+		ageQuery = fmt.Sprintf("min-age=%ds", *minAge)
+	}
+
 	if *doPlan {
-		runGCPlan(*edge, *minAge, *verbose)
+		runGCPlanAt(base, planPath, ageQuery, *verbose)
 	} else {
-		runGCApply(*edge, *minAge, *concurrency, *verbose)
+		runGCApplyAt(base, applyPath, ageQuery, *concurrency, *verbose)
 	}
 }
 
-func runGCPlan(edge string, minAge int, verbose bool) {
-	url := fmt.Sprintf("%s/v1/admin/gc/plan?min_age_seconds=%d",
-		strings.TrimRight(edge, "/"), minAge)
+func runGCPlanAt(base, path, ageQuery string, verbose bool) {
+	url := fmt.Sprintf("%s%s?%s", strings.TrimRight(base, "/"), path, ageQuery)
 	body := mustPost(url)
 	var plan struct {
 		Scanned     int `json:"scanned"`
@@ -712,7 +720,7 @@ func runGCPlan(edge string, minAge int, verbose bool) {
 
 	fmt.Printf("🧹 GC plan — scanned %d on-disk chunks across all DNs\n", plan.Scanned)
 	fmt.Printf("   meta-claimed pairs (protected): %d\n", plan.ClaimedKeys)
-	fmt.Printf("   min-age threshold (protected if newer): %ds\n", minAge)
+	fmt.Printf("   min-age threshold: %s\n", ageQuery)
 	fmt.Printf("   sweeps proposed: %d\n", len(plan.Sweeps))
 	if len(plan.Sweeps) == 0 {
 		fmt.Println("   ✅ No surplus to clean. Cluster disk = meta intent.")
@@ -746,9 +754,9 @@ func runGCPlan(edge string, minAge int, verbose bool) {
 	fmt.Println("Next:  kvfs-cli gc --apply")
 }
 
-func runGCApply(edge string, minAge, concurrency int, verbose bool) {
-	url := fmt.Sprintf("%s/v1/admin/gc/apply?min_age_seconds=%d&concurrency=%d",
-		strings.TrimRight(edge, "/"), minAge, concurrency)
+func runGCApplyAt(base, path, ageQuery string, concurrency int, verbose bool) {
+	url := fmt.Sprintf("%s%s?%s&concurrency=%d",
+		strings.TrimRight(base, "/"), path, ageQuery, concurrency)
 	body := mustPost(url)
 	var stats struct {
 		Scanned     int      `json:"scanned"`

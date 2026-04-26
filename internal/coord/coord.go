@@ -41,6 +41,7 @@ import (
 
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/election"
+	"github.com/HardcoreMonk/kvfs/internal/gc"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/store"
@@ -106,6 +107,10 @@ func (s *Server) Routes() *http.ServeMux {
 	// ADR-044 (Season 6 Ep.2): rebalance apply via coord's own DN I/O.
 	// Requires Coord field (which embeds the DN HTTP client). 503 if unset.
 	mux.HandleFunc("POST /v1/coord/admin/rebalance/apply", s.handleRebalanceApply)
+	// ADR-045 (Season 6 Ep.3): GC. Plan needs Coord (for ListChunks),
+	// apply needs Coord (for DeleteChunkFrom). Both 503 if Coord nil.
+	mux.HandleFunc("POST /v1/coord/admin/gc/plan", s.handleGCPlan)
+	mux.HandleFunc("POST /v1/coord/admin/gc/apply", s.handleGCApply)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
@@ -361,6 +366,61 @@ func (s *Server) handleRebalanceApply(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := rebalance.Run(r.Context(), s.Coord, s.Store, plan, concurrency)
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// handleGCPlan + handleGCApply: ADR-045 Season 6 Ep.3. GC needs DN
+// inventory (ListChunks) so both endpoints require Coord != nil.
+//
+// Query params:
+//   ?min-age=DURATION  default 5m (mirror of edge's EDGE_AUTO_GC_MIN_AGE)
+//   ?concurrency=N     apply only; default 4
+func (s *Server) handleGCPlan(w http.ResponseWriter, r *http.Request) {
+	if s.Coord == nil {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("coord gc: COORD_DN_IO not enabled"))
+		return
+	}
+	minAge := parseDurationQuery(r, "min-age", 5*time.Minute)
+	plan, err := gc.ComputePlan(r.Context(), s.Coord, s.Store, minAge)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+func (s *Server) handleGCApply(w http.ResponseWriter, r *http.Request) {
+	if s.Coord == nil {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("coord gc: COORD_DN_IO not enabled"))
+		return
+	}
+	minAge := parseDurationQuery(r, "min-age", 5*time.Minute)
+	concurrency := parseIntQuery(r, "concurrency", 4)
+	plan, err := gc.ComputePlan(r.Context(), s.Coord, s.Store, minAge)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	stats := gc.Run(r.Context(), s.Coord, plan, concurrency)
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func parseDurationQuery(r *http.Request, key string, def time.Duration) time.Duration {
+	if v := r.URL.Query().Get(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
+}
+
+func parseIntQuery(r *http.Request, key string, def int) int {
+	if v := r.URL.Query().Get(key); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
 
 // rebalanceCoord picks the rebalance.Coordinator implementation based on
