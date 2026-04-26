@@ -102,8 +102,9 @@ func ComputePlan(coord Coordinator, st ObjectStore) (Plan, error) {
 	if err != nil {
 		return Plan{}, fmt.Errorf("repair: list objects: %w", err)
 	}
-	liveDNs := make(map[string]struct{}, len(coord.DNs()))
-	for _, a := range coord.DNs() {
+	dns := coord.DNs()
+	liveDNs := make(map[string]struct{}, len(dns))
+	for _, a := range dns {
 		liveDNs[a] = struct{}{}
 	}
 
@@ -142,6 +143,19 @@ func ComputePlan(coord Coordinator, st ObjectStore) (Plan, error) {
 				K: k, M: m, Survivors: survivors,
 			}
 			if len(survivors) < k {
+				// Forensics: list which shards we lost (NewAddr empty — unallocatable).
+				for _, shi := range deadIdx {
+					oldAddr := ""
+					if shi < len(stripe.Shards) && len(stripe.Shards[shi].Replicas) > 0 {
+						oldAddr = stripe.Shards[shi].Replicas[0]
+					}
+					rep.DeadShards = append(rep.DeadShards, DeadShard{
+						ShardIndex: shi,
+						ChunkID:    stripe.Shards[shi].ChunkID,
+						OldAddr:    oldAddr,
+						Size:       stripe.Shards[shi].Size,
+					})
+				}
 				plan.Unrepairable = append(plan.Unrepairable, rep)
 				continue
 			}

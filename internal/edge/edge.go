@@ -555,32 +555,74 @@ func (s *Server) handleRepairPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
+// repairOutcome bundles a repair cycle's result. Mirrors rebalance/gc shape so
+// future auto-repair (Season 3+) and the manual handler can't drift.
+type repairOutcome struct {
+	Scanned        int
+	RepairsPlanned int
+	Unrepairable   int
+	Stripes        int
+	Repaired       int
+	Failed         int
+	BytesWritten   int64
+	Errors         []string
+}
+
+func (o repairOutcome) toMap() map[string]any {
+	return map[string]any{
+		"scanned":         o.Scanned,
+		"repairs_planned": o.RepairsPlanned,
+		"unrepairable":    o.Unrepairable,
+		"stripes":         o.Stripes,
+		"repaired":        o.Repaired,
+		"failed":          o.Failed,
+		"bytes_written":   o.BytesWritten,
+		"errors":          o.Errors,
+	}
+}
+
+// executeRepair computes + (if non-empty) runs an EC repair plan under
+// s.repairMu. Used by handleRepairApply (and future auto-repair).
+func (s *Server) executeRepair(ctx context.Context, concurrency int) (repairOutcome, error) {
+	s.repairMu.Lock()
+	defer s.repairMu.Unlock()
+
+	plan, err := repair.ComputePlan(s.Coord, s.Store)
+	if err != nil {
+		return repairOutcome{}, fmt.Errorf("ComputePlan: %w", err)
+	}
+	out := repairOutcome{
+		Scanned:        plan.Scanned,
+		RepairsPlanned: len(plan.Repairs),
+		Unrepairable:   len(plan.Unrepairable),
+	}
+	if out.RepairsPlanned == 0 {
+		return out, nil
+	}
+	stats := repair.Run(ctx, s.Coord, s.Store, plan, concurrency)
+	out.Stripes = stats.Stripes
+	out.Repaired = stats.Repaired
+	out.Failed = stats.Failed
+	out.BytesWritten = stats.BytesWritten
+	out.Errors = stats.Errors
+	return out, nil
+}
+
 // handleRepairApply runs the repair plan with the given concurrency.
 // Serialized via s.repairMu. ?concurrency=N (default 4).
 func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
 	concurrency := intQuery(r, "concurrency", 4)
-	s.repairMu.Lock()
-	defer s.repairMu.Unlock()
-
+	// Repair fetches K survivors per stripe + Reconstruct + PUT — 10min covers ~1k stripes.
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
-	plan, err := repair.ComputePlan(s.Coord, s.Store)
+	out, err := s.executeRepair(ctx, concurrency)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	stats := repair.Run(ctx, s.Coord, s.Store, plan, concurrency)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"scanned":         plan.Scanned,
-		"repairs_planned": len(plan.Repairs),
-		"unrepairable":    len(plan.Unrepairable),
-		"concurrency":     concurrency,
-		"stripes":         stats.Stripes,
-		"repaired":        stats.Repaired,
-		"failed":          stats.Failed,
-		"bytes_written":   stats.BytesWritten,
-		"errors":          stats.Errors,
-	})
+	resp := out.toMap()
+	resp["concurrency"] = concurrency
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleRebalancePlan computes (read-only) the migration plan and returns it.
