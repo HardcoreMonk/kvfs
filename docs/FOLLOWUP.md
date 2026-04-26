@@ -6,13 +6,13 @@
 
 ## 우선순위 맵
 
-- **P0**: 차단·긴급. 즉시 처리 — 현재 **0건**
-- **P1**: 명확한 스펙 존재, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
-- **P2**: 리뷰·개선 권고 — 현재 **0건** (P2-01~09 모두 완료)
-- **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02, OTel 도입 여부)
-- **P5**: post-Season-4 wave 후속 — 모두 완료 (P5-01~09 done)
-- **P6**: Season 5 (coord 분리) — Ep.1~7 모두 완료 (P6-01~08 done; P6-09 reserved, P6-10/11 deferred)
-- **P7**: Season 6 (coord operational migration) — 현재 **1건** (P7-01 rebalance plan, Ep.1 완료)
+- **P0**: 차단·긴급 — 현재 **0건**
+- **P1**: 명확한 스펙, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
+- **P2**: 리뷰·개선 — 모두 완료 (P2-01~09 done)
+- **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02 OTel)
+- **P5**: post-Season-4 wave — 모두 완료 (P5-01~09 done; FOLLOWUP 동기화 2026-04-27)
+- **P6**: Season 5 (coord 분리) — Ep.1~7 모두 완료. 잔여: 3건 (P6-09 reserved, P6-10/11 저우선)
+- **P7**: Season 6 (coord operational migration) — Ep.1~6 모두 완료. 잔여: 3건 (P7-07 저우선, P7-08 저우선, P7-09 중간)
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -36,30 +36,20 @@
 
 ## P5 — Post-Season-4 wave 후속
 
-### [P5-01] ADR-036 — WAL batch metrics
-- **배경**: ADR-035 group commit 이 실제 throughput 을 올리고 있는지 운영 중 관측 불가
-- **스펙**: `kvfs_wal_batch_size` (gauge — 마지막 batch 의 entry 수), `kvfs_wal_durable_lag_seconds` (gauge — 가장 오래 대기 중인 미-fsync entry 의 age)
-- **연결**: `internal/store/wal.go` flusher 에서 update, `internal/edge/metrics.go` 에 등록
-- **출처**: ADR-035 본문 "후속" 섹션
+### ~~[P5-01] ADR-036 — WAL batch metrics~~
+- **DONE 2026-04-26**: ADR-036 작성 + 구현. `kvfs_wal_batch_size` + `kvfs_wal_durable_lag_seconds` gauges. WAL.LastBatchSize / OldestUnsyncedAge accessors. `internal/edge/metrics.go` 에 wired.
 
-### [P5-02] ADR-037 — chunker pool cap 정책
-- **배경**: `internal/chunker/stream.go` `scratchPool` 은 정상 GC 회수에 의존. 메모리 압박 시명시적 evict 없음
-- **스펙**: pool 의 슬랩 수 상한, 또는 cap 합계 상한. 초과 시 가장 오래된 것부터 drop
-- **연결**: `getScratch`/`putScratch`. 측정용 카운터 (P5-01 과 묶어 처리 가능)
-- **출처**: ADR-035 본문 "후속" 섹션
+### ~~[P5-02] ADR-037 — chunker pool cap 정책~~
+- **DONE 2026-04-26**: ADR-037 작성 + 구현. `chunker.SetPoolCap` + `EDGE_CHUNKER_POOL_CAP_BYTES` env. `kvfs_chunker_pool_bytes` gauge.
 
 ### ~~[P5-03] ADR-015 — Coordinator daemon 분리~~
 - **ACCEPTED 2026-04-26**: ADR-015 Proposed → Accepted. ADR-002 supersede. **Season 5 진입**. 후속 작업은 P6-* 시리즈로 이전.
 
-### [P5-04] Hot/Cold rebalance 통합
-- **배경**: P4-09 wave 의 hot/cold tier 는 신규 PUT 만 hot 으로 bias. 기존 cold 데이터의 hot→cold 자동 migration 미구현
-- **스펙**: `internal/rebalance/` 가 chunk 의 `Class` 라벨을 인식, ideal placement set 계산 시 class 필터 적용
-- **출처**: ADR-035 follow-up commit message ("Out of scope: rebalance scope by class — defer to follow-up")
+### ~~[P5-04] Hot/Cold rebalance 통합~~
+- **DONE 2026-04-26**: `ObjectMeta.Class` field, `rebalance.ClassResolver` interface, `ComputePlan(coord, store, class)` 시그니처. class subset 으로 placement 한정. `MetaStore.ListRuntimeDNsByClass` resolver 가 R 미만이면 fallback (deadlock 방지). 2 unit tests.
 
-### [P5-05] WAL group commit × transactional Raft 상호작용 검증
-- **배경**: `EDGE_WAL_BATCH_INTERVAL=5ms` + `EDGE_TRANSACTIONAL_RAFT=1` 동시 활성 시 동작 미검증
-- **위험**: transactional Raft 는 `MarshalPutObjectEntry` 로 entry 미리 push 한 뒤 quorum 받으면 commit. group commit 이 그 commit 을 batch 로 묶으면 quorum-then-batch 순서가 어긋날 가능성
-- **스펙**: integration test — 두 옵션 동시 활성으로 PUT × N concurrent → bbolt + 모든 follower bbolt 일치 검증
+### ~~[P5-05] WAL group commit × transactional Raft 상호작용 검증~~
+- **DONE 2026-04-26**: `TestWALBatched_HookFiresExactlyOnceUnderConcurrency` — 30 concurrent Append + group commit + WAL hook. 모든 entry 가 hook 을 정확히 1번 firing, 모든 seq 디스크에 unique. 핵심 race window 검증.
 
 ---
 
