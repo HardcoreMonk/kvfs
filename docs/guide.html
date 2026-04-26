@@ -784,8 +784,8 @@ type Stripe struct {
   <li>Ep.3: coord HA via Raft (ADR-038). election + leader-redirect. 데모 demo-gimel.</li>
   <li>Ep.4: coord-to-coord WAL replication (ADR-039). <code>COORD_WAL_PATH</code> 설정 시 best-effort sync. 데모 demo-dalet (ד).</li>
   <li>Ep.5: coord transactional commit (ADR-040). <code>COORD_TRANSACTIONAL_RAFT=1</code>, replicate-then-commit. 데모 demo-he (ה).</li>
-  <li>Ep.6 (현재): edge → coord placement RPC (ADR-041). <code>CoordClient.PlaceN</code> + <code>Server.placeN</code>. EDGE_COORD_URL 설정 시 모든 chunk/stripe placement 결정이 coord 에서 — coord 가 single source of truth. 데모 demo-vav (히브리 ו) — coord 가 dn1/2/3 만 알 때 edge 의 dn4 가 placement 에 절대 등장 안 함.</li>
-  <li>후속: kvfs-cli 가 coord 에 직접 admin RPC.</li>
+  <li>Ep.6: edge → coord placement RPC (ADR-041). coord 가 placement 의 single source of truth. 데모 demo-vav (ו).</li>
+  <li>Ep.7 (현재): kvfs-cli 직접 coord admin (ADR-042). coord 에 <code>/v1/coord/admin/{objects,dns}</code> 추가, cli <code>inspect --coord URL</code>. 운영자가 edge filesystem 에 의존 안 하고 coord 에 직접 query. read-only inspect MVP. 데모 demo-zayin (히브리 ז).</li>
 </ul>
 <p>이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.</p>
 

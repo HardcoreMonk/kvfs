@@ -86,6 +86,12 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/coord/lookup", s.handleLookup)
 	mux.HandleFunc("POST /v1/coord/delete", s.handleDelete)
 	mux.HandleFunc("GET /v1/coord/healthz", s.handleHealthz)
+	// ADR-042 (Season 5 Ep.7): bulk read-only admin endpoints so kvfs-cli
+	// (and any operator script) can talk to coord directly instead of
+	// going through edge. Coord owns the truth — the cli should ask the
+	// owner.
+	mux.HandleFunc("GET /v1/coord/admin/objects", s.handleAdminObjects)
+	mux.HandleFunc("GET /v1/coord/admin/dns", s.handleAdminDNs)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
@@ -278,6 +284,29 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 //	{"status":"ok","role":"leader","leader_url":"..."}    — HA mode
 //	{"status":"ok","role":"follower","leader_url":"..."}
 //	{"status":"ok","role":"candidate","leader_url":""}
+// handleAdminObjects returns every object's metadata. Same shape as
+// edge's GET /v1/admin/objects but served by coord (the owner). For
+// MVP no pagination; large clusters will need ?limit=&since= later.
+func (s *Server) handleAdminObjects(w http.ResponseWriter, _ *http.Request) {
+	objs, err := s.Store.ListObjects()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, objs)
+}
+
+// handleAdminDNs returns the runtime DN list (addrs + class labels)
+// from coord's bbolt registry. Mirrors edge's GET /v1/admin/dns.
+func (s *Server) handleAdminDNs(w http.ResponseWriter, _ *http.Request) {
+	dns, err := s.Store.ListRuntimeDNs()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dns)
+}
+
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	body := map[string]string{"status": "ok"}
 	if s.Elector != nil {

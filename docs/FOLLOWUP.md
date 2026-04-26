@@ -102,8 +102,8 @@
 ### ~~[P6-05] edge 의 placement 코드 완전 제거~~
 - **DONE 2026-04-27**: ADR-041 작성 + 구현. `CoordClient.PlaceN` 추가, `Server.placeN` helper 분기, `writeChunkPreferClass` 와 `handlePutECStream` 모두 placeN 경유. 1 unit test (TestCoordClient_PlaceN_ReturnsCoordsView). 데모 demo-vav.sh (히브리 ו) — coord 가 dn1/2/3 만, edge 가 dn1/2/3/4 알 때 chunks 가 dn4 에 절대 안 감 (proof of routing). 149 tests PASS. `internal/coordinator/` 의 placement 부분은 fallback 용 그대로 (CoordClient nil 일 때). 완전 제거는 후속 정리.
 
-### [P6-06] kvfs-cli 가 coord 직접 admin
-- **다음 단계**: `kvfs-cli coord-* ...` subcommand. admin 작업이 edge 통과 안 함.
+### ~~[P6-06] kvfs-cli 가 coord 직접 admin~~
+- **DONE 2026-04-27**: ADR-042 (read-only inspect). coord 에 `/v1/coord/admin/{objects,dns}` 추가, cli `inspect` 에 `--coord URL` 플래그. 1 unit test (TestAdminEndpoints_ListObjectsAndDNs). 데모 demo-zayin.sh (히브리 ז) — coord 직접 인스펙트 + edge.db 비어있음 대비. mutating admin (rebalance/gc/urlkey/dns) 의 coord 이전은 후속 ADR-043/044 예상.
 
 ---
 

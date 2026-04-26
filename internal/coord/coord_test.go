@@ -186,6 +186,73 @@ func TestRequireLeader_FollowerRejectsWritesPropagatesLeaderHint(t *testing.T) {
 	}
 }
 
+// ADR-042 (Season 5 Ep.7): bulk admin endpoints let kvfs-cli read coord
+// state directly without touching edge or opening bbolt files. Verifies
+// objects + dns endpoints return what's actually in the store.
+func TestAdminEndpoints_ListObjectsAndDNs(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.PutObject(&store.ObjectMeta{
+		Bucket: "b", Key: "k1",
+		Chunks: []store.ChunkRef{{ChunkID: "c1", Replicas: []string{"dn1:8080"}}},
+	}); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+	if err := st.AddRuntimeDN("dn4:8080"); err != nil {
+		t.Fatalf("seed dn: %v", err)
+	}
+
+	srv := &Server{
+		Store:  st,
+		Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}}),
+	}
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+
+	resp, err := http.Get(hs.URL + "/v1/coord/admin/objects")
+	if err != nil {
+		t.Fatalf("admin/objects: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("admin/objects status %d", resp.StatusCode)
+	}
+	var objs []store.ObjectMeta
+	if err := json.NewDecoder(resp.Body).Decode(&objs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	resp.Body.Close()
+	if len(objs) != 1 || objs[0].Bucket != "b" || objs[0].Key != "k1" {
+		t.Errorf("admin/objects body wrong: %+v", objs)
+	}
+
+	resp, err = http.Get(hs.URL + "/v1/coord/admin/dns")
+	if err != nil {
+		t.Fatalf("admin/dns: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("admin/dns status %d", resp.StatusCode)
+	}
+	var dns []string
+	if err := json.NewDecoder(resp.Body).Decode(&dns); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	resp.Body.Close()
+	found := false
+	for _, a := range dns {
+		if a == "dn4:8080" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("admin/dns missing dn4:8080: %v", dns)
+	}
+}
+
 // ADR-040 transactional commit: when no quorum can be reached, the leader
 // must reject the commit (return error from commit(), 5xx to client) AND
 // MUST NOT touch its bbolt. This guards the phantom-write window that the

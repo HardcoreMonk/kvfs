@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
@@ -151,18 +152,24 @@ func cmdSign(args []string) {
 
 func cmdInspect(args []string) {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
-	dbPath := fs.String("db", "./edge-data/edge.db", "bbolt file path")
+	dbPath := fs.String("db", "./edge-data/edge.db", "bbolt file path (ignored when -coord set)")
+	coordURL := fs.String("coord", "", "ADR-042: ask kvfs-coord directly via HTTP (e.g. http://localhost:9000) instead of opening bbolt locally")
 	oneObj := fs.String("object", "", "limit to single object key (format: bucket/key)")
 	fs.Parse(args)
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+
+	if *coordURL != "" {
+		inspectViaCoord(*coordURL, *oneObj, enc)
+		return
+	}
 
 	ms, err := store.Open(*dbPath)
 	if err != nil {
 		fail(err)
 	}
 	defer ms.Close()
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
 
 	if *oneObj != "" {
 		parts := strings.SplitN(*oneObj, "/", 2)
@@ -186,6 +193,60 @@ func cmdInspect(args []string) {
 		"objects": objs,
 		"dns":     dns,
 	})
+}
+
+// inspectViaCoord uses coord's HTTP admin endpoints (ADR-042) instead of
+// reading bbolt directly. Lets the cli operate even when running on a
+// host that doesn't have edge's filesystem mounted (typical when coord
+// is a separate machine).
+func inspectViaCoord(baseURL, oneObj string, enc *json.Encoder) {
+	base := strings.TrimRight(baseURL, "/")
+	if oneObj != "" {
+		parts := strings.SplitN(oneObj, "/", 2)
+		if len(parts) != 2 {
+			fail(fmt.Errorf("-object must be bucket/key"))
+		}
+		url := fmt.Sprintf("%s/v1/coord/lookup?bucket=%s&key=%s",
+			base, neturl.QueryEscape(parts[0]), neturl.QueryEscape(parts[1]))
+		var obj store.ObjectMeta
+		if err := getJSON(url, &obj); err != nil {
+			fail(err)
+		}
+		_ = enc.Encode(&obj)
+		return
+	}
+
+	var objs []store.ObjectMeta
+	if err := getJSON(base+"/v1/coord/admin/objects", &objs); err != nil {
+		fail(err)
+	}
+	var dns []string
+	if err := getJSON(base+"/v1/coord/admin/dns", &dns); err != nil {
+		fail(err)
+	}
+	_ = enc.Encode(map[string]any{"objects": objs, "dns": dns})
+}
+
+// getJSON fetches a URL and decodes its body into out. Tiny inline helper
+// — every cli admin subcommand can share once we wire more of them.
+func getJSON(url string, out any) error {
+	resp, err := httpGet(url, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// httpGet centralizes the http.Client construction so cli subcommands can
+// share timeout policy.
+func httpGet(url string, timeout time.Duration) (*http.Response, error) {
+	c := &http.Client{Timeout: timeout}
+	return c.Get(url)
 }
 
 func fail(err error) {
