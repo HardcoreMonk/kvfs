@@ -12,6 +12,24 @@
 //   - Automatic dedup across objects with identical content
 //   - Free integrity verification on read
 //   - git / IPFS / Restic mental model
+//
+// 비전공자용 해설
+// ──────────────
+// DN(DataNode) = "디스크 한 대" 라고 보면 된다. edge 가 정한 chunk_id 로
+// 파일을 받아 그대로 디스크에 떨어뜨리는 단순 KV 서버:
+//
+//   PUT /chunk/<id>  body       → 디스크에 저장 (동일 id 재요청 시 idempotent)
+//   GET /chunk/<id>             → 바이트 그대로 반환
+//   DELETE /chunk/<id>          → 파일 삭제
+//   GET  /chunks                → 보유 청크 ID 목록 (GC 가 사용, ADR-012)
+//   GET  /healthz               → 부팅 시각 + 청크 수 + 총 바이트
+//
+// id 가 sha256(body) 이라는 단 한 가지 invariant 만 검증한다 (handlePut
+// 안에서 hashHex 비교). 그 외 인증·복제·메타데이터는 edge 책임 — DN 은 stateless
+// 에 가깝다 (자체 카운터만 atomic.Int64 로 보유).
+//
+// 디렉토리 분할 (`<id[0:2]>/<id[2:]>`) 은 파일 시스템 한 디렉토리당 inode 한도를
+// 피하려는 흔한 해시 분할. id 가 hex 이라 첫 두 글자 = 256 가지 디렉토리.
 package dn
 
 import (

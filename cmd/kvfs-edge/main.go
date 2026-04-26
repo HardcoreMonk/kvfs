@@ -3,20 +3,33 @@
 
 // Command kvfs-edge is the gateway + inline coordinator.
 //
-// Config (env vars, with flag fallback):
+// Config (env vars, with flag fallback) — full table in ../../README.md
+// "환경 변수" 섹션. The most-used keys:
 //
-//	EDGE_ADDR            string   ":8000"                — HTTP bind address
-//	EDGE_DNS             string   required (comma-sep)   — DN addresses, e.g. "dn1:8080,dn2:8080,dn3:8080"
-//	EDGE_DATA_DIR        string   "./edge-data"           — where to put bbolt file
-//	EDGE_URLKEY_SECRET   string   required               — HMAC-SHA256 secret (>= 16 bytes recommended)
-//	EDGE_QUORUM_WRITE    int      auto (ceil(N/2+1))     — min replica acks for success
-//	EDGE_CHUNK_SIZE      int      4194304 (4 MiB)        — bytes per chunk (ADR-011)
-//	EDGE_AUTO            bool     0                      — opt-in auto rebalance + GC (ADR-013)
-//	EDGE_AUTO_REBALANCE_INTERVAL  duration  5m           — auto rebalance ticker interval
-//	EDGE_AUTO_GC_INTERVAL         duration  15m          — auto GC ticker interval
-//	EDGE_AUTO_GC_MIN_AGE          duration  60s          — min chunk age for auto-GC
-//	EDGE_AUTO_CONCURRENCY         int       4            — parallel ops per cycle
-//	EDGE_SKIP_AUTH       bool     false                  — DEMO ONLY: disable UrlKey verification
+//	EDGE_ADDR / EDGE_DNS / EDGE_DATA_DIR / EDGE_URLKEY_SECRET   (required basics)
+//	EDGE_QUORUM_WRITE / EDGE_CHUNK_SIZE                         (write tunables)
+//	EDGE_AUTO + EDGE_AUTO_*                                     (ADR-013)
+//	EDGE_HEARTBEAT_*                                            (ADR-030)
+//	EDGE_SNAPSHOT_*                                             (ADR-016)
+//	EDGE_ROLE / EDGE_PRIMARY_URL / EDGE_FOLLOWER_PULL_INTERVAL  (ADR-022)
+//	EDGE_TLS_* / EDGE_DN_TLS_*                                  (ADR-029)
+//	EDGE_SKIP_AUTH                                              (DEMO only)
+//
+// 비전공자용 해설
+// ──────────────
+// main 의 일은 wiring 에 가깝다:
+//
+//  1. env / flag 파싱
+//  2. bbolt (메타) open
+//  3. dns_runtime bucket → coordinator (ADR-027 동적 registry)
+//  4. urlkey_secrets bucket → multi-key Signer (ADR-028)
+//  5. (선택) TLS / mTLS config
+//  6. edge.Server 조립 + Heartbeat / SnapshotScheduler / FollowerConfig 주입
+//  7. http.Server 띄우고 SIGTERM 대기
+//  8. graceful shutdown (autoLoop ctx 취소 → bbolt close)
+//
+// 모든 backend 로직은 internal/edge·internal/coordinator·internal/store 등에
+// 위임. 이 파일은 env → struct 매핑 + 라이프사이클 관리만.
 package main
 
 import (

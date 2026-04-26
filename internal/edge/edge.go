@@ -2,6 +2,29 @@
 // Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
 
 // Package edge is the kvfs-edge HTTP gateway: UrlKey verification + coordinator.
+//
+// 비전공자용 해설
+// ──────────────
+// edge = 클러스터의 단일 진입점. 사용자 HTTP 요청을 받아서 1) 인증 (UrlKey,
+// ADR-007/028) 2) 청크/EC stripe 분할 (ADR-008/011) 3) DN 으로 fanout 후
+// quorum 으로 응답.
+//
+// Server 구조체에 모든 운영성 모듈이 모인다:
+//   - Coord   (coordinator)           : 청크 → DN 라우팅 + quorum
+//   - Store   (bbolt 메타)            : 객체 ↔ chunk/stripe 매핑
+//   - Signer  (urlkey)                : URL 서명 검증
+//   - AutoCfg/autoRuns                : ADR-013 in-edge ticker (rebalance/GC)
+//   - Heartbeat                       : ADR-030 DN liveness probe
+//   - SnapshotScheduler               : ADR-016 주기 backup
+//   - Role/followerSt                 : ADR-022 multi-edge HA
+//
+// 라우팅 (Routes 함수):
+//   - 데이터: PUT/GET/DELETE /v1/o/{bucket}/{key...}  (UrlKey 필수)
+//   - 관리:   /v1/admin/*                              (auth 없음 — admin 망 가정)
+//
+// 핵심 mutex 들 (rebalanceMu/gcMu/repairMu/dnsAdminMu/urlkeyAdminMu/autoMu)
+// 은 각 admin endpoint 와 auto-trigger 가 같은 자원을 동시에 건드리지 못하게
+// 직렬화. 데이터 path (PUT/GET/DELETE) 는 mutex 안 잡음 — 동시 처리.
 package edge
 
 import (

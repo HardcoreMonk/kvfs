@@ -1,12 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
 
-// Command kvfs-cli is the developer CLI:
+// Command kvfs-cli is the developer CLI: 12 subcommands cover signing,
+// inspection, simulation, and every Season 2/3 admin endpoint.
 //
-//	kvfs-cli sign --method PUT --path /v1/o/bucket/key --ttl 1h
-//	kvfs-cli inspect [--db ./edge-data/edge.db] [--object bucket/key]
+//	kvfs-cli sign            — generate HMAC presigned URL (ADR-007)
+//	kvfs-cli inspect         — dump bbolt store contents (offline)
+//	kvfs-cli placement-sim   — simulate Rendezvous Hashing (ADR-009)
+//	kvfs-cli rebalance       — chunk + EC stripe rebalance (ADR-010/024)
+//	kvfs-cli gc              — surplus chunk GC (ADR-012)
+//	kvfs-cli auto            — auto-trigger config + history (ADR-013)
+//	kvfs-cli dns             — dynamic DN registry (ADR-027)
+//	kvfs-cli urlkey          — kid rotation (ADR-028)
+//	kvfs-cli repair          — EC shard repair (ADR-025)
+//	kvfs-cli meta            — snapshot/restore/info/history (ADR-014/016)
+//	kvfs-cli heartbeat       — DN liveness snapshot (ADR-030)
+//	kvfs-cli role            — primary/follower role + sync stats (ADR-022)
 //
-// The secret for sign/verify is read from EDGE_URLKEY_SECRET (shared with kvfs-edge).
+// 비전공자용 해설
+// ──────────────
+// 거의 모든 admin 작업이 두 가지 형태로 노출:
+//   - HTTP endpoint (운영자/automation 용)         /v1/admin/...
+//   - kvfs-cli 서브커맨드 (사람-친화 출력 + 보조)   kvfs-cli <subcmd>
+//
+// 각 subcommand 함수의 패턴이 동일:
+//   1. flag.NewFlagSet 으로 --edge 등 파싱
+//   2. mustGet / mustPost / mustHTTPJSON 으로 HTTP 호출
+//   3. --json 이면 raw 출력, 아니면 표 출력
+//
+// `sign` 과 `inspect` 만 예외 — edge 없이 직접 동작 (sign 은 secret env,
+// inspect 은 bbolt 파일 직접 read). `meta restore` 는 offline 파일 복사.
+//
+// 새 subcommand 추가 시: switch 분기 + cmdXxx 함수 + usage() 한 줄.
 package main
 
 import (

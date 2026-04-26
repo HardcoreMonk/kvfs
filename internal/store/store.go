@@ -4,13 +4,36 @@
 // Package store wraps bbolt for kvfs-edge metadata.
 //
 // Buckets:
-//   - "objects"   : "<bucket>/<key>" -> JSON(ObjectMeta)
-//   - "dns"       : "<dn_id>"        -> JSON(DNInfo)       // registry (future)
+//   - "objects"        : "<bucket>/<key>" -> JSON(ObjectMeta)   // ADR-004/005/011
+//   - "dns"            : "<dn_id>"        -> JSON(DNInfo)        // future heartbeat registry
+//   - "dns_runtime"    : "<addr>"         -> JSON(timestamp)     // ADR-027 live placement set
+//   - "urlkey_secrets" : "<kid>"          -> JSON(URLKeyEntry)   // ADR-028 multi-kid rotation
 //
 // Design notes:
 //   - bbolt is pure-Go, single-writer, serializable transactions.
-//   - Single bbolt file per edge instance (single-writer constraint).
-//   - For HA/sharded edges: Season 2 topic (Raft-replicated state).
+//   - One bbolt file per edge process (single-writer file lock constraint).
+//   - The *bbolt.DB pointer is held in atomic.Pointer so ADR-022 follower
+//     edges can hot-swap to a freshly-pulled snapshot without invalidating
+//     concurrent readers (see Reload).
+//
+// 비전공자용 해설
+// ──────────────
+// kvfs 에서 "메타" = "어떤 객체가 어떤 청크 묶음(또는 EC stripe) 인지 + 그 청크들이
+// 어느 DN 에 사는지" 의 매핑. chunk 데이터는 DN 디스크에 분산돼 있고, 이 매핑이
+// 사라지면 GET 으로 객체를 재조립할 수 없다 (chunk 파일은 살아있어도).
+//
+// 그래서 메타 = 단일 실패점. bbolt 한 파일 손상 = 클러스터 dead. 안전망:
+//   - Snapshot (ADR-014): 운영 중 아무때나 hot copy
+//   - Auto-snapshot scheduler (ADR-016): 주기 backup + retention
+//   - Multi-edge HA (ADR-022): follower 가 primary snapshot 을 pull → Reload 로
+//     자기 bbolt 교체 (read 도중에 끊기지 않음 — atomic.Pointer 덕)
+//
+// 객체 모델:
+//   - replication: Chunks []ChunkRef (각 청크 = R 개 DN 에 사본)
+//   - EC: EC ECParams + Stripes []Stripe (각 stripe = K+M shard, K 만 살아있으면 복원)
+//
+// 두 모델은 mutually exclusive — IsEC() 로 분기. legacy single-chunk 객체는
+// PutObject 안의 normalize 단계가 Chunks=[1] 로 자동 변환.
 package store
 
 import (

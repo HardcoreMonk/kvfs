@@ -10,6 +10,18 @@
 //	DN_DATA_DIR        string   required  — chunks directory root
 //	DN_TLS_CERT/KEY    string   optional  — TLS server (ADR-029)
 //	DN_TLS_CLIENT_CA   string   optional  — mTLS: verify edge client cert
+//
+// 비전공자용 해설
+// ──────────────
+// kvfs-dn = 디스크 한 대 = HTTP KV 서버. main 함수의 일은 단순:
+//
+//  1. env 읽고 (필수: DN_ID, DN_DATA_DIR)
+//  2. internal/dn.NewServer 로 storage 핸들러 생성
+//  3. (선택) TLS / mTLS cert 로드
+//  4. http.Server 띄우고 SIGTERM 까지 ListenAndServe
+//
+// edge 와 달리 외부 의존 0 (다른 DN 도, 메타 DB 도 모름). 멈춰도 chunk 파일만
+// 살아있으면 다른 replica 에서 GET 으로 복원 가능.
 package main
 
 import (

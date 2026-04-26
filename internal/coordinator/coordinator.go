@@ -17,6 +17,23 @@
 //   - 이전: 모든 DN에 쓰기 (len(dns) replicas)
 //   - 지금: chunkID → placement.Placer.Pick(ReplicationFactor) 로 N개 선택
 //   - 효과: DN 추가·제거 시 전체 흔들림 없이 약 R/N 만 이동
+//
+// 비전공자용 해설
+// ──────────────
+// 이 패키지가 답하는 두 질문:
+//
+//  1. "이 청크를 어느 DN 들에 넣을까?"  → placement.Pick (HRW)
+//  2. "그 DN 들에 어떻게 안전하게 쓸까?" → 병렬 PUT + R/2+1 quorum
+//
+// 코어 함수 3개:
+//   - WriteChunk(ctx, id, data)         쓰기 path
+//   - ReadChunk(ctx, id, candidates)    읽기 path
+//   - PlaceN(key, n)                    "어디 갈까?" 미리보기 (EC, debug)
+//
+// placerMu (RWMutex) 는 운영 중 DN 등록 변경 (ADR-027 UpdateNodes) 을 위한 것.
+// read 가 압도적으로 많아서 RWMutex — write 만 짧게 잡고 swap.
+//
+// quorum 수식: R/2+1 (R=3 → 2). 한 DN 죽어도 쓰기 성공.
 package coordinator
 
 import (

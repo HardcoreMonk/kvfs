@@ -11,6 +11,26 @@
 // Why HMAC-SHA256 over Base62+APR1-MD5:
 //   - Same security guarantee, simpler primitives
 //   - Standard library only (crypto/hmac + crypto/sha256)
+//
+// 비전공자용 해설
+// ──────────────
+// "presigned URL" = URL 자체에 권한과 만료 시각이 서명으로 박힌 형태. S3 의
+// `s3://...?X-Amz-Signature=...` 가 같은 패턴. edge 가 PUT/GET 받을 때마다
+// 별도 인증 없이 URL 만 보고 통과/거절 결정 가능.
+//
+// 동작 한 줄로:
+//
+//   sign:   sig = hex(HMAC-SHA256(secret, "PUT:/v1/o/b/k:1777200000"))
+//   verify: 같은 입력 다시 계산 후 timing-safe 비교
+//
+// kid (key id, ADR-028) = 서명에 쓴 시크릿이 어느 것인지 알리는 라벨.
+// 운영 중 secret 회전 시:
+//   1. 새 kid 등록 (Add) — 옛 URL 여전히 verify 가능
+//   2. 새 URL 은 새 kid 로 서명 (SetPrimary)
+//   3. grace period 후 옛 kid 제거 (Remove) — 그때 옛 URL 401
+//
+// kid 생략 URL (legacy, sign 도구가 안 박았을 때) 은 모든 kid 순회 시도 — 어느
+// 하나 맞으면 통과. Remove 된 kid 는 진짜 거절.
 package urlkey
 
 import (

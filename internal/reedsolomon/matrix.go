@@ -1,6 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The kvfs Authors. Licensed under the Apache License, Version 2.0.
 
+// Matrix arithmetic over GF(2^8) for Reed-Solomon (ADR-008).
+//
+// 비전공자용 해설
+// ──────────────
+// RS encode/decode 는 행렬 곱 한 번으로 표현된다:
+//
+//   parity   = G_parity × data         (Encode: K data → M parity)
+//   data     = G_inv × survivor        (Reconstruct: 임의 K survivors → 원본 data)
+//
+// 여기서 G 는 K+M × K Vandermonde-like 행렬이며 그 어떤 K 행 부분행렬도
+// **invertible** 임이 보장된다 (Vandermonde 의 핵심 속성). 그래서 어떤 K 개
+// shard 가 살아있어도 inverse 만 계산하면 원본 복구.
+//
+// 본 파일이 제공하는 primitives:
+//   - newMatrix / get / set / row : 기본 컨테이너
+//   - mulRow                       : 행 × 스칼라 (gf 곱)
+//   - addRow                       : 행 += 행 (gf 덧셈 = XOR)
+//   - swap                         : 두 행 교환 (Gauss-Jordan pivot)
+//   - augment / submatrix          : [I | A] 만들고 → 우반쪽이 A^-1
+//   - invert                       : Gauss-Jordan elimination (full inversion)
+//
+// 모든 산술이 GF(2^8) (gf.go 의 gfMul / gfDiv) 위에서 동작 — 일반 정수 산술
+// 아님. 1+1=0, 2×3 ≠ 6 이라는 점이 핵심 mental model.
 package reedsolomon
 
 import (
