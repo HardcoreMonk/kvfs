@@ -99,16 +99,18 @@
 ### ~~[P3-07] Season 3 Ep.2 주제 결정~~
 - **OBSOLETE (2026-04-26)**: ADR-024 (EC stripe rebalance) 채택 + 구현 완료. 다음 ep 결정은 신규 [P3-09]
 
-### [P3-09] Season 3 Ep.3 주제 결정
-- **현**: Ep.2 ADR-024 완료. 운영성 트랙의 다음 ep 미정
+### ~~[P3-09] Season 3 Ep.3 주제 결정~~
+- **OBSOLETE (2026-04-26)**: ADR-025 EC repair queue 채택 + 구현 완료. 다음 ep 결정은 신규 [P3-10]
+
+### [P3-10] Season 3 Ep.4 주제 결정
+- **현**: Ep.3 ADR-025 완료. 운영성 트랙의 다음 ep 미정
 - **후보**:
-  - **ADR-025 — EC repair queue**: DN 영구 사망 시 ReadChunk 가 fail → reconstruct K shards 후 새 자리 복구. ADR-024 의 실패 retry 한계 보완 — 자연 후속
-  - **ADR-022 — Multi-edge leader election**: ADR-013 single-edge 가정 깨기. coordinator daemon 분리 (ADR-015) 와 묶이는 큰 작업
-  - **ADR-014 — Meta backup/HA**: bbolt 메타 손상 시 GC 의 자동 삭제가 위험. 안전망 강화
-  - **ADR-017 — Streaming PUT/GET**: 현재 `io.ReadAll` 기반. 메모리 사용 상한 진짜 강제
-  - **ADR-018 — Content-defined chunking**: 비정렬 데이터 dedup 효율
-  - **ADR-019 — SIMD-accelerated RS**: pure Go RS ~50 MB/s → SIMD 1+ GB/s
-- **추천 순서**: 025 (자연 후속, ADR-024 의 retry 한계 보완) → 014 (메타 안전성) → 022 (HA 본격)
+  - **ADR-022 — Multi-edge leader election**: ADR-013/024/025/027/028 모두 single-edge 가정. multi-edge 시 동기화 필요. 큰 작업
+  - **ADR-014 — Meta backup/HA**: bbolt 메타 손상 시 안전망. 단순한 snapshot/replay
+  - **ADR-030 — DN heartbeat**: registry-removal 외 자동 dead 감지
+  - **ADR-017 — Streaming PUT/GET**: io.ReadAll 기반 → io.Reader 진짜 streaming
+  - **ADR-018 — Content-defined chunking**: rabin/buzhash 비정렬 dedup
+- **추천 순서**: 014 (메타 안전성, 작은 ADR) → 022 (HA 본격, 큰 작업) → 030 (heartbeat) → 017/018 (성능/효율)
 - **결정 시 P1 로 승격**
 
 ---

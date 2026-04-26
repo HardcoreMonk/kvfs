@@ -60,6 +60,7 @@ Accepted · YYYY-MM-DD
 | [027](ADR-027-dynamic-dn-registry.md) | Dynamic DN registry (admin endpoint + bbolt 영속) | Accepted · 2026-04-26 | `internal/coordinator/` UpdateNodes + `dns_runtime` 버킷 |
 | [028](ADR-028-urlkey-rotation.md) | UrlKey kid rotation (multi-key Signer + bbolt 영속) | Accepted · 2026-04-26 | `internal/urlkey/` multi-key + `urlkey_secrets` 버킷 |
 | [029](ADR-029-optional-tls.md) | Optional TLS / mTLS (env-driven opt-in) | Accepted · 2026-04-26 | `cmd/kvfs-{edge,dn}/` TLS env + `scripts/gen-tls-certs.sh` |
+| [025](ADR-025-ec-repair.md) | EC repair queue (Reed-Solomon Reconstruct K survivors) | Accepted · 2026-04-26 | `internal/repair/` + `kvfs-cli repair` |
 
 ## Season 3+ 예상 ADR (pending)
 - ADR-014: Meta backup/HA (bbolt 메타 손실 시 복구)

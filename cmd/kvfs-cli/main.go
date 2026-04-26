@@ -48,6 +48,8 @@ func main() {
 		cmdDNs(os.Args[2:])
 	case "urlkey":
 		cmdURLKey(os.Args[2:])
+	case "repair":
+		cmdRepair(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -69,6 +71,7 @@ Subcommands:
   auto            Show auto-trigger config + recent run history (ADR-013)
   dns             list / add / remove DNs in the live registry (ADR-027)
   urlkey          list / rotate / remove signing kids (ADR-028)
+  repair          rebuild EC shards on dead DNs via Reed-Solomon (ADR-025)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -895,6 +898,135 @@ func cmdURLKey(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "urlkey: unknown subcommand %q\n", sub)
 		os.Exit(2)
+	}
+}
+
+// ---- repair ----
+//
+// EC stripe repair (ADR-025). Wraps:
+//   POST /v1/admin/repair/plan
+//   POST /v1/admin/repair/apply?concurrency=N
+//
+// Use --plan to preview dead shards (and any unrepairable stripes — fewer
+// than K survivors → mathematically unrecoverable, alert).
+// --apply executes Reed-Solomon Reconstruct + writes rebuilt shards to new DNs.
+func cmdRepair(args []string) {
+	fs := flag.NewFlagSet("repair", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	doPlan := fs.Bool("plan", false, "show repair plan only (no changes)")
+	doApply := fs.Bool("apply", false, "execute the plan")
+	concurrency := fs.Int("concurrency", 4, "parallel stripe repairs during apply")
+	verbose := fs.Bool("v", false, "print every repair entry (otherwise summary)")
+	fs.Parse(args)
+
+	if !*doPlan && !*doApply {
+		fmt.Fprintln(os.Stderr, "repair: specify --plan or --apply")
+		os.Exit(2)
+	}
+	if *doPlan && *doApply {
+		fmt.Fprintln(os.Stderr, "repair: --plan and --apply are mutually exclusive")
+		os.Exit(2)
+	}
+
+	base := strings.TrimRight(*edge, "/")
+	if *doPlan {
+		body := mustPost(base + "/v1/admin/repair/plan")
+		var plan struct {
+			Scanned int `json:"scanned"`
+			Repairs []struct {
+				Bucket      string `json:"bucket"`
+				Key         string `json:"key"`
+				StripeIndex int    `json:"stripe_index"`
+				DeadShards  []struct {
+					ShardIndex int    `json:"shard_index"`
+					OldAddr    string `json:"old_addr"`
+					NewAddr    string `json:"new_addr"`
+					Size       int64  `json:"size"`
+				} `json:"dead_shards"`
+				Survivors []struct {
+					ShardIndex int    `json:"shard_index"`
+					Addr       string `json:"addr"`
+				} `json:"survivors"`
+			} `json:"repairs"`
+			Unrepairable []struct {
+				Bucket      string `json:"bucket"`
+				Key         string `json:"key"`
+				StripeIndex int    `json:"stripe_index"`
+			} `json:"unrepairable"`
+		}
+		if err := json.Unmarshal(body, &plan); err != nil {
+			fail(fmt.Errorf("decode plan: %w", err))
+		}
+		fmt.Printf("🔧 Repair plan — scanned %d EC stripe(s)\n", plan.Scanned)
+		fmt.Printf("   repairable:    %d\n", len(plan.Repairs))
+		fmt.Printf("   unrepairable:  %d  (data-loss alert if > 0)\n", len(plan.Unrepairable))
+		if len(plan.Repairs) == 0 && len(plan.Unrepairable) == 0 {
+			fmt.Println("   ✅ All EC stripes healthy.")
+			return
+		}
+		if len(plan.Unrepairable) > 0 {
+			fmt.Println()
+			fmt.Println("⚠️  UNREPAIRABLE (< K survivors — restore from backup):")
+			for _, u := range plan.Unrepairable {
+				fmt.Printf("   - %s/%s stripe=%d\n", u.Bucket, u.Key, u.StripeIndex)
+			}
+		}
+		if len(plan.Repairs) > 0 {
+			fmt.Println()
+			limit := len(plan.Repairs)
+			if !*verbose && limit > 5 {
+				limit = 5
+			}
+			fmt.Printf("First %d repair(s):\n", limit)
+			for i := 0; i < limit; i++ {
+				r := plan.Repairs[i]
+				fmt.Printf("  %s/%s stripe=%d  alive=%d  dead=%d\n",
+					r.Bucket, r.Key, r.StripeIndex, len(r.Survivors), len(r.DeadShards))
+				for _, d := range r.DeadShards {
+					fmt.Printf("    shard[%d]  size=%d  %s → %s\n",
+						d.ShardIndex, d.Size, d.OldAddr, d.NewAddr)
+				}
+			}
+			if !*verbose && len(plan.Repairs) > limit {
+				fmt.Printf("  ... and %d more (use -v)\n", len(plan.Repairs)-limit)
+			}
+			fmt.Println()
+			fmt.Println("Next:  kvfs-cli repair --apply")
+		}
+		return
+	}
+
+	url := fmt.Sprintf("%s/v1/admin/repair/apply?concurrency=%d", base, *concurrency)
+	body := mustPost(url)
+	var stats struct {
+		Scanned        int      `json:"scanned"`
+		RepairsPlanned int      `json:"repairs_planned"`
+		Unrepairable   int      `json:"unrepairable"`
+		Concurrency    int      `json:"concurrency"`
+		Stripes        int      `json:"stripes"`
+		Repaired       int      `json:"repaired"`
+		Failed         int      `json:"failed"`
+		BytesWritten   int64    `json:"bytes_written"`
+		Errors         []string `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &stats); err != nil {
+		fail(fmt.Errorf("decode apply result: %w", err))
+	}
+	fmt.Printf("🔧 Repair applied (concurrency=%d)\n", stats.Concurrency)
+	fmt.Printf("   scanned:         %d\n", stats.Scanned)
+	fmt.Printf("   planned:         %d\n", stats.RepairsPlanned)
+	fmt.Printf("   unrepairable:    %d\n", stats.Unrepairable)
+	fmt.Printf("   repaired:        %d\n", stats.Repaired)
+	fmt.Printf("   failed:          %d\n", stats.Failed)
+	fmt.Printf("   bytes_written:   %d\n", stats.BytesWritten)
+	if *verbose && len(stats.Errors) > 0 {
+		fmt.Println("   errors:")
+		for _, e := range stats.Errors {
+			fmt.Printf("     - %s\n", e)
+		}
+	}
+	if stats.Failed > 0 {
+		os.Exit(1)
 	}
 }
 

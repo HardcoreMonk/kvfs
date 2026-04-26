@@ -25,6 +25,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/reedsolomon"
+	"github.com/HardcoreMonk/kvfs/internal/repair"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
 )
@@ -97,6 +98,9 @@ type Server struct {
 	// mutation stay consistent.
 	urlkeyAdminMu sync.Mutex
 
+	// repairMu serializes /v1/admin/repair/apply (ADR-025).
+	repairMu sync.Mutex
+
 	// autoMu protects autoRuns + lastCheck timestamps.
 	// Empty cycles update lastCheck only (not autoRuns) so the ring buffer
 	// keeps actionable history; lastCheck still proves the loop is alive.
@@ -137,6 +141,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/admin/rebalance/apply", s.handleRebalanceApply)
 	mux.HandleFunc("POST /v1/admin/gc/plan", s.handleGCPlan)
 	mux.HandleFunc("POST /v1/admin/gc/apply", s.handleGCApply)
+	mux.HandleFunc("POST /v1/admin/repair/plan", s.handleRepairPlan)
+	mux.HandleFunc("POST /v1/admin/repair/apply", s.handleRepairApply)
 	mux.HandleFunc("GET /v1/admin/auto/status", s.handleAutoStatus)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
@@ -534,6 +540,46 @@ func (s *Server) handleRemoveURLKey(w http.ResponseWriter, r *http.Request) {
 		"action": "remove",
 		"kid":    kid,
 		"kids":   s.Signer.Kids(),
+	})
+}
+
+// ─── ADR-025 EC repair handlers ───
+
+// handleRepairPlan computes (read-only) the EC stripe repair plan.
+func (s *Server) handleRepairPlan(w http.ResponseWriter, r *http.Request) {
+	plan, err := repair.ComputePlan(s.Coord, s.Store)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// handleRepairApply runs the repair plan with the given concurrency.
+// Serialized via s.repairMu. ?concurrency=N (default 4).
+func (s *Server) handleRepairApply(w http.ResponseWriter, r *http.Request) {
+	concurrency := intQuery(r, "concurrency", 4)
+	s.repairMu.Lock()
+	defer s.repairMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	plan, err := repair.ComputePlan(s.Coord, s.Store)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	stats := repair.Run(ctx, s.Coord, s.Store, plan, concurrency)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scanned":         plan.Scanned,
+		"repairs_planned": len(plan.Repairs),
+		"unrepairable":    len(plan.Unrepairable),
+		"concurrency":     concurrency,
+		"stripes":         stats.Stripes,
+		"repaired":        stats.Repaired,
+		"failed":          stats.Failed,
+		"bytes_written":   stats.BytesWritten,
+		"errors":          stats.Errors,
 	})
 }
 
