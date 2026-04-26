@@ -568,19 +568,26 @@ type Stripe struct {
 
 ---
 
-### 12.3 Season 5 — coord 분리 (in progress)
+### 12.3 Season 5 — coord 분리 (closed, Ep.1~7)
 
 ADR-015 Accept (2026-04-26). `kvfs-coord` daemon 신설 — placement + 메타 ownership 이 edge 에서 떨어져 나간다. ADR-002 supersede.
 
-- Ep.1: `cmd/kvfs-coord/` skeleton + 4 RPC (`/v1/coord/{place,commit,lookup,delete}`). 데모 `scripts/demo-aleph.sh`.
-- Ep.2: edge → coord client 통합. `EDGE_COORD_URL` 설정 시 edge 가 메타 commit/lookup/delete 모두 coord 로 위임. 데모 demo-bet (히브리 ב).
-- Ep.3: coord HA via Raft (ADR-038). election + leader-redirect. 데모 demo-gimel.
-- Ep.4: coord-to-coord WAL replication (ADR-039). `COORD_WAL_PATH` 설정 시 best-effort sync. 데모 demo-dalet (히브리 ד).
-- Ep.5: coord transactional commit (ADR-040). `COORD_TRANSACTIONAL_RAFT=1` 설정 시 replicate-then-commit — quorum 실패 시 503 + leader bbolt 무변화. 데모 demo-he (히브리 ה).
-- Ep.6: edge → coord placement RPC (ADR-041). `CoordClient.PlaceN` + `Server.placeN` helper. coord 가 placement 의 single source of truth. 데모 demo-vav (ו).
-- Ep.7 (현재): kvfs-cli 직접 coord admin (ADR-042). coord 에 `/v1/coord/admin/{objects,dns}` 추가, cli `inspect --coord URL`. 운영자가 edge filesystem 에 의존 안 하고 coord 에 직접 query. read-only inspect MVP — mutating admin (rebalance/urlkey/dns) 의 coord 이전은 후속. 데모 demo-zayin (히브리 ז).
+- Ep.1: `cmd/kvfs-coord/` skeleton + 4 RPC. 데모 `scripts/demo-aleph.sh`.
+- Ep.2: edge → coord meta client. `EDGE_COORD_URL`. 데모 demo-bet (ב).
+- Ep.3: coord HA via Raft (ADR-038). 데모 demo-gimel (ג).
+- Ep.4: coord WAL replication (ADR-039). 데모 demo-dalet (ד).
+- Ep.5: coord transactional commit (ADR-040). 데모 demo-he (ה).
+- Ep.6: edge → coord placement RPC (ADR-041). 데모 demo-vav (ו).
+- Ep.7: cli direct coord admin (ADR-042, read-only inspect). 데모 demo-zayin (ז).
 
-이 트랙이 완료되면 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.
+이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — coord 가 placement·메타·일관성의 owner, edge 는 thin gateway.
+
+### 12.4 Season 6 — coord operational migration (in progress)
+
+Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을 옮긴다. 끝나면 cli 가 모든 admin 을 coord 통해 함, edge 가 진짜 thin.
+
+- Ep.1 (현재): rebalance plan on coord (ADR-043). `/v1/coord/admin/rebalance/plan`, cli `rebalance --plan --coord`. apply 는 여전히 edge (Ep.2 가 이전). 데모 demo-chet (히브리 ח).
+- 후속: Ep.2 rebalance apply, Ep.3 GC, Ep.4 repair, Ep.5+ urlkey rotation / dns admin.
 
 ## 13. 다음에 읽을 것
 

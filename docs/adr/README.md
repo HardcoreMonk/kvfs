@@ -99,7 +99,13 @@ Accepted · YYYY-MM-DD
 | [041](ADR-041-edge-placement-via-coord.md) | Edge routes placement decisions through coord (single source of truth) | Accepted · 2026-04-27 | `CoordClient.PlaceN` + `Server.placeN` helper · demo-vav (Ep.6) |
 | [042](ADR-042-cli-direct-coord-admin.md) | kvfs-cli direct coord admin (read-only inspect) | Accepted · 2026-04-27 | `coord /v1/coord/admin/{objects,dns}` + cli `inspect --coord` · demo-zayin (Ep.7) |
 
-> Greek alpha-omega 가 소진됐으므로 Season 5 demos 는 Hebrew (aleph, bet, gimel ...).
+## Season 6 — coord operational migration (in progress, Ep.1~)
+
+| # | 제목 | 상태 | 연결 · demo |
+|---|---|---|---|
+| [043](ADR-043-coord-rebalance-plan.md) | Rebalance plan computed on coord | Accepted · 2026-04-27 | `coord /v1/coord/admin/rebalance/plan` + cli `rebalance --plan --coord` · demo-chet (Ep.1) |
+
+> Hebrew letters continue (chet = ח, 8th letter).
 
 ## 미작성 ADR (예상)
 

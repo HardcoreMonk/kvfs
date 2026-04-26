@@ -11,7 +11,8 @@
 - **P2**: 리뷰·개선 권고 — 현재 **0건** (P2-01~09 모두 완료)
 - **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02, OTel 도입 여부)
 - **P5**: post-Season-4 wave 후속 — 모두 완료 (P5-01~09 done)
-- **P6**: Season 5 (coord 분리) — 현재 **1건** (P6-01 Ep.1 skeleton 완료, Ep.2~5 대기)
+- **P6**: Season 5 (coord 분리) — Ep.1~7 모두 완료 (P6-01~08 done; P6-09 reserved, P6-10/11 deferred)
+- **P7**: Season 6 (coord operational migration) — 현재 **1건** (P7-01 rebalance plan, Ep.1 완료)
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -78,6 +79,27 @@
 
 ### ~~[P6-07] coord transactional commit (ADR-034 port)~~
 - **DONE 2026-04-27**: ADR-040 작성 + 구현. `coord.Server.{TransactionalCommit, ReplicateTimeout}` field, `commit()` helper 가 분기. `COORD_TRANSACTIONAL_RAFT=1` env (Elector + WAL 둘 다 필수, mismatch 시 startup fatal). 2 unit tests: quorum failure → bbolt 무변화 + WAL.LastSeq 무변화, prerequisite 누락 시 fallback. 데모 demo-he.sh (히브리 ה) — 2/3 coord kill 후 PUT 503 + lookup 404 + 복구 후 PUT 200. 148 tests PASS.
+
+---
+
+## P7 — Season 6 (coord operational migration)
+
+### ~~[P7-01] Season 6 Ep.1 — rebalance plan on coord~~
+- **DONE 2026-04-27**: ADR-043 작성 + 구현. coord `/v1/coord/admin/rebalance/plan`. `rebalancePlanCoord` 어댑터 (placer + Store 위에 rebalance.Coordinator 인터페이스 충족, ReadChunk/PutChunkTo는 명시적 에러). cli `rebalance --plan --coord URL`. 1 unit test (TestRebalancePlan_DetectsMisplacedChunk). 데모 demo-chet.sh (히브리 ח). 153 tests PASS.
+
+### [P7-02] Season 6 Ep.2 — rebalance apply on coord
+- **다음**: coord 가 DN I/O 가져감. `internal/coordinator` 인스턴스 추가. cli `--apply --coord` 활성. ADR-044 예상.
+
+### [P7-03] Season 6 Ep.3 — GC plan + apply on coord
+- **다음**: 같은 패턴. GC 가 DN의 chunk list 와 coord meta diff. ADR-045 예상.
+
+### [P7-04] Season 6 Ep.4 — Repair on coord
+- **다음**: EC reconstruct → coord 가 DN I/O + Reed-Solomon. ADR-046 예상.
+
+### [P7-05+] Season 6 Ep.5+ — admin registry mutation on coord
+- urlkey rotation, dns add/remove/class. 현재 edge 만 받음. ADR-047 + 예상.
+
+---
 
 ### [P6-10] Edge-side meta cache (per-bucket-key, short-TTL)
 - **배경**: coord-proxy 모드에서 매 GET/HEAD = coord 에 1 RTT. 같은 키 반복 GET 이 N RPC. /simplify (2026-04-27) 가 두 번째로 flag.

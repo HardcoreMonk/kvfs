@@ -476,6 +476,7 @@ func sameSetKeys(a, b map[string]bool) bool {
 func cmdRebalance(args []string) {
 	fs := flag.NewFlagSet("rebalance", flag.ExitOnError)
 	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	coordURL := fs.String("coord", "", "ADR-043: ask coord directly for the plan (apply still goes via edge in Season 6 Ep.1)")
 	doPlan := fs.Bool("plan", false, "show migration plan only (no changes)")
 	doApply := fs.Bool("apply", false, "execute the plan")
 	concurrency := fs.Int("concurrency", 4, "parallel chunk copies during apply")
@@ -490,9 +491,19 @@ func cmdRebalance(args []string) {
 		fmt.Fprintln(os.Stderr, "rebalance: --plan and --apply are mutually exclusive")
 		os.Exit(2)
 	}
+	if *doApply && *coordURL != "" {
+		fmt.Fprintln(os.Stderr, "rebalance: --apply not supported via --coord yet (Ep.1 ports plan only); use --edge")
+		os.Exit(2)
+	}
 
 	if *doPlan {
-		runRebalancePlan(*edge, *verbose)
+		base := *edge
+		path := "/v1/admin/rebalance/plan"
+		if *coordURL != "" {
+			base = *coordURL
+			path = "/v1/coord/admin/rebalance/plan"
+		}
+		runRebalancePlan(base, path, *verbose)
 	} else {
 		runRebalanceApply(*edge, *concurrency, *verbose)
 	}
@@ -515,8 +526,8 @@ type planMigration struct {
 	NewAddr     string   `json:"new_addr"`
 }
 
-func runRebalancePlan(edge string, verbose bool) {
-	url := strings.TrimRight(edge, "/") + "/v1/admin/rebalance/plan"
+func runRebalancePlan(base, path string, verbose bool) {
+	url := strings.TrimRight(base, "/") + path
 	body := mustPost(url)
 	var plan struct {
 		Scanned    int              `json:"scanned"`

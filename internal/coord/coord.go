@@ -41,6 +41,7 @@ import (
 
 	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
+	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 )
 
@@ -92,6 +93,9 @@ func (s *Server) Routes() *http.ServeMux {
 	// owner.
 	mux.HandleFunc("GET /v1/coord/admin/objects", s.handleAdminObjects)
 	mux.HandleFunc("GET /v1/coord/admin/dns", s.handleAdminDNs)
+	// ADR-043 (Season 6 Ep.1): rebalance plan computed by coord directly.
+	// Read-only — apply still on edge until coord grows DN I/O capability.
+	mux.HandleFunc("POST /v1/coord/admin/rebalance/plan", s.handleRebalancePlan)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
@@ -305,6 +309,76 @@ func (s *Server) handleAdminDNs(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, dns)
+}
+
+// handleRebalancePlan computes a rebalance plan from coord's authoritative
+// metadata + placement. Read-only: no DN I/O happens — that's the apply
+// path (still on edge in Ep.1). Returns the JSON-encoded rebalance.Plan.
+//
+// ADR-043 rationale: edge's rebalance plan was computed against edge's
+// view of placement, which can drift from coord's. With coord as the
+// single source of truth (Ep.6), plan computation belongs here.
+func (s *Server) handleRebalancePlan(w http.ResponseWriter, _ *http.Request) {
+	adapter := &rebalancePlanCoord{placer: s.Placer}
+	plan, err := rebalance.ComputePlan(adapter, s.Store, s.Store)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// rebalancePlanCoord adapts coord's Placer to rebalance.Coordinator for
+// the PLAN path only. ReadChunk/PutChunkTo panic with a clear message —
+// they would only be hit by Run (apply), which Ep.1 keeps on edge.
+//
+// `r` (replication factor) for PlaceChunk: rebalance only calls PlaceChunk
+// when planChunks falls back from the class-subset path; in that case it
+// passes len(chunk.Replicas) which == R per the existing chunk's own
+// recorded count. For a coord-side stub we mirror placement.Pick with the
+// chunk's existing R — captured by the call site, not us. The interface
+// signature doesn't take an n though, so we hardcode the conventional R=3
+// here. Future eps can wire EDGE_REPLICATION_FACTOR equivalent.
+type rebalancePlanCoord struct{ placer *placement.Placer }
+
+func (a *rebalancePlanCoord) PlaceChunk(chunkID string) []string {
+	const defaultR = 3
+	nodes := a.placer.Pick(chunkID, defaultR)
+	out := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, n.Addr)
+	}
+	return out
+}
+
+func (a *rebalancePlanCoord) PlaceN(key string, n int) []string {
+	nodes := a.placer.Pick(key, n)
+	out := make([]string, 0, len(nodes))
+	for _, nd := range nodes {
+		out = append(out, nd.Addr)
+	}
+	return out
+}
+
+func (a *rebalancePlanCoord) PlaceNFromAddrs(key string, n int, addrs []string) []string {
+	nodes := make([]placement.Node, 0, len(addrs))
+	for _, addr := range addrs {
+		nodes = append(nodes, placement.Node{ID: addr, Addr: addr})
+	}
+	picked := placement.PickFromNodes(key, n, nodes)
+	out := make([]string, 0, len(picked))
+	for _, nd := range picked {
+		out = append(out, nd.Addr)
+	}
+	return out
+}
+
+func (a *rebalancePlanCoord) ReadChunk(_ context.Context, _ string, _ []string) ([]byte, string, error) {
+	return nil, "", errors.New("coord rebalance: ReadChunk not implemented (apply path lives on edge in Ep.1)")
+}
+
+func (a *rebalancePlanCoord) PutChunkTo(_ context.Context, _, _ string, _ []byte) error {
+	return errors.New("coord rebalance: PutChunkTo not implemented (apply path lives on edge in Ep.1)")
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

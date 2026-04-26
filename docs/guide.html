@@ -785,9 +785,16 @@ type Stripe struct {
   <li>Ep.4: coord-to-coord WAL replication (ADR-039). <code>COORD_WAL_PATH</code> 설정 시 best-effort sync. 데모 demo-dalet (ד).</li>
   <li>Ep.5: coord transactional commit (ADR-040). <code>COORD_TRANSACTIONAL_RAFT=1</code>, replicate-then-commit. 데모 demo-he (ה).</li>
   <li>Ep.6: edge → coord placement RPC (ADR-041). coord 가 placement 의 single source of truth. 데모 demo-vav (ו).</li>
-  <li>Ep.7 (현재): kvfs-cli 직접 coord admin (ADR-042). coord 에 <code>/v1/coord/admin/{objects,dns}</code> 추가, cli <code>inspect --coord URL</code>. 운영자가 edge filesystem 에 의존 안 하고 coord 에 직접 query. read-only inspect MVP. 데모 demo-zayin (히브리 ז).</li>
+  <li>Ep.7: cli direct coord admin (ADR-042, read-only inspect). 데모 demo-zayin (ז).</li>
 </ul>
-<p>이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — 단일 coord 가 placement 의 진실, edge 가 horizontal scale 가능.</p>
+<p>Season 5 closed: cluster 가 3-daemon (edge + coord + dn) — coord 가 placement·메타·일관성의 owner.</p>
+
+<h3>12.4 Season 6 — coord operational migration (in progress)</h3>
+<p>Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을 옮긴다.</p>
+<ul>
+  <li>Ep.1 (현재): rebalance plan on coord (ADR-043). <code>/v1/coord/admin/rebalance/plan</code>, cli <code>rebalance --plan --coord</code>. apply 는 여전히 edge (Ep.2). 데모 demo-chet (히브리 ח).</li>
+  <li>후속: Ep.2 rebalance apply, Ep.3 GC, Ep.4 repair, Ep.5+ urlkey rotation / dns admin.</li>
+</ul>
 
 <h2 id="s13"><span class="num">13</span>다음에 읽을 것</h2>
 

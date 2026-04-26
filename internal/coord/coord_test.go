@@ -253,6 +253,77 @@ func TestAdminEndpoints_ListObjectsAndDNs(t *testing.T) {
 	}
 }
 
+// ADR-043 (Season 6 Ep.1): coord computes the rebalance plan directly
+// against its own placement + meta. Seed an object whose recorded
+// replicas don't match HRW's current pick → the endpoint must return
+// at least one migration entry referencing that chunk.
+func TestRebalancePlan_DetectsMisplacedChunk(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// 5 DNs. Seed the chunk with only 1 replica → HRW top-3 always
+	// proposes 2 migrations (the missing set is non-empty by construction,
+	// regardless of which DN HRW happens to rank first).
+	nodes := []placement.Node{
+		{ID: "dn1:8080", Addr: "dn1:8080"},
+		{ID: "dn2:8080", Addr: "dn2:8080"},
+		{ID: "dn3:8080", Addr: "dn3:8080"},
+		{ID: "dn4:8080", Addr: "dn4:8080"},
+		{ID: "dn5:8080", Addr: "dn5:8080"},
+	}
+	srv := &Server{
+		Store:  st,
+		Placer: placement.New(nodes),
+	}
+
+	if err := st.PutObject(&store.ObjectMeta{
+		Bucket: "b", Key: "k",
+		Chunks: []store.ChunkRef{
+			{ChunkID: "fixed-chunk", Size: 100, Replicas: []string{"dn1:8080"}},
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+
+	resp, err := http.Post(hs.URL+"/v1/coord/admin/rebalance/plan", "application/json", nil)
+	if err != nil {
+		t.Fatalf("plan request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var plan struct {
+		Scanned    int  `json:"scanned"`
+		Migrations []struct {
+			Bucket  string   `json:"bucket"`
+			Key     string   `json:"key"`
+			ChunkID string   `json:"chunk_id"`
+			Missing []string `json:"missing"`
+		} `json:"migrations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&plan); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if plan.Scanned != 1 {
+		t.Errorf("scanned=%d, want 1", plan.Scanned)
+	}
+	if len(plan.Migrations) == 0 {
+		t.Fatalf("expected at least one migration (single-replica chunk vs R=3 desired)")
+	}
+	if plan.Migrations[0].ChunkID != "fixed-chunk" {
+		t.Errorf("migration chunk_id = %q, want fixed-chunk", plan.Migrations[0].ChunkID)
+	}
+}
+
 // ADR-040 transactional commit: when no quorum can be reached, the leader
 // must reject the commit (return error from commit(), 5xx to client) AND
 // MUST NOT touch its bbolt. This guards the phantom-write window that the
