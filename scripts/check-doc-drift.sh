@@ -22,6 +22,9 @@ EDGE_MAIN="$ROOT/cmd/kvfs-edge/main.go"
 #   superseded (replaced by a later ADR; older one still in repo for history): 006
 #   reserved/pending (placeholder rows in adr/README.md):                     015 020 021 023 026 036 037
 RESERVED_ADRS="001 002 003 004 006 015 020 021 023 026"
+# Note: 015 stays reserved while it's Proposed-not-Accepted (file exists but
+# the GUIDE describes current architecture, not future direction). Promote
+# 015 out of reserved when the user accepts ADR-015 and implementation begins.
 
 errors=0
 warns=0

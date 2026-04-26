@@ -88,8 +88,14 @@ Accepted · YYYY-MM-DD
 | [036](ADR-036-wal-batch-metrics.md) | WAL group commit observability (batch_size + durable_lag gauges) | Accepted · 2026-04-26 | `WAL.LastBatchSize` / `OldestUnsyncedAge` + `internal/edge/metrics.go` |
 | [037](ADR-037-chunker-pool-cap.md) | Chunker scratch-pool soft cap (memory pressure 대응) | Accepted · 2026-04-26 | `chunker.SetPoolCap` + `EDGE_CHUNKER_POOL_CAP_BYTES` |
 
+## Proposed (대기 중)
+
+| # | 제목 | 상태 | 결정 트리거 |
+|---|---|---|---|
+| [015](ADR-015-coordinator-daemon-split.md) | Coordinator daemon 분리 (ADR-002 supersede 후보) | **Proposed** · 2026-04-26 | 사용자 Accept + Season 5 진입 |
+
 ## 미작성 ADR (예상)
 
-- **ADR-015** — Coordinator daemon 분리 (현재 edge 인라인). ADR-002 supersede 예정.
+- (현재 비어있음 — ADR-015 가 가장 큰 pending decision)
 
 작성 시점: 해당 기능 설계 직전.
