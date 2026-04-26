@@ -11,7 +11,6 @@
 // Why HMAC-SHA256 over Base62+APR1-MD5:
 //   - Same security guarantee, simpler primitives
 //   - Standard library only (crypto/hmac + crypto/sha256)
-//   - No LuaJIT int64 FFI bug class
 package urlkey
 
 import (

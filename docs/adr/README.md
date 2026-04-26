@@ -33,7 +33,7 @@ Accepted · YYYY-MM-DD
 
 | # | 제목 | 상태 | 연결 |
 |---|---|---|---|
-| [001](ADR-001-independent-identity.md) | 독자적 프로젝트 identity | Accepted | `NAMING.md` |
+| [001](ADR-001-independent-identity.md) | 독자적 프로젝트 identity | Accepted | — |
 | [002](ADR-002-two-daemon-architecture.md) | 2-daemon MVP (edge + dn) | Accepted | `docs/ARCHITECTURE.md` §컴포넌트 |
 | [003](ADR-003-http-rest-protocol.md) | 내·외부 통신 HTTP REST | Accepted | — |
 | [004](ADR-004-bbolt-metadata.md) | 메타데이터 저장 bbolt | Accepted | `internal/store/` |
