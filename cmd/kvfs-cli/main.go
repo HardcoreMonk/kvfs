@@ -899,26 +899,47 @@ func printTime(label string, t time.Time) {
 func cmdDNs(args []string) {
 	fs := flag.NewFlagSet("dns", flag.ExitOnError)
 	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	coordURL := fs.String("coord", "", "ADR-047: route via coord directly (Season 6 Ep.5). list/add/remove/class supported. Edge path used otherwise.")
 	fs.Parse(args)
 
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(os.Stderr, "dns: missing subcommand (list | add <addr> | remove <addr>)")
+		fmt.Fprintln(os.Stderr, "dns: missing subcommand (list | add <addr> | remove <addr> | class <addr> <class>)")
 		os.Exit(2)
 	}
+
+	useCoord := *coordURL != ""
 	base := strings.TrimRight(*edge, "/")
+	if useCoord {
+		base = strings.TrimRight(*coordURL, "/")
+	}
+
 	switch rest[0] {
 	case "list":
-		body := mustGet(base + "/v1/admin/dns")
-		var resp struct {
+		path := "/v1/admin/dns"
+		if useCoord {
+			path = "/v1/coord/admin/dns"
+		}
+		body := mustGet(base + path)
+		// edge wraps in {dns, quorum_write}; coord returns []string raw.
+		// Try the rich shape first, fall back to flat list.
+		var rich struct {
 			DNs         []string `json:"dns"`
 			QuorumWrite int      `json:"quorum_write"`
 		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			fail(err)
+		if err := json.Unmarshal(body, &rich); err == nil && rich.DNs != nil {
+			fmt.Printf("%d DN(s)  quorum_write=%d\n", len(rich.DNs), rich.QuorumWrite)
+			for _, a := range rich.DNs {
+				fmt.Printf("  %s\n", a)
+			}
+			return
 		}
-		fmt.Printf("%d DN(s)  quorum_write=%d\n", len(resp.DNs), resp.QuorumWrite)
-		for _, a := range resp.DNs {
+		var flat []string
+		if err := json.Unmarshal(body, &flat); err != nil {
+			fail(fmt.Errorf("decode dns list: %w", err))
+		}
+		fmt.Printf("%d DN(s) (via coord)\n", len(flat))
+		for _, a := range flat {
 			fmt.Printf("  %s\n", a)
 		}
 	case "add":
@@ -926,21 +947,46 @@ func cmdDNs(args []string) {
 			fmt.Fprintln(os.Stderr, "dns add: usage: kvfs-cli dns add <addr>")
 			os.Exit(2)
 		}
-		body := mustHTTPJSON(http.MethodPost, base+"/v1/admin/dns",
-			fmt.Sprintf(`{"addr":%q}`, rest[1]))
-		fmt.Printf("✅ added %s\n", rest[1])
-		fmt.Println(string(body))
+		if useCoord {
+			body := mustPost(base + "/v1/coord/admin/dns?addr=" + neturl.QueryEscape(rest[1]))
+			fmt.Printf("✅ added %s (via coord)\n", rest[1])
+			fmt.Println(string(body))
+		} else {
+			body := mustHTTPJSON(http.MethodPost, base+"/v1/admin/dns",
+				fmt.Sprintf(`{"addr":%q}`, rest[1]))
+			fmt.Printf("✅ added %s\n", rest[1])
+			fmt.Println(string(body))
+		}
 	case "remove":
 		if len(rest) != 2 {
 			fmt.Fprintln(os.Stderr, "dns remove: usage: kvfs-cli dns remove <addr>")
 			os.Exit(2)
 		}
 		fmt.Println("⚠️  remove does NOT migrate data off the DN. Run rebalance --apply first if it holds chunks.")
-		body := mustHTTPJSON(http.MethodDelete, base+"/v1/admin/dns?addr="+rest[1], "")
+		path := "/v1/admin/dns?addr=" + neturl.QueryEscape(rest[1])
+		if useCoord {
+			path = "/v1/coord/admin/dns?addr=" + neturl.QueryEscape(rest[1])
+		}
+		body := mustHTTPJSON(http.MethodDelete, base+path, "")
 		fmt.Printf("✅ removed %s\n", rest[1])
 		fmt.Println(string(body))
+	case "class":
+		// kvfs-cli dns class <addr> <class>
+		if len(rest) != 3 {
+			fmt.Fprintln(os.Stderr, "dns class: usage: kvfs-cli dns class <addr> <class>  (empty class clears)")
+			os.Exit(2)
+		}
+		path := fmt.Sprintf("/v1/admin/dns/class?addr=%s&class=%s",
+			neturl.QueryEscape(rest[1]), neturl.QueryEscape(rest[2]))
+		if useCoord {
+			path = fmt.Sprintf("/v1/coord/admin/dns/class?addr=%s&class=%s",
+				neturl.QueryEscape(rest[1]), neturl.QueryEscape(rest[2]))
+		}
+		body := mustHTTPJSON(http.MethodPut, base+path, "")
+		fmt.Printf("✅ class set: %s → %s\n", rest[1], rest[2])
+		fmt.Println(string(body))
 	default:
-		fmt.Fprintf(os.Stderr, "dns: unknown subcommand %q (want list | add | remove)\n", rest[0])
+		fmt.Fprintf(os.Stderr, "dns: unknown subcommand %q (want list | add | remove | class)\n", rest[0])
 		os.Exit(2)
 	}
 }

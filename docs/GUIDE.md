@@ -586,8 +586,11 @@ ADR-015 Accept (2026-04-26). `kvfs-coord` daemon 신설 — placement + 메타 o
 
 Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을 옮긴다. 끝나면 cli 가 모든 admin 을 coord 통해 함, edge 가 진짜 thin.
 
-- Ep.1 (현재): rebalance plan on coord (ADR-043). `/v1/coord/admin/rebalance/plan`, cli `rebalance --plan --coord`. apply 는 여전히 edge (Ep.2 가 이전). 데모 demo-chet (히브리 ח).
-- 후속: Ep.2 rebalance apply, Ep.3 GC, Ep.4 repair, Ep.5+ urlkey rotation / dns admin.
+- Ep.1: rebalance plan on coord (ADR-043). `/v1/coord/admin/rebalance/plan`. 데모 demo-chet (ח).
+- Ep.2: rebalance apply on coord (ADR-044). `COORD_DN_IO=1` → coord 가 DN HTTP I/O 보유. cli `rebalance --apply --coord`. 데모 demo-tet (ט).
+- Ep.3: GC plan + apply on coord (ADR-045). `/v1/coord/admin/gc/{plan,apply}`. cli `gc --coord`. 데모 demo-yod (י).
+- Ep.4: EC repair on coord (ADR-046). K survivors → RS Reconstruct → 누락 shard 재배포. cli `repair --coord`. 데모 demo-kaf (כ).
+- Ep.5 (현재): DN registry mutation on coord (ADR-047). add/remove/class. cli `dns --coord {add|remove|class}`. urlkey rotation 은 후속 ep. 데모 demo-lamed (히브리 ל).
 
 ## 13. 다음에 읽을 것
 

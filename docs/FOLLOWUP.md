@@ -87,17 +87,17 @@
 ### ~~[P7-01] Season 6 Ep.1 — rebalance plan on coord~~
 - **DONE 2026-04-27**: ADR-043 작성 + 구현. coord `/v1/coord/admin/rebalance/plan`. `rebalancePlanCoord` 어댑터 (placer + Store 위에 rebalance.Coordinator 인터페이스 충족, ReadChunk/PutChunkTo는 명시적 에러). cli `rebalance --plan --coord URL`. 1 unit test (TestRebalancePlan_DetectsMisplacedChunk). 데모 demo-chet.sh (히브리 ח). 153 tests PASS.
 
-### [P7-02] Season 6 Ep.2 — rebalance apply on coord
-- **다음**: coord 가 DN I/O 가져감. `internal/coordinator` 인스턴스 추가. cli `--apply --coord` 활성. ADR-044 예상.
+### ~~[P7-02] Season 6 Ep.2 — rebalance apply on coord~~
+- **DONE 2026-04-27**: ADR-044. `coord.Server.Coord *coordinator.Coordinator` (COORD_DN_IO=1). `/v1/coord/admin/rebalance/apply`. cli `--apply --coord`. demo-tet (히브리 ט).
 
-### [P7-03] Season 6 Ep.3 — GC plan + apply on coord
-- **다음**: 같은 패턴. GC 가 DN의 chunk list 와 coord meta diff. ADR-045 예상.
+### ~~[P7-03] Season 6 Ep.3 — GC plan + apply on coord~~
+- **DONE 2026-04-27**: ADR-045. `/v1/coord/admin/gc/{plan,apply}`. cli `gc --coord`. min-age=DURATION 형식 (edge 의 min_age_seconds 와 다름, cli 가 변환). demo-yod (히브리 י).
 
-### [P7-04] Season 6 Ep.4 — Repair on coord
-- **다음**: EC reconstruct → coord 가 DN I/O + Reed-Solomon. ADR-046 예상.
+### ~~[P7-04] Season 6 Ep.4 — EC repair on coord~~
+- **DONE 2026-04-27**: ADR-046. `/v1/coord/admin/repair/{plan,apply}`. cli `repair --coord`. K survivors → Reed-Solomon Reconstruct → 누락 shard 재배포. demo-kaf (히브리 כ).
 
-### [P7-05+] Season 6 Ep.5+ — admin registry mutation on coord
-- urlkey rotation, dns add/remove/class. 현재 edge 만 받음. ADR-047 + 예상.
+### ~~[P7-05] Season 6 Ep.5 — DN registry mutation on coord~~
+- **DONE 2026-04-27**: ADR-047. `/v1/coord/admin/dns` POST/DELETE + `/v1/coord/admin/dns/class` PUT. 모두 requireLeader gate. cli `dns add/remove/class --coord`. urlkey rotation 은 본 ADR 비포함 (별도 ep). 1 unit test. demo-lamed (히브리 ל).
 
 ---
 

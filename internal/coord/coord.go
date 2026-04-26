@@ -115,6 +115,12 @@ func (s *Server) Routes() *http.ServeMux {
 	// ADR-046 (Season 6 Ep.4): EC repair. Both 503 if Coord nil.
 	mux.HandleFunc("POST /v1/coord/admin/repair/plan", s.handleRepairPlan)
 	mux.HandleFunc("POST /v1/coord/admin/repair/apply", s.handleRepairApply)
+	// ADR-047 (Season 6 Ep.5): mutating registry admin on coord.
+	// DN add/remove/class. coord owns the registry — cli should mutate
+	// it directly rather than going through edge.
+	mux.HandleFunc("POST /v1/coord/admin/dns", s.handleAdminAddDN)
+	mux.HandleFunc("DELETE /v1/coord/admin/dns", s.handleAdminRemoveDN)
+	mux.HandleFunc("PUT /v1/coord/admin/dns/class", s.handleAdminSetDNClass)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
@@ -406,6 +412,63 @@ func (s *Server) handleGCApply(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := gc.Run(r.Context(), s.Coord, plan, concurrency)
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// handleAdminAddDN / RemoveDN / SetDNClass: ADR-047 Season 6 Ep.5.
+// Coord owns the runtime DN registry; mutations go straight to
+// MetaStore.AddRuntimeDN / RemoveRuntimeDN / SetRuntimeDNClass which
+// already journal through the WAL (so multi-coord HA picks up changes
+// via Ep.4 WAL replication).
+//
+// In HA mode (Ep.3) only the leader accepts these — same requireLeader
+// gate as commit/delete.
+func (s *Server) handleAdminAddDN(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	addr := r.URL.Query().Get("addr")
+	if addr == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("addr query param required"))
+		return
+	}
+	if err := s.Store.AddRuntimeDN(addr); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"added": addr})
+}
+
+func (s *Server) handleAdminRemoveDN(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	addr := r.URL.Query().Get("addr")
+	if addr == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("addr query param required"))
+		return
+	}
+	if err := s.Store.RemoveRuntimeDN(addr); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"removed": addr})
+}
+
+func (s *Server) handleAdminSetDNClass(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	addr := r.URL.Query().Get("addr")
+	class := r.URL.Query().Get("class")
+	if addr == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("addr query param required"))
+		return
+	}
+	if err := s.Store.SetRuntimeDNClass(addr, class); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"addr": addr, "class": class})
 }
 
 // handleRepairPlan + handleRepairApply: ADR-046 Season 6 Ep.4. EC repair

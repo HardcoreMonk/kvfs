@@ -1,7 +1,7 @@
 # kvfs — Key-Value File System
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스.
-> **Go 1.26 · Apache 2.0 · 43 ADR · 28 blog episode · 30 라이브 데모 · 153 unit test**
+> **Go 1.26 · Apache 2.0 · 47 ADR · 28 blog episode · 35 라이브 데모 · 154 unit test**
 
 ## 이것은 무엇인가
 
@@ -15,7 +15,7 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **3** | 운영성 | ✅ closed | auto-trigger · EC repair · meta backup · heartbeat · multi-edge HA |
 | **4** | 성능·효율 | ✅ closed | streaming · CDC · WAL · election · sync repl · transactional Raft · micro-opts |
 | **5** | coord 분리 | ✅ closed | ADR-015. 7 episodes: skeleton → edge meta client → HA → WAL sync → txn commit → placement RPC → cli inspect |
-| **6** | coord operational migration | ▶ Ep.1 (rebalance plan) | ADR-043~. worker + mutating admin → coord |
+| **6** | coord operational migration | ▶ Ep.5 (dns admin) | ADR-043~047. rebalance · GC · repair · DN registry — all on coord |
 
 이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 목표는 production 이 아니라
 **이해 가능한 레퍼런스**.

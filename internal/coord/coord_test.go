@@ -324,6 +324,90 @@ func TestRebalancePlan_DetectsMisplacedChunk(t *testing.T) {
 	}
 }
 
+// ADR-047 (Season 6 Ep.5): mutating registry admin on coord. add → list
+// → class → remove round-trip via the new admin endpoints. No leader
+// (no Elector wired) so requireLeader is a no-op gate.
+func TestAdminMutateDNRegistry(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	srv := &Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}})}
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+
+	// add
+	resp, err := http.Post(hs.URL+"/v1/coord/admin/dns?addr=dn9:8080", "application/json", nil)
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("add status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// list — should now include dn9
+	resp, _ = http.Get(hs.URL + "/v1/coord/admin/dns")
+	var list []string
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	resp.Body.Close()
+	found := false
+	for _, a := range list {
+		if a == "dn9:8080" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("after add, list = %v, want dn9:8080 present", list)
+	}
+
+	// class
+	req, _ := http.NewRequest(http.MethodPut,
+		hs.URL+"/v1/coord/admin/dns/class?addr=dn9:8080&class=hot", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("class: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("class status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	got, err := st.RuntimeDNClass("dn9:8080")
+	if err != nil {
+		t.Fatalf("read class: %v", err)
+	}
+	if got != "hot" {
+		t.Errorf("class = %q, want hot", got)
+	}
+
+	// remove
+	req, _ = http.NewRequest(http.MethodDelete, hs.URL+"/v1/coord/admin/dns?addr=dn9:8080", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("remove status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, _ = http.Get(hs.URL + "/v1/coord/admin/dns")
+	list = nil
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	for _, a := range list {
+		if a == "dn9:8080" {
+			t.Errorf("after remove, dn9:8080 still in list: %v", list)
+		}
+	}
+}
+
 // ADR-040 transactional commit: when no quorum can be reached, the leader
 // must reject the commit (return error from commit(), 5xx to client) AND
 // MUST NOT touch its bbolt. This guards the phantom-write window that the
