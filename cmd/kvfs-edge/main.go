@@ -77,10 +77,30 @@ func main() {
 	}
 	defer ms.Close()
 
-	dns := splitTrim(*flagDNs)
+	envDNs := splitTrim(*flagDNs)
+
+	// ADR-027 dynamic DN registry: dns_runtime bucket overrides EDGE_DNS env
+	// when populated. EDGE_DNS_RESET=1 forces re-seed from env (recovery).
+	dns := envDNs
+	runtimeDNs, lerr := ms.ListRuntimeDNs()
+	if lerr != nil {
+		fatal("read dns_runtime: " + lerr.Error())
+	}
+	if envOr("EDGE_DNS_RESET", "") == "1" || len(runtimeDNs) == 0 {
+		if len(envDNs) == 0 {
+			fatal("dns_runtime bucket empty AND EDGE_DNS unset")
+		}
+		if err := ms.SeedRuntimeDNs(envDNs); err != nil {
+			fatal("seed dns_runtime: " + err.Error())
+		}
+		log.Info("seeded dns_runtime from EDGE_DNS env", "addrs", envDNs)
+	} else {
+		dns = runtimeDNs
+		log.Info("using dns_runtime from bbolt (EDGE_DNS env ignored; set EDGE_DNS_RESET=1 to override)",
+			"addrs", dns)
+	}
+
 	// ReplicationFactor = 3 by default for 3-way replication MVP.
-	// Placement is now Rendezvous-hashed (see internal/placement). When
-	// N > ReplicationFactor, each chunk is placed on the R highest-score nodes.
 	coord, err := coordinator.NewWithAddrs(dns, 3, *flagQuorum, 10*time.Second)
 	if err != nil {
 		fatal(err.Error())

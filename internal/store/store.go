@@ -17,14 +17,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"go.etcd.io/bbolt"
 )
 
 var (
-	bucketObjects = []byte("objects")
-	bucketDNs     = []byte("dns")
+	bucketObjects    = []byte("objects")
+	bucketDNs        = []byte("dns")
+	bucketDNsRuntime = []byte("dns_runtime") // ADR-027: live DN registry, addr -> registered_at JSON
 
 	ErrNotFound = errors.New("store: not found")
 )
@@ -120,7 +122,7 @@ func Open(path string) (*MetaStore, error) {
 		return nil, fmt.Errorf("open bbolt: %w", err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketObjects, bucketDNs} {
+		for _, b := range [][]byte{bucketObjects, bucketDNs, bucketDNsRuntime} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -330,4 +332,81 @@ func (m *MetaStore) ListDNs() ([]*DNInfo, error) {
 
 func objKey(bucket, key string) []byte {
 	return fmt.Appendf(nil, "%s/%s", bucket, key)
+}
+
+// ─── Runtime DN registry (ADR-027) ───
+//
+// dns_runtime bucket: addr → registered_at JSON. Distinct from DNInfo (above)
+// which is a future heartbeat registry. dns_runtime is the live placement set.
+
+// AddRuntimeDN registers an addr as part of the live DN set. Idempotent
+// (re-add updates registered_at).
+func (m *MetaStore) AddRuntimeDN(addr string) error {
+	if addr == "" {
+		return errors.New("store: empty addr")
+	}
+	return m.db.Update(func(tx *bbolt.Tx) error {
+		buf, err := json.Marshal(map[string]any{
+			"addr":          addr,
+			"registered_at": time.Now().UTC(),
+		})
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketDNsRuntime).Put([]byte(addr), buf)
+	})
+}
+
+// RemoveRuntimeDN deletes addr from the live DN set. Returns nil if absent.
+func (m *MetaStore) RemoveRuntimeDN(addr string) error {
+	if addr == "" {
+		return errors.New("store: empty addr")
+	}
+	return m.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketDNsRuntime).Delete([]byte(addr))
+	})
+}
+
+// ListRuntimeDNs returns sorted addrs from the live DN set.
+func (m *MetaStore) ListRuntimeDNs() ([]string, error) {
+	var out []string
+	err := m.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketDNsRuntime).ForEach(func(k, _ []byte) error {
+			out = append(out, string(k))
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// SeedRuntimeDNs populates the bucket from a list (for first boot from
+// EDGE_DNS env, or for EDGE_DNS_RESET=1 disaster-recovery).
+func (m *MetaStore) SeedRuntimeDNs(addrs []string) error {
+	return m.db.Update(func(tx *bbolt.Tx) error {
+		// Wipe + reseed.
+		if err := tx.DeleteBucket(bucketDNsRuntime); err != nil && !errors.Is(err, bbolt.ErrBucketNotFound) {
+			return err
+		}
+		b, err := tx.CreateBucket(bucketDNsRuntime)
+		if err != nil {
+			return err
+		}
+		for _, addr := range addrs {
+			buf, err := json.Marshal(map[string]any{
+				"addr":          addr,
+				"registered_at": time.Now().UTC(),
+			})
+			if err != nil {
+				return err
+			}
+			if err := b.Put([]byte(addr), buf); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

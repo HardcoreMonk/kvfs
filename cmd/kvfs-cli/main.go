@@ -42,6 +42,8 @@ func main() {
 		cmdGC(os.Args[2:])
 	case "auto":
 		cmdAuto(os.Args[2:])
+	case "dns":
+		cmdDNs(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -61,6 +63,7 @@ Subcommands:
   rebalance       Migrate misplaced chunks to their HRW-desired DNs (ADR-010)
   gc              Delete surplus chunks no object's metadata claims (ADR-012)
   auto            Show auto-trigger config + recent run history (ADR-013)
+  dns             list / add / remove DNs in the live registry (ADR-027)
 
 Run 'kvfs-cli <subcommand> -h' for subcommand help.`)
 }
@@ -749,4 +752,89 @@ func printTime(label string, t time.Time) {
 		return
 	}
 	fmt.Printf("   %s:    %s\n", label, t.Format(time.RFC3339))
+}
+
+// ---- dns ----
+//
+// Live DN registry (ADR-027). Operator-friendly wrapper for:
+//   GET    /v1/admin/dns
+//   POST   /v1/admin/dns      body {"addr":"dn7:8080"}
+//   DELETE /v1/admin/dns?addr=dn7:8080
+//
+// Usage:
+//   kvfs-cli dns list
+//   kvfs-cli dns add dn7:8080
+//   kvfs-cli dns remove dn7:8080
+func cmdDNs(args []string) {
+	fs := flag.NewFlagSet("dns", flag.ExitOnError)
+	edge := fs.String("edge", "http://localhost:8000", "edge base URL")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "dns: missing subcommand (list | add <addr> | remove <addr>)")
+		os.Exit(2)
+	}
+	base := strings.TrimRight(*edge, "/")
+	switch rest[0] {
+	case "list":
+		body := mustGet(base + "/v1/admin/dns")
+		var resp struct {
+			DNs         []string `json:"dns"`
+			QuorumWrite int      `json:"quorum_write"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			fail(err)
+		}
+		fmt.Printf("%d DN(s)  quorum_write=%d\n", len(resp.DNs), resp.QuorumWrite)
+		for _, a := range resp.DNs {
+			fmt.Printf("  %s\n", a)
+		}
+	case "add":
+		if len(rest) != 2 {
+			fmt.Fprintln(os.Stderr, "dns add: usage: kvfs-cli dns add <addr>")
+			os.Exit(2)
+		}
+		body := mustHTTPJSON(http.MethodPost, base+"/v1/admin/dns",
+			fmt.Sprintf(`{"addr":%q}`, rest[1]))
+		fmt.Printf("✅ added %s\n", rest[1])
+		fmt.Println(string(body))
+	case "remove":
+		if len(rest) != 2 {
+			fmt.Fprintln(os.Stderr, "dns remove: usage: kvfs-cli dns remove <addr>")
+			os.Exit(2)
+		}
+		fmt.Println("⚠️  remove does NOT migrate data off the DN. Run rebalance --apply first if it holds chunks.")
+		body := mustHTTPJSON(http.MethodDelete, base+"/v1/admin/dns?addr="+rest[1], "")
+		fmt.Printf("✅ removed %s\n", rest[1])
+		fmt.Println(string(body))
+	default:
+		fmt.Fprintf(os.Stderr, "dns: unknown subcommand %q (want list | add | remove)\n", rest[0])
+		os.Exit(2)
+	}
+}
+
+// mustHTTPJSON variant that POSTs/DELETEs with optional JSON body.
+func mustHTTPJSON(method, url, body string) []byte {
+	var bodyReader io.Reader
+	if body != "" {
+		bodyReader = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, bodyReader)
+	if err != nil {
+		fail(err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		fail(fmt.Errorf("%s %s: %w", method, url, err))
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		fail(fmt.Errorf("%s %s: HTTP %d: %s", method, url, resp.StatusCode, string(out)))
+	}
+	return out
 }

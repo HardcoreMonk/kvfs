@@ -34,10 +34,15 @@ import (
 )
 
 // Coordinator routes chunks to DNs and drives fanout/quorum.
+//
+// placer can be replaced at runtime via UpdateNodes (ADR-027). All read paths
+// take placerMu.RLock; UpdateNodes takes the write lock and swaps. RWMutex
+// chosen because reads dominate (every PUT/GET hits the placer once per chunk).
 type Coordinator struct {
+	placerMu          sync.RWMutex
 	placer            *placement.Placer
-	replicationFactor int // number of replicas per chunk (R)
-	quorumWrite       int // min acks for success (e.g. 2 of 3)
+	replicationFactor int
+	quorumWrite       int
 	client            *http.Client
 }
 
@@ -114,17 +119,44 @@ func NewWithAddrs(addrs []string, replicationFactor, quorumWrite int, timeout ti
 }
 
 // Nodes returns the configured DN set (read-only copy).
-func (c *Coordinator) Nodes() []placement.Node { return c.placer.Nodes() }
+func (c *Coordinator) Nodes() []placement.Node {
+	c.placerMu.RLock()
+	defer c.placerMu.RUnlock()
+	return c.placer.Nodes()
+}
 
 // DNs returns the configured DN addresses (read-only view).
 // 하위호환: 기존 코드에서 addr만 필요하면 이 함수 사용.
 func (c *Coordinator) DNs() []string {
+	c.placerMu.RLock()
+	defer c.placerMu.RUnlock()
 	ns := c.placer.Nodes()
 	out := make([]string, len(ns))
 	for i, n := range ns {
 		out[i] = n.Addr
 	}
 	return out
+}
+
+// UpdateNodes atomically swaps the placement node set (ADR-027 dynamic DN
+// registry). Returns an error if the new set is empty or smaller than
+// ReplicationFactor.
+//
+// Live writes/reads in flight see either old or new placer (atomic swap),
+// never an inconsistent state. New chunks placed after this call use the new
+// set; existing chunks still on old DNs are migrated by rebalance (ADR-010).
+func (c *Coordinator) UpdateNodes(nodes []placement.Node) error {
+	if len(nodes) == 0 {
+		return errors.New("coordinator: UpdateNodes requires at least one node")
+	}
+	if len(nodes) < c.replicationFactor {
+		return fmt.Errorf("coordinator: UpdateNodes %d nodes < ReplicationFactor %d",
+			len(nodes), c.replicationFactor)
+	}
+	c.placerMu.Lock()
+	defer c.placerMu.Unlock()
+	c.placer = placement.New(nodes)
+	return nil
 }
 
 // ReplicationFactor returns R (replicas per chunk).
@@ -137,6 +169,8 @@ func (c *Coordinator) QuorumWrite() int { return c.quorumWrite }
 // 외부에서 "이 청크는 어디 갈까?" 를 미리 계산하고 싶을 때 사용.
 // (예: admin 도구, 디버깅, placement-sim)
 func (c *Coordinator) PlaceChunk(chunkID string) []string {
+	c.placerMu.RLock()
+	defer c.placerMu.RUnlock()
 	picked := c.placer.Pick(chunkID, c.replicationFactor)
 	out := make([]string, len(picked))
 	for i, n := range picked {
@@ -151,6 +185,8 @@ func (c *Coordinator) PlaceChunk(chunkID string) []string {
 //
 // Returns up to min(n, len(nodes)) addresses, deterministic for a given key.
 func (c *Coordinator) PlaceN(key string, n int) []string {
+	c.placerMu.RLock()
+	defer c.placerMu.RUnlock()
 	picked := c.placer.Pick(key, n)
 	out := make([]string, len(picked))
 	for i, p := range picked {
@@ -169,7 +205,9 @@ func (c *Coordinator) PlaceN(key string, n int) []string {
 //   3. 성공 ack 개수 집계
 //   4. QuorumWrite 이상이면 성공, 아니면 에러
 func (c *Coordinator) WriteChunk(ctx context.Context, chunkID string, data []byte) ([]string, error) {
+	c.placerMu.RLock()
 	targets := c.placer.Pick(chunkID, c.replicationFactor)
+	c.placerMu.RUnlock()
 	if len(targets) == 0 {
 		return nil, errors.New("coordinator: no target nodes available")
 	}

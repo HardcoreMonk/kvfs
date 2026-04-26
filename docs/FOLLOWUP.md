@@ -47,10 +47,8 @@
 ### ~~[P2-04] placement-sim bar chart edge case~~
 - **DONE 2026-04-26**: cmdPlacementSim 패키지 주석 + R=N 케이스 런타임 ℹ️  notice + barChart 함수 주석 추가
 
-### [P2-05] edge 동작 중 EDGE_DNS 변경 지원
-- 현재: 시작 시 env var 1회 읽음. 변경하려면 재시작
-- 개선: `/v1/admin/dns` POST 로 DN 동적 추가·제거 (재배치 로직은 ADR-010 가 담당)
-- 기본적인 시스템 자체는 변경 최소
+### ~~[P2-05] edge 동작 중 EDGE_DNS 변경 지원~~
+- **DONE 2026-04-26 (ADR-027)**: `Coordinator.UpdateNodes` (RWMutex), `dns_runtime` bbolt 버킷 영속, `POST /v1/admin/dns` + `DELETE /v1/admin/dns?addr=`, `kvfs-cli dns list/add/remove`. 라이브 검증: dn4 add → edge restart → bbolt 영속 유지 → remove 즉시 적용. `EDGE_DNS_RESET=1` env 가 disaster recovery
 
 ### ~~[P2-06] Benchmark suite~~
 - **DONE 2026-04-26**: 4 패키지 `*_bench_test.go` 신규

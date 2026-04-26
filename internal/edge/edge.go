@@ -22,6 +22,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
 	"github.com/HardcoreMonk/kvfs/internal/coordinator"
 	"github.com/HardcoreMonk/kvfs/internal/gc"
+	"github.com/HardcoreMonk/kvfs/internal/placement"
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/reedsolomon"
 	"github.com/HardcoreMonk/kvfs/internal/store"
@@ -88,6 +89,10 @@ type Server struct {
 	// gcMu serializes /v1/admin/gc/apply for the same reason.
 	gcMu sync.Mutex
 
+	// dnsAdminMu serializes /v1/admin/dns POST/DELETE so concurrent
+	// add/remove don't race the bbolt persist + Coord.UpdateNodes pair.
+	dnsAdminMu sync.Mutex
+
 	// autoMu protects autoRuns + lastCheck timestamps.
 	// Empty cycles update lastCheck only (not autoRuns) so the ring buffer
 	// keeps actionable history; lastCheck still proves the loop is alive.
@@ -119,6 +124,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /v1/o/{bucket}/{key...}", s.handleDelete)
 	mux.HandleFunc("GET /v1/admin/objects", s.handleList)
 	mux.HandleFunc("GET /v1/admin/dns", s.handleDNs)
+	mux.HandleFunc("POST /v1/admin/dns", s.handleAddDN)
+	mux.HandleFunc("DELETE /v1/admin/dns", s.handleRemoveDN)
 	mux.HandleFunc("POST /v1/admin/rebalance/plan", s.handleRebalancePlan)
 	mux.HandleFunc("POST /v1/admin/rebalance/apply", s.handleRebalanceApply)
 	mux.HandleFunc("POST /v1/admin/gc/plan", s.handleGCPlan)
@@ -317,6 +324,105 @@ func (s *Server) handleDNs(w http.ResponseWriter, r *http.Request) {
 		"dns":          s.Coord.DNs(),
 		"quorum_write": s.Coord.QuorumWrite(),
 	})
+}
+
+// dnsAdminMu serializes admin DN registry mutations so two concurrent add/
+// remove calls don't race on the bbolt bucket + Coord.UpdateNodes pair.
+// (Reads via handleDNs are unaffected.)
+//
+// handleAddDN adds a DN addr to the runtime registry (ADR-027).
+// Body: {"addr":"dn7:8080"}.
+// Returns 200 + the new DN list. Idempotent (re-add updates registered_at only).
+func (s *Server) handleAddDN(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Addr string `json:"addr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Addr == "" {
+		writeError(w, http.StatusBadRequest, "missing addr")
+		return
+	}
+	if err := s.applyDNChange(func(addrs []string) ([]string, error) {
+		for _, a := range addrs {
+			if a == body.Addr {
+				return addrs, nil // idempotent
+			}
+		}
+		return append(addrs, body.Addr), nil
+	}, body.Addr, "add"); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"action": "add", "addr": body.Addr, "dns": s.Coord.DNs(),
+	})
+}
+
+// handleRemoveDN removes a DN addr from the runtime registry (ADR-027).
+// Query: ?addr=dn7:8080. Returns 200 + the new DN list.
+//
+// CAUTION: This does NOT migrate data off the removed DN. Operator should
+// run rebalance --apply BEFORE removing a DN that holds chunks.
+func (s *Server) handleRemoveDN(w http.ResponseWriter, r *http.Request) {
+	addr := r.URL.Query().Get("addr")
+	if addr == "" {
+		writeError(w, http.StatusBadRequest, "missing addr query param")
+		return
+	}
+	if err := s.applyDNChange(func(addrs []string) ([]string, error) {
+		out := make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			if a != addr {
+				out = append(out, a)
+			}
+		}
+		if len(out) == len(addrs) {
+			return addrs, nil // not present, idempotent
+		}
+		if len(out) < s.Coord.ReplicationFactor() {
+			return nil, fmt.Errorf("would leave %d DNs < ReplicationFactor %d",
+				len(out), s.Coord.ReplicationFactor())
+		}
+		return out, nil
+	}, addr, "remove"); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"action": "remove", "addr": addr, "dns": s.Coord.DNs(),
+	})
+}
+
+// applyDNChange runs the mutator on the current DN list, persists the result
+// to bbolt, then atomically swaps the Coordinator's placer. mutator returns
+// (new_addrs, err). Serialized via dnsAdminMu.
+func (s *Server) applyDNChange(mutate func([]string) ([]string, error), addr, action string) error {
+	s.dnsAdminMu.Lock()
+	defer s.dnsAdminMu.Unlock()
+
+	current := s.Coord.DNs()
+	next, err := mutate(current)
+	if err != nil {
+		return err
+	}
+	// Persist first; if persist fails, do NOT update placer (avoid
+	// in-memory state diverging from bbolt across crash).
+	if err := s.Store.SeedRuntimeDNs(next); err != nil {
+		return fmt.Errorf("persist DN registry: %w", err)
+	}
+	nodes := make([]placement.Node, len(next))
+	for i, a := range next {
+		nodes[i] = placement.Node{ID: a, Addr: a}
+	}
+	if err := s.Coord.UpdateNodes(nodes); err != nil {
+		return fmt.Errorf("update placer: %w", err)
+	}
+	s.logger().Info("dns registry changed", "action", action, "addr", addr,
+		"new_count", len(next))
+	return nil
 }
 
 // handleRebalancePlan computes (read-only) the migration plan and returns it.
