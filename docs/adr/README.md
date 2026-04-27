@@ -129,6 +129,7 @@ Accepted · YYYY-MM-DD
 | [056](ADR-056-corrupt-repair-and-dry-run.md) | Anti-entropy corrupt-repair + dry-run preview | Accepted · 2026-04-27 | DN PUT `?force=1` + `Coord.PutChunkToForce` + `?corrupt=1` / `?dry_run=1` query params · cli `--corrupt`/`--dry-run` · demo-anti-entropy-repair-corrupt (P8-09) |
 | [057](ADR-057-ec-inline-repair.md) | Anti-entropy EC inline repair (delegates to ADR-046 worker) | Accepted · 2026-04-27 | `?ec=1` query param + per-stripe `repair.StripeRepair` build → `repair.Run` · cli `--ec` · `mode: "ec-inline"` / `"ec-summary"` outcomes · demo-anti-entropy-repair-ec (P8-10) |
 | [058](ADR-058-ec-corrupt-repair.md) | Anti-entropy EC corrupt repair (closes self-heal coverage) | Accepted · 2026-04-27 | `repair.DeadShard.Force` + `Coordinator.PutChunkToForce` 인터페이스 추가 · `?ec=1&corrupt=1` 조합으로 RS Reconstruct + force overwrite · demo-anti-entropy-repair-ec-corrupt (P8-11) |
+| [059](ADR-059-throttle-and-precision.md) | Repair throttle (`max_repairs`) + per-stripe precision | Accepted · 2026-04-27 | per-stripe `repair.Run` (정밀 OK/Err 매핑) · `?max_repairs=N` query + cli `--max-repairs` · demo-anti-entropy-throttle (P8-12) |
 
 > 데모 letter — S1~S4 = α~ω (그리스 21자, demo-alpha~demo-omega), S5~S6 = aleph~nun (히브리 14자, demo-aleph~demo-nun). 합 35.
 

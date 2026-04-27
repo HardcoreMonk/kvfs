@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -400,10 +401,17 @@ type ChunkRepairOutcome struct {
 //     set is grouped by stripe, packed into repair.StripeRepair, and
 //     handed to the existing ADR-046 repair.Run. Default off — when
 //     unset, EC chunks remain "ec-deferred" (back-compat with ADR-055).
+//
+// ADR-059 (P8-12) adds:
+//   - MaxRepairs: hard cap on total successful repairs per call. 0 =
+//     unlimited (back-compat). Once the cap is hit subsequent
+//     candidates land in Skipped with mode="throttled". Lets operators
+//     run cautious, bounded repair sweeps on big clusters.
 type AntiEntropyRepairOpts struct {
-	Corrupt bool
-	DryRun  bool
-	EC      bool
+	Corrupt    bool
+	DryRun     bool
+	EC         bool
+	MaxRepairs int
 }
 
 func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepairOpts) (*AntiEntropyRepairReport, error) {
@@ -535,10 +543,26 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 		}
 	}
 
+	// ADR-059 throttle counter: tracks successful (non-skipped) repairs
+	// across replication and EC paths. closure-shared with repairOne and
+	// the EC stripe loop below.
+	successCount := 0
+	throttled := func() bool {
+		return opts.MaxRepairs > 0 && successCount >= opts.MaxRepairs
+	}
+
 	// Repair pass: per-DN. Iterate inventory missing first, then corrupt.
 	// `repairOne` is the shared body so dry-run / fail / source-missing
 	// branches stay in one place.
 	repairOne := func(targetDN, chunkID, reason string) {
+		if throttled() {
+			out.Skipped = append(out.Skipped, ChunkRepairOutcome{
+				TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
+				Mode: "throttled",
+				Err:  fmt.Sprintf("max_repairs=%d limit reached (ADR-059)", opts.MaxRepairs),
+			})
+			return
+		}
 		if _, isEC := ecChunks[chunkID]; isEC {
 			if !opts.EC {
 				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
@@ -559,6 +583,9 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 				oc.Planned = true
 			}
 			out.Repairs = append(out.Repairs, oc)
+			// ADR-059 success count is bumped in the EC stripe pass —
+			// not here, since this is just a stub. The EC pass increments
+			// per successful stripe (counts the stripe as one repair unit).
 			return
 		}
 		// Find a healthy source: a DN that owns the chunk per ObjectMeta,
@@ -599,6 +626,9 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 		}
 		oc := s.copyChunk(ctx, srcDN, targetDN, chunkID, reason == "corrupt")
 		oc.Reason = reason
+		if oc.OK {
+			successCount++
+		}
 		out.Repairs = append(out.Repairs, oc)
 	}
 
@@ -621,54 +651,93 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			repairOne(e.DN, corruptID, "corrupt")
 		}
 	}
-	// ADR-057: EC stripe reconstruct pass. Replication outcomes are
-	// already in out.Repairs. Now run the EC plan accumulated above
-	// (only when opts.EC). Stats are aggregated; each shard outcome
-	// already inserted as ec-inline (or Planned in DryRun) — here we
-	// just flip OK to true on success or set Err on failure.
+	// ADR-057 + ADR-059: per-stripe EC reconstruct. We call repair.Run
+	// once per stripe (not once for the whole bulk plan) so each call's
+	// stats unambiguously refers to that single stripe — no fragile
+	// error-message parsing to map errors back to outcomes. Each per-
+	// stripe Run also counts as one unit toward MaxRepairs.
+	//
+	// Bonus: per-stripe loop is the natural insertion point for future
+	// concurrent execution (P8-13 candidate). Today serial; the wallclock
+	// matches the bulk path (Reed-Solomon Reconstruct is the dominant
+	// cost, not stripe iteration overhead).
 	if opts.EC && len(ecPlanByKey) > 0 && !opts.DryRun {
-		repairs := make([]repair.StripeRepair, 0, len(ecPlanByKey))
-		for _, sr := range ecPlanByKey {
-			repairs = append(repairs, *sr)
+		var totalStripes, totalRepaired, totalFailed int
+		var totalBytes int64
+		var allErrors []string
+
+		// Stable iteration order (testability + log readability).
+		ecKeys := make([]ecKey, 0, len(ecPlanByKey))
+		for k := range ecPlanByKey {
+			ecKeys = append(ecKeys, k)
 		}
-		plan := repair.Plan{Repairs: repairs}
-		stats := repair.Run(ctx, s.Coord, s.Store, plan, 1)
-		// Mark outcomes for the stripes that succeeded. For simplicity,
-		// success/failure is per-stripe — if a stripe repaired, all its
-		// dead shards are healthy now.
-		// Rebuild a lookup: chunk_id → stripeOK.
-		stripeOK := make(map[string]bool, 32)
-		for _, sr := range repairs {
-			ok := stats.Repaired > 0 && len(stats.Errors) == 0
-			// More precise: stats.Errors mentions Bucket/Key in messages but
-			// matching them back is brittle. For now: if any errors, mark
-			// all stripes ambiguous (false); else all ok. Operator sees the
-			// raw RunStats via the Audit field if needed. Future tightens this.
-			for _, d := range sr.DeadShards {
-				stripeOK[d.ChunkID] = ok
+		sort.Slice(ecKeys, func(i, j int) bool {
+			if ecKeys[i].Bucket != ecKeys[j].Bucket {
+				return ecKeys[i].Bucket < ecKeys[j].Bucket
+			}
+			if ecKeys[i].Key != ecKeys[j].Key {
+				return ecKeys[i].Key < ecKeys[j].Key
+			}
+			return ecKeys[i].Stripe < ecKeys[j].Stripe
+		})
+
+		// Pre-build a chunk_id → out.Repairs index map for fast outcome
+		// updates without re-scanning out.Repairs per stripe.
+		ecOutcomeIdx := make(map[string]int, len(out.Repairs))
+		for i, oc := range out.Repairs {
+			if oc.Mode == "ec-inline" {
+				ecOutcomeIdx[oc.ChunkID] = i
 			}
 		}
-		// Walk out.Repairs, flip ec-inline entries' OK based on stripeOK.
-		for i, oc := range out.Repairs {
-			if oc.Mode != "ec-inline" {
+
+		for _, k := range ecKeys {
+			sr := ecPlanByKey[k]
+			if throttled() {
+				// Mark this stripe's shards as throttled in out.Repairs;
+				// they were already inserted as ec-inline above.
+				for _, d := range sr.DeadShards {
+					if i, ok := ecOutcomeIdx[d.ChunkID]; ok {
+						out.Repairs[i].Mode = "throttled"
+						out.Repairs[i].Err = fmt.Sprintf("max_repairs=%d reached before this stripe (ADR-059)", opts.MaxRepairs)
+					}
+				}
 				continue
 			}
-			if stripeOK[oc.ChunkID] {
-				out.Repairs[i].OK = true
-			} else {
-				out.Repairs[i].Err = "stripe reconstruct failed (see audit + run kvfs-cli repair --apply for diagnostics)"
+			plan := repair.Plan{Repairs: []repair.StripeRepair{*sr}}
+			stats := repair.Run(ctx, s.Coord, s.Store, plan, 1)
+			totalStripes += stats.Stripes
+			totalRepaired += stats.Repaired
+			totalFailed += stats.Failed
+			totalBytes += stats.BytesWritten
+			allErrors = append(allErrors, stats.Errors...)
+
+			// Per-stripe success: stats.Repaired==1 with no errors = clean
+			// success of THIS stripe (because plan had 1 entry).
+			ok := stats.Repaired == 1 && len(stats.Errors) == 0
+			for _, d := range sr.DeadShards {
+				if i, found := ecOutcomeIdx[d.ChunkID]; found {
+					if ok {
+						out.Repairs[i].OK = true
+					} else {
+						out.Repairs[i].Err = strings.Join(stats.Errors, "; ")
+					}
+				}
+			}
+			if ok {
+				successCount++
 			}
 		}
+
 		// Append a synthetic summary outcome so totals make sense.
 		out.Repairs = append(out.Repairs, ChunkRepairOutcome{
 			TargetDN: "(ec-summary)",
 			Mode:     "ec-summary",
 			Reason:   "ec-stats",
-			OK:       len(stats.Errors) == 0,
+			OK:       len(allErrors) == 0,
 			Err: func() string {
-				if len(stats.Errors) > 0 {
+				if len(allErrors) > 0 {
 					return fmt.Sprintf("ec stripes attempted=%d repaired=%d failed=%d bytes=%d errs=%v",
-						stats.Stripes, stats.Repaired, stats.Failed, stats.BytesWritten, stats.Errors)
+						totalStripes, totalRepaired, totalFailed, totalBytes, allErrors)
 				}
 				return ""
 			}(),
@@ -783,6 +852,15 @@ func (s *Server) handleAntiEntropyRepair(w http.ResponseWriter, r *http.Request)
 		Corrupt: q.Get("corrupt") == "1",
 		DryRun:  q.Get("dry_run") == "1",
 		EC:      q.Get("ec") == "1",
+	}
+	// ADR-059: max_repairs throttle. 0 / unset = unlimited.
+	if v := q.Get("max_repairs"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("max_repairs: must be non-negative integer, got %q", v))
+			return
+		}
+		opts.MaxRepairs = n
 	}
 	rep, err := s.runAntiEntropyRepair(r.Context(), opts)
 	if err != nil {

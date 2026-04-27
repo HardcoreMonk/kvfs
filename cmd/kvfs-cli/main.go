@@ -1675,6 +1675,7 @@ func cmdAntiEntropy(args []string) {
 	corruptFlag := fs.Bool("corrupt", false, "ADR-056: also repair scrubber-detected corrupt chunks (repair only)")
 	dryRunFlag := fs.Bool("dry-run", false, "ADR-056: preview which chunks would be repaired without copying bytes (repair only)")
 	ecFlag := fs.Bool("ec", false, "ADR-057: inline-repair EC stripes (otherwise reported ec-deferred; repair only)")
+	maxRepairsFlag := fs.Int("max-repairs", 0, "ADR-059: cap successful repairs per call; 0=unlimited (repair only)")
 	fs.Parse(args[1:])
 
 	switch sub {
@@ -1711,6 +1712,9 @@ func cmdAntiEntropy(args []string) {
 		}
 		if *ecFlag {
 			qs = append(qs, "ec=1")
+		}
+		if *maxRepairsFlag > 0 {
+			qs = append(qs, fmt.Sprintf("max_repairs=%d", *maxRepairsFlag))
 		}
 		if len(qs) > 0 {
 			path += "?" + strings.Join(qs, "&")
