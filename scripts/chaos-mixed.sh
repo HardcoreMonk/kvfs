@@ -25,7 +25,11 @@ INTERVAL=10        # seconds between churn events
 DOWNTIME=4         # seconds dead before restart
 GET_RATE=3
 PUT_RATE=1
-GET_FAIL_PCT_MAX=10  # higher tolerance than single-subsystem tests
+# Default 25% GET-fail tolerance — both subsystems flapping at once
+# means each kill window (~3s × 2 subsystems × 4 cycles in 40s ≈ 24s)
+# is naturally lossy for in-flight traffic. The hard invariant is
+# durability (every 200-PUT retrievable at end), not GET availability.
+GET_FAIL_PCT_MAX=25
 
 usage() {
   cat <<'EOF'

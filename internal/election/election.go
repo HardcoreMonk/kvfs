@@ -91,6 +91,18 @@ type Config struct {
 	// AppendEntryFn applies a pushed WAL entry to local state. Set at
 	// construction; passed through to the AppendWAL HTTP handler.
 	AppendEntryFn AppendEntryFunc
+	// LastLogSeqFn returns the local node's last applied WAL sequence
+	// number — used for Raft §5.4.1 "log up-to-date" check during voting.
+	// A voter rejects a candidate whose last_log_seq is strictly lower
+	// than the voter's own. Without this, a stale-log candidate that
+	// merely bumped its term first can win an election and become the
+	// authoritative leader, dropping committed entries the rest of the
+	// cluster has — exactly the gap chaos-mixed surfaced as P8-06.
+	//
+	// Returns 0 if nil — degrades to the pre-P8-06 behavior (term-only
+	// vote, fine for single-coord setups and tests that don't exercise
+	// stale-follower election).
+	LastLogSeqFn func() uint64
 }
 
 // Elector runs the election state machine.
@@ -382,7 +394,11 @@ func (e *Elector) broadcastHeartbeat(ctx context.Context) {
 }
 
 func (e *Elector) requestVote(ctx context.Context, peer Peer, term uint64) (bool, uint64, error) {
-	url := fmt.Sprintf("%s/v1/election/vote?term=%d&candidate=%s", peer.URL, term, e.cfg.SelfID)
+	var lastSeq uint64
+	if e.cfg.LastLogSeqFn != nil {
+		lastSeq = e.cfg.LastLogSeqFn()
+	}
+	url := fmt.Sprintf("%s/v1/election/vote?term=%d&candidate=%s&last_log_seq=%d", peer.URL, term, e.cfg.SelfID, lastSeq)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return false, 0, err
@@ -423,12 +439,22 @@ func (e *Elector) sendHeartbeat(ctx context.Context, peer Peer, term uint64) (ui
 	return v.Term, nil
 }
 
-// HandleVote serves POST /v1/election/vote?term=X&candidate=Y.
+// HandleVote serves POST /v1/election/vote?term=X&candidate=Y&last_log_seq=Z.
 //
 // Vote rules (Raft):
 //   1. If incoming term < currentTerm → reject (stale candidate)
 //   2. If incoming term > currentTerm → step down + reset votedFor
-//   3. Vote granted iff (votedFor == "" || votedFor == candidate)
+//   3. Reject if voter's log is strictly more up-to-date than candidate's
+//      (Raft §5.4.1 — the "log up-to-date" invariant). P8-06 added this
+//      to close the chaos-mixed gap where a stale-log candidate that
+//      bumped its term first could win and drop committed entries.
+//   4. Vote granted iff (votedFor == "" || votedFor == candidate)
+//
+// last_log_seq is the candidate's local WAL.LastSeq(). Compared against
+// the voter's own LastLogSeqFn() if configured. When either side runs
+// without WAL configured (LastLogSeqFn nil → 0), the check degrades to
+// pre-P8-06 behavior — fine for tests and single-coord setups, but
+// production HA must wire LastLogSeqFn to MetaStore.WAL().LastSeq.
 func (e *Elector) HandleVote(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	term, err := parseTerm(q.Get("term"))
@@ -441,6 +467,7 @@ func (e *Elector) HandleVote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing candidate", http.StatusBadRequest)
 		return
 	}
+	candidateLogSeq, _ := parseSeq(q.Get("last_log_seq")) // 0 if missing
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -453,6 +480,21 @@ func (e *Elector) HandleVote(w http.ResponseWriter, r *http.Request) {
 		e.votedFor = ""
 		e.state = Follower
 		e.leader = ""
+	}
+	// Raft §5.4.1: candidate's log must be at least as up-to-date as voter's.
+	// kvfs simplifies "up-to-date" to seq comparison since WAL is monotonic
+	// and all writes go through one leader (no two coords have same seq with
+	// different content under transactional Raft).
+	if e.cfg.LastLogSeqFn != nil {
+		voterLogSeq := e.cfg.LastLogSeqFn()
+		if voterLogSeq > candidateLogSeq {
+			e.cfg.Log.Info("election: vote rejected — voter log more up-to-date",
+				slog.Uint64("voter_seq", voterLogSeq),
+				slog.Uint64("candidate_seq", candidateLogSeq),
+				slog.String("candidate", candidate))
+			writeVote(w, false, e.currentTerm)
+			return
+		}
 	}
 	if e.votedFor == "" || e.votedFor == candidate {
 		e.votedFor = candidate
@@ -633,6 +675,16 @@ func (e *Elector) HandleState(w http.ResponseWriter, r *http.Request) {
 func parseTerm(s string) (uint64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("missing term")
+	}
+	return strconv.ParseUint(s, 10, 64)
+}
+
+// parseSeq parses an optional uint64 query parameter (e.g. last_log_seq).
+// Empty / unparseable returns 0 — degrades to "no log info" for
+// backward compat with peers that don't include the parameter.
+func parseSeq(s string) (uint64, error) {
+	if s == "" {
+		return 0, nil
 	}
 	return strconv.ParseUint(s, 10, 64)
 }

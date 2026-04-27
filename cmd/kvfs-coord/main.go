@@ -46,6 +46,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -122,11 +123,12 @@ func main() {
 	placer := placement.New(nodes)
 
 	var elector *election.Elector
+	var peerURLs []string
 	if *flagPeers != "" {
 		if *flagSelfURL == "" {
 			fatal("COORD_SELF_URL required when COORD_PEERS is set")
 		}
-		peerURLs := splitCSV(*flagPeers)
+		peerURLs = splitCSV(*flagPeers)
 		peers := make([]election.Peer, 0, len(peerURLs))
 		for _, u := range peerURLs {
 			peers = append(peers, election.Peer{ID: u, URL: u})
@@ -147,11 +149,23 @@ func main() {
 			}
 		}
 
+		// LastLogSeqFn (P8-06): expose WAL.LastSeq for Raft §5.4.1
+		// log-up-to-date vote check. Returns 0 if WAL not configured —
+		// election degrades to term-only (Ep.3 behavior) which is fine for
+		// non-WAL clusters since they have no committed log to protect.
+		// WAL.LastSeq is int64 (signed monotonic counter); election uses
+		// uint64 — cast in the closure since the value is always ≥0.
+		var lastLogSeqFn func() uint64
+		if w := st.WAL(); w != nil {
+			lastLogSeqFn = func() uint64 { return uint64(w.LastSeq()) }
+		}
+
 		elector = election.New(election.Config{
 			SelfID:        *flagSelfURL,
 			Peers:         peers,
 			Log:           log,
 			AppendEntryFn: appendFn,
+			LastLogSeqFn:  lastLogSeqFn,
 		})
 
 		// WAL hook on the leader side (ADR-039): every successful local
@@ -213,6 +227,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// P8-06: bootstrap snapshot pull. If we are starting fresh OR with a
+	// stale bbolt (e.g. crashed and restarting after peers committed new
+	// entries), grab the current snapshot from a peer before joining the
+	// election. Without this, ADR-039's push-only WAL replication can't
+	// retroactively deliver missed entries — the chaos-mixed gap.
+	//
+	// Best-effort: if no peer is reachable (cluster bootstrap, full outage),
+	// proceed without a snapshot. The election runs anyway and we'll catch
+	// up via ongoing walHook pushes once peers come back.
+	if elector != nil && st.WAL() != nil {
+		if err := bootstrapFromPeer(*flagSelfURL, peerURLs, *flagDataDir, st, log); err != nil {
+			log.Warn("bootstrap snapshot pull failed (proceeding with local state)", "err", err)
+		}
+	}
+
 	if elector != nil {
 		go elector.Run(ctx)
 	}
@@ -230,6 +259,104 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
+}
+
+// bootstrapFromPeer attempts to fetch the current bbolt snapshot from any
+// reachable peer, write it next to our data dir, and Reload the local
+// MetaStore. Best-effort — returns the last error encountered if no peer
+// served us, which the caller logs and proceeds anyway. Skips self.
+//
+// Strategy: probe peers in order, prefer one whose healthz says
+// role=leader (most likely to have the freshest log). Fall back to any
+// peer that responds — followers also serve the snapshot endpoint, and
+// any quorum-acked entry must be on at least one of them.
+//
+// Closes the chaos-mixed gap (P8-06): a coord that died during a commit
+// window now starts with the cluster's current state instead of stale
+// (or empty) bbolt, so the §5.4.1 log-up-to-date vote check can do its
+// job and a stale-log election win becomes impossible.
+func bootstrapFromPeer(selfURL string, peerURLs []string, dataDir string, st *store.MetaStore, log *slog.Logger) error {
+	candidates := make([]string, 0, len(peerURLs))
+	for _, u := range peerURLs {
+		if u != selfURL {
+			candidates = append(candidates, u)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil // single-coord cluster; nothing to pull
+	}
+	// Prefer leader; healthz is cheap.
+	httpC := &http.Client{Timeout: 2 * time.Second}
+	leaderFirst := make([]string, 0, len(candidates))
+	rest := make([]string, 0, len(candidates))
+	for _, u := range candidates {
+		role := probeRole(httpC, u)
+		if role == "leader" {
+			leaderFirst = append(leaderFirst, u)
+		} else {
+			rest = append(rest, u)
+		}
+	}
+	ordered := append(leaderFirst, rest...)
+
+	tmpPath := filepath.Join(dataDir, "bootstrap.snapshot.tmp")
+	finalPath := filepath.Join(dataDir, "bootstrap.snapshot.db")
+
+	var lastErr error
+	for _, peer := range ordered {
+		log.Info("bootstrap: trying peer", "url", peer)
+		if err := fetchSnapshot(peer, tmpPath); err != nil {
+			lastErr = err
+			log.Warn("bootstrap: peer fetch failed", "url", peer, "err", err)
+			continue
+		}
+		// Atomic rename — Reload requires a stable file path.
+		if err := os.Rename(tmpPath, finalPath); err != nil {
+			lastErr = fmt.Errorf("rename: %w", err)
+			continue
+		}
+		if err := st.Reload(finalPath); err != nil {
+			lastErr = fmt.Errorf("reload: %w", err)
+			continue
+		}
+		log.Info("bootstrap: snapshot loaded", "url", peer, "path", finalPath)
+		return nil
+	}
+	return lastErr
+}
+
+func probeRole(httpC *http.Client, peerURL string) string {
+	resp, err := httpC.Get(peerURL + "/v1/coord/healthz")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var body struct{ Role string `json:"role"` }
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return ""
+	}
+	return body.Role
+}
+
+func fetchSnapshot(peerURL, dst string) error {
+	httpC := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpC.Get(peerURL + "/v1/coord/admin/meta/snapshot")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // Local thin shims so existing call sites stay tight. Helpers themselves

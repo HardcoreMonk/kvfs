@@ -64,6 +64,48 @@ func TestVoteRulesGrantOnce(t *testing.T) {
 	}
 }
 
+// TestVoteRejectStaleLog (P8-06): a candidate whose last_log_seq is
+// strictly lower than the voter's must NOT receive a vote, even if its
+// term is higher. This is Raft §5.4.1 — the invariant that prevents a
+// node which was dead during a commit from later winning election with
+// its stale log and dropping committed entries. Closes the chaos-mixed
+// gap.
+func TestVoteRejectStaleLog(t *testing.T) {
+	e := New(Config{
+		SelfID:       "self",
+		Peers:        []Peer{{ID: "self", URL: ""}},
+		Log:          quietLog(),
+		LastLogSeqFn: func() uint64 { return 100 }, // voter has seen seq 100
+	})
+
+	// Candidate with higher term but stale log (seq 50 < 100): rejected.
+	req := httptest.NewRequest(http.MethodPost, "/?term=10&candidate=stale&last_log_seq=50", nil)
+	rr := httptest.NewRecorder()
+	e.HandleVote(rr, req)
+	if !contains(rr.Body.String(), `"vote_granted":false`) {
+		t.Errorf("stale-log vote: want false, body=%s", rr.Body.String())
+	}
+
+	// Same candidate at the same term, with an up-to-date log (seq 100 >=
+	// voter's 100): granted. (Term mutation from prior call: voter is at
+	// term 10 now, so reuse term 10.)
+	req = httptest.NewRequest(http.MethodPost, "/?term=10&candidate=fresh&last_log_seq=100", nil)
+	rr = httptest.NewRecorder()
+	e.HandleVote(rr, req)
+	if !contains(rr.Body.String(), `"vote_granted":true`) {
+		t.Errorf("up-to-date vote: want true, body=%s", rr.Body.String())
+	}
+
+	// Without LastLogSeqFn the check is bypassed — verify pre-P8-06 path.
+	e2 := New(Config{SelfID: "self", Peers: []Peer{{ID: "self", URL: ""}}, Log: quietLog()})
+	req = httptest.NewRequest(http.MethodPost, "/?term=1&candidate=any&last_log_seq=0", nil)
+	rr = httptest.NewRecorder()
+	e2.HandleVote(rr, req)
+	if !contains(rr.Body.String(), `"vote_granted":true`) {
+		t.Errorf("no-LastLogSeqFn fallback: want true, body=%s", rr.Body.String())
+	}
+}
+
 // TestHigherTermStepDown: receiving higher-term vote/HB resets state.
 func TestHigherTermStepDown(t *testing.T) {
 	e := New(Config{SelfID: "self", Peers: []Peer{{ID: "self", URL: ""}}, Log: quietLog()})

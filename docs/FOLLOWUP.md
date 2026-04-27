@@ -13,7 +13,7 @@
 - **P5**: post-Season-4 wave — 모두 완료
 - **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
-- **P8**: Frame-1+2 100% wave (chaos suite + S5/S6 blog backfill + Season 7) — Phase 1 (chaos seed) DONE, P8-02~04 진행 예정
+- **P8**: Frame-1+2 100% wave — P8-01·02·03·06 DONE, P8-04 (Season 7) + P8-05·07 (저우선) 잔존
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -90,15 +90,13 @@
 - mixed 테스트: DN + coord 동시 flap → **architectural finding 발생** (P8-06 참조). 확률적 — 같은 명령으로 한 번은 PASS, 한 번은 2/24 데이터 손실.
 - WAL corrupt + disk-full 시나리오는 P8-07 로 이연 (구현 비용 > Frame-1+2 100% 진척 비율).
 
-### [P8-06] Simplified Raft 강화 (chaos-mixed 의 finding)
-- **배경**: chaos-mixed 가 노출한 실 architectural gap 두 개 — 둘 다 kvfs Elector 가 ADR-031 단계에서 의도적으로 단순화해놓은 결과.
-  1. **Stale-follower election**: `internal/election/HandleVote` 가 term-only check, Raft 의 §5.4.1 "log up-to-date" invariant 부재. 죽었다 살아난 coord 가 자기 term 만 올려도 vote 받을 수 있음 → stale log 가 leader 됨 → query 시 데이터 안 보임.
-  2. **No follower bootstrap fetch**: ADR-039 의 walHook 은 push-only. follower 가 dead 인 동안 일어난 commit 은 follower 에 도달 못 함. follower 가 restart 해도 자동 catch-up 메커니즘 0. multi-edge HA (ADR-022) 에는 snapshot-pull 이 있는데 coord 측 미구현.
-- **해결 후보**:
-  - (1) `HandleVote` 에 `lastLogIndex/lastLogTerm` 비교 추가. Raft §5.4.1 그대로.
-  - (2) Follower coord boot 시 leader 의 latest snapshot pull (ADR-022 패턴 port). 또는 leader 가 heartbeat 에 prevLogIndex 동봉, 누락 entry replay.
-- **우선순위**: 중요 — production-ready 분산 storage 의 기본 invariant. frame 2 의 일부 (textbook Raft 의 ground truth). 다만 Season 7 의 4 primitive 와 별개라 본 P8-04 에 묶지 않고 P8-06 으로 독립.
-- **추정**: 1~1.5주 (테스트 + 둘 다 구현).
+### ~~[P8-06] Simplified Raft 강화~~
+- **DONE 2026-04-27**: ADR-050 작성 + 양 갈래 구현.
+  - **Part 1**: `election.Config.LastLogSeqFn` 신규. `HandleVote` 가 voter.lastLogSeq > candidate.lastLogSeq 면 vote 거부 (Raft §5.4.1). coord daemon 이 `WAL.LastSeq` 으로 wire. unit test `TestVoteRejectStaleLog`.
+  - **Part 2**: coord 측 `GET /v1/coord/admin/meta/snapshot` 신규 endpoint. coord daemon boot 시 `bootstrapFromPeer` (leader 우선 probe → snapshot fetch → atomic Reload). 모든 peer unreachable 시 best-effort warn + 진행.
+- **검증**: chaos-mixed 5회 연속 실행 모두 `FINAL_FAIL=0` (이전엔 평균 5회 중 1회 violation). hard durability invariant 가 일관 holds.
+- 161 unit tests PASS · `go vet` 클린.
+- frame 2 (textbook Raft) 의 진척 — log-up-to-date invariant 만큼은 정통 Raft 동등.
 
 ### [P8-07] chaos suite 확장 wave 2 (저우선)
 - `chaos-wal-corrupt.sh` — WAL tail truncate / mid-line garble → replay recover. WAL 의 corruption tolerance 검증.
@@ -213,11 +211,12 @@
 ## 현재 상태 요약 (2026-04-27)
 
 - **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
-- **테스트**: **160 test funcs PASS** (S5/S6 단위 테스트 누적). `go vet` + staticcheck 클린
+- **테스트**: **161 test funcs PASS** (P8-06 의 `TestVoteRejectStaleLog` 신규 +1). `go vet` + staticcheck 클린
 - **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) = **35개** 라이브 PASS
-- **ADR**: **45 Accepted** — ADR-001~049 중 020/021/023/026 4개만 결번 (작성 시점에 결정 부재). post-S4 wave: 032~037, S5: 015·038~042, S6: 043~049
+- **ADR**: **46 Accepted** — ADR-001~050 중 020/021/023/026 4개 결번. post-S4 wave: 032~037, S5: 015·038~042, S6: 043~049, P8: 050
 - **Blog**: Ep.1~42 완성. S5 (Ep.29~35) + S6 (Ep.36~42) blog backfill (P8-03) 마감
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
+- **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 
 ## 업데이트 규칙
 

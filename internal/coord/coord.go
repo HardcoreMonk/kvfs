@@ -143,6 +143,11 @@ func (s *Server) Routes() *http.ServeMux {
 	// owner.
 	mux.HandleFunc("GET /v1/coord/admin/objects", s.handleAdminObjects)
 	mux.HandleFunc("GET /v1/coord/admin/dns", s.handleAdminDNs)
+	// P8-06: snapshot endpoint mirroring edge's /v1/admin/meta/snapshot
+	// (ADR-014). A coord that just booted with empty/stale bbolt can pull
+	// the current state from any peer (preferably leader). Closes the
+	// follower-bootstrap-fetch gap chaos-mixed surfaced.
+	mux.HandleFunc("GET /v1/coord/admin/meta/snapshot", s.handleAdminSnapshot)
 	// ADR-043 (Season 6 Ep.1): rebalance plan computed by coord directly.
 	// Read-only — apply still on edge until coord grows DN I/O capability.
 	mux.HandleFunc("POST /v1/coord/admin/rebalance/plan", s.handleRebalancePlan)
@@ -391,6 +396,24 @@ func (s *Server) handleAdminObjects(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, objs)
+}
+
+// handleAdminSnapshot streams the bbolt snapshot to the response body
+// (P8-06). A booting coord can pull this from any peer to bootstrap
+// its state before joining the election — closes the follower-restart
+// catch-up gap. Mirror of edge's /v1/admin/meta/snapshot (ADR-014),
+// same Store.Snapshot path so behavior is identical.
+//
+// No leader gate — followers are happy to serve the snapshot, and the
+// caller may not yet know who is leader. Auth: same admin trust model
+// as the rest of /v1/coord/admin/* (cluster-internal network).
+func (s *Server) handleAdminSnapshot(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if _, err := s.Store.Snapshot(w); err != nil {
+		// Snapshot streaming may have already written headers; log and
+		// give up gracefully. Caller will see truncated body and retry.
+		s.Log.Warn("handleAdminSnapshot stream failed", "err", err)
+	}
 }
 
 // handleAdminDNs returns the runtime DN list (addrs + class labels)

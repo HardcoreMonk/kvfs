@@ -111,6 +111,12 @@ Accepted · YYYY-MM-DD
 | [048](ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord (rotate/list/remove) | Accepted · 2026-04-27 | `/v1/coord/admin/urlkey{,/rotate}` + cli `urlkey --coord` · demo-mem (Ep.6) |
 | [049](ADR-049-edge-urlkey-propagation.md) | Edge urlkey.Signer propagation from coord (polling) | Accepted · 2026-04-27 | `EDGE_COORD_URLKEY_POLL_INTERVAL` + `Server.StartURLKeyPolling` + `SyncURLKeys` · demo-nun (Ep.7) |
 
+## P8 — Frame-1+2 100% wave (in progress)
+
+| # | 제목 | 상태 | 연결 |
+|---|---|---|---|
+| [050](ADR-050-raft-stale-log-protection.md) | Raft §5.4.1 log-up-to-date vote check + coord bootstrap snapshot pull | Accepted · 2026-04-27 | `election.LastLogSeqFn` + `/v1/coord/admin/meta/snapshot` + `bootstrapFromPeer` · chaos-mixed verifier |
+
 > 데모 letter — S1~S4 = α~ω (그리스 21자, demo-alpha~demo-omega), S5~S6 = aleph~nun (히브리 14자, demo-aleph~demo-nun). 합 35.
 
 ## 다음 시즌 / 미작성
