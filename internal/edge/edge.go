@@ -1784,6 +1784,82 @@ func (s *Server) handlePutECStream(w http.ResponseWriter, r *http.Request, bucke
 	})
 }
 
+// parallelFetchShards fetches every shard in `shards` in parallel,
+// returning as soon as `quorum` (= K) successful + sha256-verified
+// reads have arrived. Remaining fetches are cancelled to save DN load.
+// Returns the data slice indexed by shard position (nil for missing/
+// failed slots) and the survivor count.
+//
+// ADR-052 (S7 Ep.2). Pre-S7 the GET path looped serially, so any one
+// slow DN gated the entire stripe latency — the K survivors property
+// of erasure coding was never used during reads, only during repair.
+// This helper realizes the textbook degraded-read property: read
+// completes at the speed of the K-th fastest shard.
+//
+// Concurrency: launches one goroutine per shard. Each goroutine sends
+// exactly one shardFetchResult on the buffered channel before returning,
+// which lets us drain after early-cancel without leaking goroutines.
+//
+// Tests: see edge_get_ec_degraded_test.go — verifies (a) all-survivors
+// fast path, (b) K survivors → success, (c) <K survivors → fail.
+func (s *Server) parallelFetchShards(ctx context.Context, shards []store.ChunkRef, quorum int) ([][]byte, int) {
+	type result struct {
+		idx  int
+		data []byte
+		ok   bool
+	}
+	total := len(shards)
+	out := make([][]byte, total)
+	if total == 0 {
+		return out, 0
+	}
+	fetchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	ch := make(chan result, total)
+	for i, sh := range shards {
+		go func(idx int, ref store.ChunkRef) {
+			data, _, err := s.Coord.ReadChunk(fetchCtx, ref.ChunkID, ref.Replicas)
+			r := result{idx: idx}
+			if err == nil {
+				sum := sha256.Sum256(data)
+				if hex.EncodeToString(sum[:]) == ref.ChunkID {
+					r.data = data
+					r.ok = true
+				}
+			}
+			ch <- r // buffered: never blocks
+		}(i, sh)
+	}
+
+	survivors := 0
+	collected := 0
+	for collected < total {
+		select {
+		case <-ctx.Done():
+			return out, survivors
+		case r := <-ch:
+			collected++
+			if r.ok {
+				out[r.idx] = r.data
+				survivors++
+				if survivors == quorum {
+					// Have enough; cancel remaining + drain. Drain is bounded
+					// by `total - collected` and the goroutines respect
+					// fetchCtx so they exit fast on the cancel below.
+					cancel()
+					for collected < total {
+						<-ch
+						collected++
+					}
+					return out, survivors
+				}
+			}
+		}
+	}
+	return out, survivors
+}
+
 // handleGetEC reconstructs an EC-stored object.
 //
 // For each stripe: try fetching all K+M shards from their assigned DNs.
@@ -1810,19 +1886,27 @@ func (s *Server) handleGetEC(w http.ResponseWriter, r *http.Request, ctx context
 
 	remaining := meta.EC.DataSize
 	for stripeIdx, stripe := range meta.Stripes {
-		shards := make([][]byte, k+m)
-		survivors := 0
-		for si, sh := range stripe.Shards {
-			data, _, ferr := s.Coord.ReadChunk(ctx, sh.ChunkID, sh.Replicas)
-			if ferr != nil {
-				continue
+		// ADR-052 (S7 Ep.2) — degraded read: fetch shards in parallel,
+		// stop as soon as K succeed. Pre-S7 this loop was serial, so a
+		// single slow DN gated the whole stripe latency. Parallel +
+		// first-K-wins makes tail latency dominated by the K-th fastest
+		// shard, not the slowest. Cancels remaining fetches once K are
+		// in to save DN load.
+		shards, survivors := s.parallelFetchShards(ctx, stripe.Shards, k)
+		// "Degraded" = at least one *data* shard (idx 0..K-1) is missing,
+		// so RS Reconstruct actually has work to do. Pure-parity-missing
+		// reads where all K data shards arrived first wouldn't strictly
+		// need reconstruct (a future opt) — this metric tracks the case
+		// where it did.
+		dataMissing := false
+		for i := 0; i < k; i++ {
+			if shards[i] == nil {
+				dataMissing = true
+				break
 			}
-			sum := sha256.Sum256(data)
-			if hex.EncodeToString(sum[:]) != sh.ChunkID {
-				continue
-			}
-			shards[si] = data
-			survivors++
+		}
+		if dataMissing {
+			s.recordEcDegradedRead()
 		}
 		if survivors < k {
 			if stripeIdx == 0 {

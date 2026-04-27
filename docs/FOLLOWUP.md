@@ -111,7 +111,7 @@
 
 ### [P8-04] Season 7 — textbook primitives (in progress)
 - ~~**Ep.1 (ADR-051)**: Failure domain hierarchy~~ — **DONE 2026-04-27**. `placement.Node.Domain` + `PickByDomain` greedy walk + admin endpoint + cli `dns domain` + demo-samekh (3 racks × 2 DN, R=3 spread + EC 4+2 per-stripe spread). 3 unit tests + ADR-051 + blog Ep.43.
-- Ep.2 (ADR-052): **Degraded read** — read 시 첫 chunk 실패하면 즉시 RS Reconstruct (현 design 은 다음 replica fallback 후 별도 worker).
+- ~~**Ep.2 (ADR-052)**: Degraded read~~ — **DONE 2026-04-27**. `Server.parallelFetchShards` (K+M goroutine, first-K-wins, cancel + drain) + `kvfs_ec_degraded_read_total` metric (data shards missing 시) + demo-ayin (1MB EC 4+2, 2 DN kill, GET 정상). 3 unit tests + ADR-052 + blog Ep.44.
 - Ep.3 (ADR-053): **Tunable consistency** — per-request `X-KVFS-W`, `X-KVFS-R` (Dynamo W+R>N classic).
 - Ep.4 (ADR-054): **Anti-entropy / Merkle tree** — DN-to-DN periodic hash compare, silent corruption 자동 발견.
 - ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
@@ -210,10 +210,10 @@
 ## 현재 상태 요약 (2026-04-27)
 
 - **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
-- **테스트**: **164 test funcs PASS** (P8-06 +1, S7 Ep.1 +3). `go vet` + staticcheck 클린
-- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + samekh (S7 Ep.1) = **36개** 라이브 PASS
-- **ADR**: **47 Accepted** — ADR-001~051 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050, S7: 051
-- **Blog**: Ep.1~43 완성. S5/S6 blog backfill (P8-03) 마감 + S7 Ep.1 (Ep.43)
+- **테스트**: **167 test funcs PASS** (P8-06 +1, S7 Ep.1 +3, S7 Ep.2 +3). `go vet` + staticcheck 클린
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + samekh + ayin (S7 Ep.1~2) = **37개** 라이브 PASS
+- **ADR**: **48 Accepted** — ADR-001~052 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050, S7: 051·052
+- **Blog**: Ep.1~44 완성. S5/S6 blog backfill (P8-03) 마감 + S7 Ep.1~2 (Ep.43~44)
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 

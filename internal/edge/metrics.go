@@ -34,12 +34,13 @@ import (
 // metricsHandle bundles all kvfs-edge counters/gauges into one struct so
 // Server can pass it around without scattering individual *Counter pointers.
 type metricsHandle struct {
-	reg          *metrics.Registry
-	puts         *metrics.Counter // labels: mode
-	gets         *metrics.Counter // labels: mode
-	deletes      *metrics.Counter
-	walAppended  *metrics.Counter // labels: op (put_object|delete_object|...)
-	failover     *metrics.Counter // election term changes (informational)
+	reg            *metrics.Registry
+	puts           *metrics.Counter // labels: mode
+	gets           *metrics.Counter // labels: mode
+	deletes        *metrics.Counter
+	walAppended    *metrics.Counter // labels: op (put_object|delete_object|...)
+	failover       *metrics.Counter // election term changes (informational)
+	ecDegradedRead *metrics.Counter // ADR-052: EC GET stripes that needed RS Reconstruct
 }
 
 // SetupMetrics builds the registry + all metric definitions and attaches
@@ -47,12 +48,13 @@ type metricsHandle struct {
 func (s *Server) SetupMetrics() {
 	reg := metrics.NewRegistry()
 	h := &metricsHandle{
-		reg:         reg,
-		puts:        reg.Counter("kvfs_put_total", "Total PUT requests", "mode"),
-		gets:        reg.Counter("kvfs_get_total", "Total GET requests", "mode"),
-		deletes:     reg.Counter("kvfs_delete_total", "Total DELETE requests"),
-		walAppended: reg.Counter("kvfs_wal_appended_total", "WAL entries appended", "op"),
-		failover:    reg.Counter("kvfs_election_term_changes_total", "Election term increments observed"),
+		reg:            reg,
+		puts:           reg.Counter("kvfs_put_total", "Total PUT requests", "mode"),
+		gets:           reg.Counter("kvfs_get_total", "Total GET requests", "mode"),
+		deletes:        reg.Counter("kvfs_delete_total", "Total DELETE requests"),
+		walAppended:    reg.Counter("kvfs_wal_appended_total", "WAL entries appended", "op"),
+		failover:       reg.Counter("kvfs_election_term_changes_total", "Election term increments observed"),
+		ecDegradedRead: reg.Counter("kvfs_ec_degraded_read_total", "EC GET stripes served with reconstruct (one or more shards missing)"),
 	}
 
 	// Object count gauge: cheap if Stats() is fast (it's not — full scan;
@@ -134,6 +136,14 @@ func (s *Server) recordGet(mode string) {
 func (s *Server) recordDelete() {
 	if s.Metrics != nil {
 		s.Metrics.deletes.WithLabels().Add(1)
+	}
+}
+
+// recordEcDegradedRead bumps the counter when an EC GET stripe needed
+// Reed-Solomon Reconstruct (one or more shards unavailable). ADR-052.
+func (s *Server) recordEcDegradedRead() {
+	if s.Metrics != nil {
+		s.Metrics.ecDegradedRead.WithLabels().Add(1)
 	}
 }
 
