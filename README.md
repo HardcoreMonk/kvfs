@@ -1,7 +1,7 @@
 # kvfs — Key-Value File System
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스.
-> **Go 1.26 · Apache 2.0 · 45 ADR · 28 blog episode · 35 라이브 데모 · 160 unit test**
+> **Go 1.26 · Apache 2.0 · 45 ADR · 42 blog episode · 35 라이브 데모 · 160 unit test**
 
 ## 이것은 무엇인가
 
@@ -123,27 +123,27 @@ EC streaming = Ep.6 follow-up (demo-χ). EC+CDC = Ep.7 follow-up (demo-ψ). Sync
 
 ### Season 5 (coord 분리)
 
-| ADR | 주제 | Demo |
-|---|---|---|
-| [015](docs/adr/ADR-015-coordinator-daemon-split.md) | Coordinator daemon 분리 (ADR-002 supersede) | aleph (Ep.1) |
-| — | edge → coord meta client (`EDGE_COORD_URL`) | bet (Ep.2) |
-| [038](docs/adr/ADR-038-coord-ha-via-raft.md) | Coord HA via Raft (ADR-031 reuse) | gimel (Ep.3) |
-| [039](docs/adr/ADR-039-coord-wal-replication.md) | Coord-to-coord WAL replication | dalet (Ep.4) |
-| [040](docs/adr/ADR-040-coord-transactional-commit.md) | Coord transactional commit (ADR-034 port) | he (Ep.5) |
-| [041](docs/adr/ADR-041-edge-placement-via-coord.md) | Edge → coord placement RPC (single source of truth) | vav (Ep.6) |
-| [042](docs/adr/ADR-042-cli-direct-coord-admin.md) | kvfs-cli direct coord admin (read-only inspect) | zayin (Ep.7) |
+| ADR | 주제 | Demo | Blog |
+|---|---|---|---|
+| [015](docs/adr/ADR-015-coordinator-daemon-split.md) | Coordinator daemon 분리 (ADR-002 supersede) | aleph (Ep.1) | [29](blog/29-coord-skeleton.md) |
+| — | edge → coord meta client (`EDGE_COORD_URL`) | bet (Ep.2) | [30](blog/30-coord-client.md) |
+| [038](docs/adr/ADR-038-coord-ha-via-raft.md) | Coord HA via Raft (ADR-031 reuse) | gimel (Ep.3) | [31](blog/31-coord-ha.md) |
+| [039](docs/adr/ADR-039-coord-wal-replication.md) | Coord-to-coord WAL replication | dalet (Ep.4) | [32](blog/32-coord-wal-repl.md) |
+| [040](docs/adr/ADR-040-coord-transactional-commit.md) | Coord transactional commit (ADR-034 port) | he (Ep.5) | [33](blog/33-coord-txn-commit.md) |
+| [041](docs/adr/ADR-041-edge-placement-via-coord.md) | Edge → coord placement RPC (single source of truth) | vav (Ep.6) | [34](blog/34-coord-placement.md) |
+| [042](docs/adr/ADR-042-cli-direct-coord-admin.md) | kvfs-cli direct coord admin (read-only inspect) | zayin (Ep.7) | [35](blog/35-cli-coord-admin.md) |
 
 ### Season 6 (coord operational migration)
 
-| ADR | 주제 | Demo |
-|---|---|---|
-| [043](docs/adr/ADR-043-coord-rebalance-plan.md) | Rebalance plan on coord | chet (Ep.1) |
-| [044](docs/adr/ADR-044-coord-rebalance-apply.md) | Rebalance apply on coord (`COORD_DN_IO`) | tet (Ep.2) |
-| [045](docs/adr/ADR-045-coord-gc.md) | GC plan + apply on coord | yod (Ep.3) |
-| [046](docs/adr/ADR-046-coord-repair.md) | EC repair on coord | kaf (Ep.4) |
-| [047](docs/adr/ADR-047-coord-dns-admin.md) | DN registry mutation on coord | lamed (Ep.5) |
-| [048](docs/adr/ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord | mem (Ep.6) |
-| [049](docs/adr/ADR-049-edge-urlkey-propagation.md) | Edge urlkey.Signer polling propagation | nun (Ep.7) |
+| ADR | 주제 | Demo | Blog |
+|---|---|---|---|
+| [043](docs/adr/ADR-043-coord-rebalance-plan.md) | Rebalance plan on coord | chet (Ep.1) | [36](blog/36-coord-rebalance-plan.md) |
+| [044](docs/adr/ADR-044-coord-rebalance-apply.md) | Rebalance apply on coord (`COORD_DN_IO`) | tet (Ep.2) | [37](blog/37-coord-rebalance-apply.md) |
+| [045](docs/adr/ADR-045-coord-gc.md) | GC plan + apply on coord | yod (Ep.3) | [38](blog/38-coord-gc.md) |
+| [046](docs/adr/ADR-046-coord-repair.md) | EC repair on coord | kaf (Ep.4) | [39](blog/39-coord-repair.md) |
+| [047](docs/adr/ADR-047-coord-dns-admin.md) | DN registry mutation on coord | lamed (Ep.5) | [40](blog/40-coord-dns-admin.md) |
+| [048](docs/adr/ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord | mem (Ep.6) | [41](blog/41-coord-urlkey.md) |
+| [049](docs/adr/ADR-049-edge-urlkey-propagation.md) | Edge urlkey.Signer polling propagation | nun (Ep.7) | [42](blog/42-edge-urlkey-sync.md) |
 
 ## 환경 변수
 

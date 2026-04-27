@@ -612,6 +612,10 @@ Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을
 - Ep.1~6 (Season 1~2): MVP 부터 EC 까지 — `blog/01..06`.
 - Ep.7~13 (Season 3): 운영성 7개 — `blog/07..13`.
 - Ep.14~17 (Season 4): 성능·효율 + Raft — `blog/14..17`.
+- Ep.18~22 (Season 4 follow-ups): EC streaming · CDC × EC · sync repl · transactional Raft · micro-opts — `blog/18..22`.
+- Ep.23~28 (P4-09 wave): metrics · SIMD-RS · hot/cold · NFS deferred · log compaction · strict-vs-txn — `blog/23..28`.
+- Ep.29~35 (Season 5): coord 분리 — `blog/29..35` (skeleton → meta client → HA → WAL repl → txn commit → placement RPC → cli admin).
+- Ep.36~42 (Season 6): coord operational migration — `blog/36..42` (rebalance plan/apply → GC → repair → DN registry → URLKey → edge propagation).
 
 ### 13.3 ADR
 

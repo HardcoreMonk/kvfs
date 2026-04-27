@@ -92,10 +92,11 @@
   - `chaos-disk-full.sh` — DN tmpfs cap → edge graceful 5xx + 회복 후 repair
 - 추정: 1주.
 
-### [P8-03] S5/S6 blog backfill
-- S5 Ep.1~7 → Ep.29~35 (7편), S6 Ep.1~7 → Ep.36~42 (7편). aleph→nun 데모 + ADR-015·038~049 본문.
-- S5 Ep.2 의 ADR 결번 백필 (`EDGE_COORD_URL` proxy 모드 — 환경변수 wiring 결정의 공식 기록).
-- 추정: ~5일.
+### ~~[P8-03] S5/S6 blog backfill~~
+- **DONE 2026-04-27**: 14 episode 작성 (Ep.29~42). S5 (29-coord-skeleton ~ 35-cli-coord-admin) + S6 (36-coord-rebalance-plan ~ 42-edge-urlkey-sync). aleph→nun demo + ADR-015·038~049 본문 모두 cover.
+- S5 Ep.2 의 ADR 결번 backfill 은 **별도 ADR 추가 안 함** — 본 episode (Ep.30) 본문에 결정 기록 (env wiring 자체가 ADR-015 의 follow-up 이고 별개 결정 부재). ADR README 의 "Season 5 Ep.2 는 ADR 없이 wiring 만" 노트와 정합.
+- 평균 episode 길이 ~120 LOC, 합계 ~1700 LOC. 기존 28 episode 의 평균 (~120 LOC) 와 동일한 톤.
+- 본 작업 마감으로 **frame 1 (헌장 기준 100%)** 도달.
 
 ### [P8-04] Season 7 — textbook primitives
 - Ep.1 (ADR-050): **Failure domain hierarchy** — rack/DC tag 를 placement.Node 에 추가, HRW 가 topology-aware. CRUSH 의 simplest tier.
@@ -202,7 +203,7 @@
 - **테스트**: **160 test funcs PASS** (S5/S6 단위 테스트 누적). `go vet` + staticcheck 클린
 - **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) = **35개** 라이브 PASS
 - **ADR**: **45 Accepted** — ADR-001~049 중 020/021/023/026 4개만 결번 (작성 시점에 결정 부재). post-S4 wave: 032~037, S5: 015·038~042, S6: 043~049
-- **Blog**: Ep.1~28 완성 (P5-06 + P5-09 wave 모두 마감). S5/S6 episode 는 미작성 — 후속 작업 후보
+- **Blog**: Ep.1~42 완성. S5 (Ep.29~35) + S6 (Ep.36~42) blog backfill (P8-03) 마감
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 
 ## 업데이트 규칙
