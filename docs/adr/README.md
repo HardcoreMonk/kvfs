@@ -125,6 +125,7 @@ Accepted · YYYY-MM-DD
 | [052](ADR-052-degraded-read.md) | Degraded read (parallel shard fetch + first-K-wins) | Accepted · 2026-04-27 | `Server.parallelFetchShards` + `kvfs_ec_degraded_read_total` · demo-ayin (Ep.2) |
 | [053](ADR-053-tunable-consistency.md) | Tunable consistency (per-request W/R quorum, Dynamo-style) | Accepted · 2026-04-27 | `X-KVFS-W` + `X-KVFS-R` headers · `WriteChunkToAddrsW` + `readChunkAgreement` · `kvfs_tunable_quorum_total` · demo-pe (Ep.3) |
 | [054](ADR-054-anti-entropy-merkle.md) | Anti-entropy / Merkle tree + bit-rot scrubber | Accepted · 2026-04-27 | DN `/chunks/merkle{,/bucket}` + `/chunks/scrub-status` (`DN_SCRUB_INTERVAL`) · coord `/v1/coord/admin/anti-entropy/run` · demo-tsadi (Ep.4 — S7 close, frame 2 = 100%) |
+| [055](ADR-055-anti-entropy-auto-repair.md) | Anti-entropy auto-repair + scheduled audit | Accepted · 2026-04-27 | coord `/v1/coord/admin/anti-entropy/repair` + `COORD_ANTI_ENTROPY_INTERVAL` ticker · cli `anti-entropy repair` · demo-anti-entropy-repair (P8-08) |
 
 > 데모 letter — S1~S4 = α~ω (그리스 21자, demo-alpha~demo-omega), S5~S6 = aleph~nun (히브리 14자, demo-aleph~demo-nun). 합 35.
 

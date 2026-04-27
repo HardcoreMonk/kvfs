@@ -619,7 +619,7 @@ Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을
 
 ### 13.3 ADR
 
-[`docs/adr/README.md`](adr/README.md) — **50 ADR** (S1~S6 + P8 + S7 close), 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.
+[`docs/adr/README.md`](adr/README.md) — **51 ADR** (S1~S6 + P8 + S7 close + P8-08 polish), 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.
 
 ### 13.4 라이브 데모
 

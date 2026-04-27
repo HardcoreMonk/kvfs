@@ -325,7 +325,8 @@ func validHex64(s string) bool {
 
 // handleAntiEntropyRun serves POST /v1/coord/admin/anti-entropy/run.
 // One-shot — returns the report when finished. For continuous audit
-// the operator schedules the cli command externally (cron, k8s job).
+// the operator schedules the cli command externally (cron, k8s job)
+// or sets COORD_ANTI_ENTROPY_INTERVAL on the coord daemon (ADR-055).
 // Leader-only because it walks the authoritative ObjectMeta; followers
 // would race on stale state.
 func (s *Server) handleAntiEntropyRun(w http.ResponseWriter, r *http.Request) {
@@ -338,6 +339,219 @@ func (s *Server) handleAntiEntropyRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rep)
+}
+
+// AntiEntropyRepairReport: result of POST /v1/coord/admin/anti-entropy/repair.
+// Bundles the original audit + per-DN repair attempts (ADR-055).
+type AntiEntropyRepairReport struct {
+	Audit       *AntiEntropyReport       `json:"audit"`
+	Repairs     []ChunkRepairOutcome     `json:"repairs"`
+	Skipped     []ChunkRepairOutcome     `json:"skipped"` // EC + unreachable + no-source
+	StartedAt   time.Time                `json:"started_at"`
+	Duration    string                   `json:"duration"`
+}
+
+// ChunkRepairOutcome: one row per (dn, chunk_id) the worker tried to fix.
+type ChunkRepairOutcome struct {
+	TargetDN string `json:"target_dn"`
+	ChunkID  string `json:"chunk_id"`
+	SourceDN string `json:"source_dn,omitempty"` // empty if Skipped
+	Mode     string `json:"mode"`                // "replication" or "ec-deferred"
+	OK       bool   `json:"ok"`
+	Err      string `json:"err,omitempty"`
+}
+
+// runAntiEntropyRepair: ADR-055. detection (runAntiEntropy) → for each
+// `missing_from_dn` chunk on a DN, find another DN that holds it per
+// ObjectMeta + per the audit's actual inventory, copy, write to target.
+//
+// Scope: replication-mode chunks only. EC stripes deliberately skipped
+// because the proper recovery path is ADR-046 (Reed-Solomon Reconstruct
+// + redistribute) — running it inline here would either duplicate logic
+// or invoke the existing EC repair worker. Either way, EC is its own
+// beast; we report skipped and let the operator run `repair --apply`
+// separately. Same module of work, different worker.
+//
+// Requires Coord (DN-IO) — without it we have no way to read/write
+// chunks from coord. Returns 503 at the handler level if missing.
+func (s *Server) runAntiEntropyRepair(ctx context.Context) (*AntiEntropyRepairReport, error) {
+	startedAt := time.Now().UTC()
+	audit, err := s.runAntiEntropy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := &AntiEntropyRepairReport{Audit: audit, StartedAt: startedAt}
+
+	// Build chunk_id → []dn (which DNs are supposed to have it). Used
+	// as the source candidate list per repair attempt.
+	objs, err := s.Store.ListObjects()
+	if err != nil {
+		return nil, fmt.Errorf("list objects: %w", err)
+	}
+	chunkOwners := make(map[string][]string)
+	ecChunks := make(map[string]struct{})
+	for _, o := range objs {
+		for _, c := range o.Chunks {
+			chunkOwners[c.ChunkID] = append(chunkOwners[c.ChunkID], c.Replicas...)
+		}
+		for _, st := range o.Stripes {
+			for _, sh := range st.Shards {
+				ecChunks[sh.ChunkID] = struct{}{}
+				chunkOwners[sh.ChunkID] = append(chunkOwners[sh.ChunkID], sh.Replicas...)
+			}
+		}
+	}
+
+	// Build "actually has" map: dn → set of chunk_ids it actually holds.
+	// Derived from the audit's per-DN ExpectedTotal/ActualTotal isn't
+	// granular enough — we use audit's MissingFromDN inversely (a chunk
+	// missing on dn means it's NOT actually there) plus assume the rest
+	// of expected[dn] IS there (audit confirms via root_match or by not
+	// listing in MissingFromDN). For exhaustive correctness we'd re-read
+	// each DN's full bucket of any divergent slot; the audit already did
+	// that and recorded missing.
+	dnHas := make(map[string]map[string]struct{})
+	for _, e := range audit.DNs {
+		if !e.Reachable {
+			continue
+		}
+		// Start with "everything expected" then subtract MissingFromDN.
+		miss := make(map[string]struct{}, len(e.MissingFromDN))
+		for _, m := range e.MissingFromDN {
+			miss[m] = struct{}{}
+		}
+		dnHas[e.DN] = miss // we'll invert during lookup
+	}
+
+	for _, e := range audit.DNs {
+		if !e.Reachable {
+			for _, id := range e.MissingFromDN {
+				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
+					TargetDN: e.DN, ChunkID: id, OK: false,
+					Err: "target DN unreachable", Mode: "skip",
+				})
+			}
+			continue
+		}
+		for _, missID := range e.MissingFromDN {
+			if _, isEC := ecChunks[missID]; isEC {
+				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
+					TargetDN: e.DN, ChunkID: missID,
+					Mode: "ec-deferred",
+					Err:  "EC chunk — use kvfs-cli repair --apply --coord (ADR-046)",
+				})
+				continue
+			}
+			// Find a healthy source: a DN that owns the chunk per ObjectMeta
+			// AND doesn't have it listed in its own MissingFromDN.
+			var srcDN string
+			for _, owner := range chunkOwners[missID] {
+				if owner == e.DN {
+					continue
+				}
+				ownerMissing := dnHas[owner]
+				if ownerMissing == nil {
+					continue // owner unreachable
+				}
+				if _, gone := ownerMissing[missID]; gone {
+					continue
+				}
+				srcDN = owner
+				break
+			}
+			if srcDN == "" {
+				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
+					TargetDN: e.DN, ChunkID: missID,
+					Mode: "no-source",
+					Err:  "no healthy replica found",
+				})
+				continue
+			}
+			oc := s.copyChunk(ctx, srcDN, e.DN, missID)
+			out.Repairs = append(out.Repairs, oc)
+		}
+	}
+	out.Duration = time.Since(startedAt).String()
+	return out, nil
+}
+
+// copyChunk: read chunkID from src, PUT to target, log the outcome.
+func (s *Server) copyChunk(ctx context.Context, src, target, chunkID string) ChunkRepairOutcome {
+	oc := ChunkRepairOutcome{
+		TargetDN: target, ChunkID: chunkID, SourceDN: src, Mode: "replication",
+	}
+	body, _, err := s.Coord.ReadChunk(ctx, chunkID, []string{src})
+	if err != nil {
+		oc.Err = "read from " + src + ": " + err.Error()
+		return oc
+	}
+	if perr := s.Coord.PutChunkTo(ctx, target, chunkID, body); perr != nil {
+		oc.Err = "put to " + target + ": " + perr.Error()
+		return oc
+	}
+	oc.OK = true
+	return oc
+}
+
+// handleAntiEntropyRepair serves POST /v1/coord/admin/anti-entropy/repair.
+// Audits + auto-fixes replication chunks. EC paths return skipped.
+// 503 if Coord (DN-IO) is unset — repair needs to actually move bytes.
+func (s *Server) handleAntiEntropyRepair(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	if s.Coord == nil {
+		writeErr(w, http.StatusServiceUnavailable,
+			fmt.Errorf("anti-entropy repair requires COORD_DN_IO=1 (ADR-044)"))
+		return
+	}
+	rep, err := s.runAntiEntropyRepair(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
+// StartAntiEntropyTicker (ADR-055): if interval > 0, runs anti-entropy
+// AUDIT (no auto-repair — too risky as a default ticker side-effect)
+// every interval on the leader. Logs results; does not enqueue repair.
+// Operator calls /repair explicitly when ready. ctx cancel stops.
+func (s *Server) StartAntiEntropyTicker(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if s.Elector != nil && !s.Elector.IsLeader() {
+					continue
+				}
+				rep, err := s.runAntiEntropy(ctx)
+				if err != nil {
+					s.Log.Warn("scheduled anti-entropy failed", "err", err)
+					continue
+				}
+				divergent := 0
+				totalMissing := 0
+				for _, e := range rep.DNs {
+					if !e.RootMatch {
+						divergent++
+					}
+					totalMissing += len(e.MissingFromDN)
+				}
+				s.Log.Info("scheduled anti-entropy",
+					"divergent_dns", divergent,
+					"total_missing", totalMissing,
+					"duration", rep.Duration)
+			}
+		}
+	}()
 }
 
 // Avoid an unused-import warning when building without store referenced

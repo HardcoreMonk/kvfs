@@ -181,6 +181,10 @@ func (s *Server) Routes() *http.ServeMux {
 	// because it walks the authoritative ObjectMeta. Returns per-DN diff
 	// of expected vs actual chunk inventory using DN-side Merkle trees.
 	mux.HandleFunc("POST /v1/coord/admin/anti-entropy/run", s.handleAntiEntropyRun)
+	// ADR-055: detect-and-repair. Reads from a healthy replica, PUTs to
+	// the affected DN. Replication chunks only; EC stripes are reported
+	// as skipped (use the existing repair worker — ADR-046).
+	mux.HandleFunc("POST /v1/coord/admin/anti-entropy/repair", s.handleAntiEntropyRepair)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)

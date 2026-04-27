@@ -1681,7 +1681,22 @@ func cmdAntiEntropy(args []string) {
 			os.Exit(2)
 		}
 		body := mustHTTPJSON(http.MethodPost, *coordURL+"/v1/coord/admin/anti-entropy/run", "")
-		// Pretty-print: parse, then re-emit indented.
+		var rep map[string]any
+		if err := json.Unmarshal(body, &rep); err != nil {
+			fmt.Println(string(body))
+			return
+		}
+		out, _ := json.MarshalIndent(rep, "", "  ")
+		fmt.Println(string(out))
+	case "repair":
+		// ADR-055: detect-and-repair. Replication chunks copied from a
+		// healthy replica; EC chunks reported as skipped (use existing
+		// `kvfs-cli repair --apply --coord URL`, ADR-046).
+		if *coordURL == "" {
+			fmt.Fprintln(os.Stderr, "anti-entropy repair: --coord URL required")
+			os.Exit(2)
+		}
+		body := mustHTTPJSON(http.MethodPost, *coordURL+"/v1/coord/admin/anti-entropy/repair", "")
 		var rep map[string]any
 		if err := json.Unmarshal(body, &rep); err != nil {
 			fmt.Println(string(body))
@@ -1690,7 +1705,7 @@ func cmdAntiEntropy(args []string) {
 		out, _ := json.MarshalIndent(rep, "", "  ")
 		fmt.Println(string(out))
 	default:
-		fmt.Fprintf(os.Stderr, "anti-entropy: unknown subcommand %q (want run)\n", sub)
+		fmt.Fprintf(os.Stderr, "anti-entropy: unknown subcommand %q (want run | repair)\n", sub)
 		os.Exit(2)
 	}
 }

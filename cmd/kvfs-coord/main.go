@@ -269,6 +269,20 @@ func main() {
 		}
 	}
 
+	// ADR-055: opt-in scheduled anti-entropy. Auto-runs the AUDIT (not
+	// auto-repair — too risky as a default ticker side-effect) on the
+	// leader. Operator triggers /repair explicitly when ready.
+	if v := envOr("COORD_ANTI_ENTROPY_INTERVAL", ""); v != "" {
+		d, perr := time.ParseDuration(v)
+		if perr != nil {
+			fatal("COORD_ANTI_ENTROPY_INTERVAL parse: " + perr.Error())
+		}
+		if d > 0 {
+			log.Info("kvfs-coord scheduled anti-entropy enabled (ADR-055)", "interval", d)
+			srv.StartAntiEntropyTicker(ctx, d)
+		}
+	}
+
 	if elector != nil {
 		go elector.Run(ctx)
 	}

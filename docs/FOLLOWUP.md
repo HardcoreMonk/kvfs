@@ -13,7 +13,7 @@
 - **P5**: post-Season-4 wave — 모두 완료
 - **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
-- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06 DONE (Frame 1+2 = 100% 도달), P8-05·07 (저우선) 잔존
+- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08 DONE (Frame 1+2 = 100% 도달 + auto-repair polish), P8-05·07·09 (저우선) 잔존
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -118,7 +118,24 @@
 ### P8-04 마감 — Frame 1 + Frame 2 = 100%
 - Frame 1 (헌장 — 살아있는 reference): **100%** (P8-03 마감)
 - Frame 2 (textbook primitives): **100%** (P8-04 4 ep 모두 마감)
-- 다음 wave 결정 펜딩 — auto-repair / scheduled audit / multi-tier Merkle 등 ADR-054 후속, 또는 새 시즌.
+
+### ~~[P8-08] Anti-entropy auto-repair + scheduled audit (ADR-054 후속)~~
+- **DONE 2026-04-27**: ADR-055.
+  - `POST /v1/coord/admin/anti-entropy/repair` — leader-only, COORD_DN_IO 필수. detection (ADR-054) + 자동 복구 — replication chunks 만 (EC 는 ADR-046 worker 위임, "ec-deferred" 메시지로 skip).
+  - `Server.runAntiEntropyRepair`: ObjectMeta walk → chunkOwners 맵 → audit 의 `MissingFromDN` 별 healthy source 찾아 `Coord.ReadChunk` + `Coord.PutChunkTo`.
+  - `COORD_ANTI_ENTROPY_INTERVAL` env opt-in: leader 가 ticker 로 주기 audit (auto-repair 는 별도 — ticker 가 자동 트리거 안 함, operator agency 보존).
+  - cli `kvfs-cli anti-entropy repair --coord URL`.
+  - demo-anti-entropy-repair 7 stages: clean → rm chunk → audit detect → repair 1 → audit clean → GET 정상.
+- detection (ADR-054) → action (ADR-055) loop 닫힘. cluster self-heal.
+
+### [P8-09] Anti-entropy 후속 punch list (저우선)
+- Scrubber-detected corrupt 의 자동 repair (현재는 inventory missing 만)
+- EC inline repair (ADR-046 worker 통합, concurrency control)
+- Concurrent repair parallel (현재 직렬)
+- `COORD_AUTO_REPAIR_INTERVAL` — ticker 에 repair 도 연결 (operator 명시적 risk acceptance)
+- Repair throttling / dry-run (큰 audit 의 영향 미리 보기 + rate-limit)
+- Multi-tier hierarchical Merkle (ADR-054 후속, 10⁷+/DN scale)
+- Peer-to-peer DN self-heal (DN 끼리 직접 통신 — 현재는 stateless)
 - ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
 
 ### [P8-05] Phase 1 chaos test 의 Phase D drift check 정확도 개선
@@ -216,9 +233,9 @@
 
 - **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
 - **테스트**: **174 test funcs PASS** (P8-06 +1, S7 Ep.1 +3, Ep.2 +3, Ep.3 +3, Ep.4 +4 dn merkle/scrub). `go vet` + staticcheck 클린
-- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) = **39개** 라이브 PASS
-- **ADR**: **50 Accepted** — ADR-001~054 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050, S7: 051·052·053·054
-- **Blog**: Ep.1~46 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) — frame 1+2 모두 마감
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08 anti-entropy-repair = **40개** 라이브 PASS
+- **ADR**: **51 Accepted** — ADR-001~055 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055, S7: 051·052·053·054
+- **Blog**: Ep.1~47 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08 (Ep.47)
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 
