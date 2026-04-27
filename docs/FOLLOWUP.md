@@ -173,6 +173,7 @@
 - Multi-tier hierarchical Merkle
 - Peer-to-peer DN self-heal
 - Notify on unrecoverable
+- **Non-negative integer query-param helper**: P8-12 reviewer 가 `internal/coord/anti_entropy.go::handleAntiEntropyRepair` 의 `max_repairs` 파싱이 두 번째 인스턴스 (`?concurrency=N` 같은 예상 후속 사용처) 와 같은 6-line 패턴 형성 시 `internal/httputil` 추출 후보로 등록.
 - ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
 
 ### [P8-05] Phase 1 chaos test 의 Phase D drift check 정확도 개선
