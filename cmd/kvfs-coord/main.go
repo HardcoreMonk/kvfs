@@ -115,10 +115,37 @@ func main() {
 		log.Info("kvfs-coord WAL enabled", "path", *flagWALPath, "last_seq", wal.LastSeq())
 	}
 
-	dnAddrs := splitCSV(*flagDNs)
+	envDNs := splitCSV(*flagDNs)
+
+	// Seed dns_runtime bucket from COORD_DNS on first boot so admin
+	// endpoints (list/class/domain) don't 404 every DN until the operator
+	// explicitly `dns add`s each one. Mirror of edge's pattern (cmd/
+	// kvfs-edge/main.go ADR-027 block). dns_runtime entries persist —
+	// once seeded, future boots skip and use whatever is in bbolt.
+	runtimeDNs, lerr := st.ListRuntimeDNs()
+	if lerr != nil {
+		fatal("read dns_runtime: " + lerr.Error())
+	}
+	dnAddrs := envDNs
+	if len(runtimeDNs) == 0 {
+		if len(envDNs) == 0 {
+			fatal("dns_runtime bucket empty AND COORD_DNS unset")
+		}
+		if err := st.SeedRuntimeDNs(envDNs); err != nil {
+			fatal("seed dns_runtime: " + err.Error())
+		}
+		log.Info("seeded dns_runtime from COORD_DNS env", "addrs", envDNs)
+	} else {
+		dnAddrs = runtimeDNs
+	}
+
+	// Now load failure-domain labels (ADR-051) so the boot-time Placer
+	// already knows them. Subsequent admin mutations rebuild via
+	// refreshDNTopology.
+	withDomain, _ := st.ListRuntimeDNsWithDomain()
 	nodes := make([]placement.Node, 0, len(dnAddrs))
 	for _, addr := range dnAddrs {
-		nodes = append(nodes, placement.Node{ID: addr, Addr: addr})
+		nodes = append(nodes, placement.Node{ID: addr, Addr: addr, Domain: withDomain[addr]})
 	}
 	placer := placement.New(nodes)
 

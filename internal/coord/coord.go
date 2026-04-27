@@ -68,6 +68,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -167,6 +168,10 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/coord/admin/dns", s.handleAdminAddDN)
 	mux.HandleFunc("DELETE /v1/coord/admin/dns", s.handleAdminRemoveDN)
 	mux.HandleFunc("PUT /v1/coord/admin/dns/class", s.handleAdminSetDNClass)
+	// ADR-051 (Season 7 Ep.1): failure-domain label per DN. Mirror of
+	// the class endpoint above. Empty domain query value clears the label.
+	// Triggers refreshDNTopology so the next placement uses the new view.
+	mux.HandleFunc("PUT /v1/coord/admin/dns/domain", s.handleAdminSetDNDomain)
 	// ADR-048 (Season 6 Ep.6): URLKey rotation on coord. Read endpoints
 	// (list) — anyone. Mutate (rotate, remove) — leader-only.
 	mux.HandleFunc("GET /v1/coord/admin/urlkey", s.handleAdminListURLKeys)
@@ -244,7 +249,9 @@ func (s *Server) handlePlace(w http.ResponseWriter, r *http.Request) {
 	if s.Coord != nil {
 		addrs = s.Coord.PlaceN(req.Key, req.N)
 	} else {
-		nodes := s.Placer.Pick(req.Key, req.N)
+		// PickByDomain auto-fastpaths to legacy HRW when no Domain set
+		// (ADR-051). Both branches behave identically pre-domain-tagging.
+		nodes := s.Placer.PickByDomain(req.Key, req.N)
 		addrs = make([]string, 0, len(nodes))
 		for _, n := range nodes {
 			addrs = append(addrs, n.Addr)
@@ -418,7 +425,30 @@ func (s *Server) handleAdminSnapshot(w http.ResponseWriter, _ *http.Request) {
 
 // handleAdminDNs returns the runtime DN list (addrs + class labels)
 // from coord's bbolt registry. Mirrors edge's GET /v1/admin/dns.
-func (s *Server) handleAdminDNs(w http.ResponseWriter, _ *http.Request) {
+// handleAdminDNs returns the runtime DN registry. Default body shape is
+// []string (back-compat with kvfs-cli inspect that expects a flat array).
+// Add `?detailed=1` for [{addr, domain}] — used by demo-samekh to verify
+// failure-domain placement.
+func (s *Server) handleAdminDNs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("detailed") == "1" {
+		withDomain, err := s.Store.ListRuntimeDNsWithDomain()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		// Stable sort for deterministic output (test fixtures, golden tests).
+		addrs := make([]string, 0, len(withDomain))
+		for a := range withDomain {
+			addrs = append(addrs, a)
+		}
+		sort.Strings(addrs)
+		out := make([]map[string]string, 0, len(addrs))
+		for _, a := range addrs {
+			out = append(out, map[string]string{"addr": a, "domain": withDomain[a]})
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
 	dns, err := s.Store.ListRuntimeDNs()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -565,13 +595,21 @@ func (s *Server) handleAdminRemoveDN(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refreshDNTopology() error {
 	s.dnsAdminMu.Lock()
 	defer s.dnsAdminMu.Unlock()
-	addrs, err := s.Store.ListRuntimeDNs()
+	// Pull addr→domain map so the rebuilt Placer knows failure-domain
+	// labels (ADR-051). Falls back to plain ListRuntimeDNs on legacy
+	// stores (impossible in normal flow but cheap defensiveness).
+	withDomain, err := s.Store.ListRuntimeDNsWithDomain()
 	if err != nil {
 		return err
 	}
+	addrs := make([]string, 0, len(withDomain))
+	for addr := range withDomain {
+		addrs = append(addrs, addr)
+	}
+	sort.Strings(addrs) // deterministic placement seed
 	nodes := make([]placement.Node, 0, len(addrs))
 	for _, addr := range addrs {
-		nodes = append(nodes, placement.Node{ID: addr, Addr: addr})
+		nodes = append(nodes, placement.Node{ID: addr, Addr: addr, Domain: withDomain[addr]})
 	}
 	s.Placer = placement.New(nodes)
 	if s.Coord != nil {
@@ -597,6 +635,32 @@ func (s *Server) handleAdminSetDNClass(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"addr": addr, "class": class})
+}
+
+// handleAdminSetDNDomain (ADR-051) — sets/clears the failure-domain label
+// for a registered DN. Empty domain unlabels (DN goes back to the
+// "default" pool). Triggers refreshDNTopology so the next handlePlace
+// sees the new layout — without that the Placer's in-memory Domain
+// stays at boot value forever.
+func (s *Server) handleAdminSetDNDomain(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	addr := r.URL.Query().Get("addr")
+	domain := r.URL.Query().Get("domain")
+	if addr == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("addr query param required"))
+		return
+	}
+	if err := s.Store.SetRuntimeDNDomain(addr, domain); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.refreshDNTopology(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("refresh: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"addr": addr, "domain": domain})
 }
 
 // handleAdminListURLKeys / Rotate / Remove: ADR-048 Season 6 Ep.6.

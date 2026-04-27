@@ -990,8 +990,26 @@ func cmdDNs(args []string) {
 		body := mustHTTPJSON(http.MethodPut, base+path, "")
 		fmt.Printf("✅ class set: %s → %s\n", rest[1], rest[2])
 		fmt.Println(string(body))
+	case "domain":
+		// kvfs-cli dns domain <addr> <domain> --coord http://...
+		// ADR-051 (S7 Ep.1): set/clear failure-domain label on a DN.
+		// coord-only — edge has no equivalent endpoint (the topology view
+		// lives on coord since ADR-041).
+		if len(rest) != 3 {
+			fmt.Fprintln(os.Stderr, "dns domain: usage: kvfs-cli dns domain <addr> <domain> --coord URL  (empty domain clears)")
+			os.Exit(2)
+		}
+		if !useCoord {
+			fmt.Fprintln(os.Stderr, "dns domain requires --coord URL (no edge endpoint for failure-domain admin)")
+			os.Exit(2)
+		}
+		path := fmt.Sprintf("/v1/coord/admin/dns/domain?addr=%s&domain=%s",
+			neturl.QueryEscape(rest[1]), neturl.QueryEscape(rest[2]))
+		body := mustHTTPJSON(http.MethodPut, base+path, "")
+		fmt.Printf("✅ domain set: %s → %s\n", rest[1], rest[2])
+		fmt.Println(string(body))
 	default:
-		fmt.Fprintf(os.Stderr, "dns: unknown subcommand %q (want list | add | remove | class)\n", rest[0])
+		fmt.Fprintf(os.Stderr, "dns: unknown subcommand %q (want list | add | remove | class | domain)\n", rest[0])
 		os.Exit(2)
 	}
 }

@@ -207,7 +207,7 @@ func (c *Coordinator) QuorumWrite() int { return c.quorumWrite }
 func (c *Coordinator) PlaceChunk(chunkID string) []string {
 	c.placerMu.RLock()
 	defer c.placerMu.RUnlock()
-	picked := c.placer.Pick(chunkID, c.replicationFactor)
+	picked := c.placer.PickByDomain(chunkID, c.replicationFactor)
 	out := make([]string, len(picked))
 	for i, n := range picked {
 		out[i] = n.Addr
@@ -240,10 +240,16 @@ func (c *Coordinator) PlaceNFromAddrs(key string, n int, addrs []string) []strin
 // per stripe.
 //
 // Returns up to min(n, len(nodes)) addresses, deterministic for a given key.
+//
+// As of ADR-051 (S7 Ep.1), this auto-engages failure-domain awareness when
+// any configured node has Domain != "". Picks then prefer distinct domains
+// before duplicating within one. Pure-no-domain clusters get the legacy
+// behavior unchanged (PickFromNodesByDomain detects empty-everywhere and
+// fast-paths to score-only).
 func (c *Coordinator) PlaceN(key string, n int) []string {
 	c.placerMu.RLock()
 	defer c.placerMu.RUnlock()
-	picked := c.placer.Pick(key, n)
+	picked := c.placer.PickByDomain(key, n)
 	out := make([]string, len(picked))
 	for i, p := range picked {
 		out[i] = p.Addr
@@ -262,7 +268,7 @@ func (c *Coordinator) PlaceN(key string, n int) []string {
 //   4. QuorumWrite 이상이면 성공, 아니면 에러
 func (c *Coordinator) WriteChunk(ctx context.Context, chunkID string, data []byte) ([]string, error) {
 	c.placerMu.RLock()
-	targets := c.placer.Pick(chunkID, c.replicationFactor)
+	targets := c.placer.PickByDomain(chunkID, c.replicationFactor)
 	c.placerMu.RUnlock()
 	if len(targets) == 0 {
 		return nil, errors.New("coordinator: no target nodes available")

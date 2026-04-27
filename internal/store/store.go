@@ -572,6 +572,85 @@ func (m *MetaStore) SetRuntimeDNClass(addr, class string) error {
 	})
 }
 
+// SetRuntimeDNDomain tags an addr with a failure-domain label (e.g.
+// "rack1", "us-west-2a"). Used by topology-aware placement (ADR-051,
+// S7 Ep.1) to spread replicas across distinct domains. Empty domain
+// clears the label so the DN goes back to the unlabeled (treated as
+// "default") pool. Returns ErrNotFound if addr is not in the registry.
+//
+// Schema reuse: same map-based entry as Class — adds a `domain` key
+// alongside `class`. No bbolt migration needed; legacy entries with
+// just `addr` decode fine.
+func (m *MetaStore) SetRuntimeDNDomain(addr, domain string) error {
+	if addr == "" {
+		return errors.New("store: empty addr")
+	}
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketDNsRuntime)
+		raw := b.Get([]byte(addr))
+		if raw == nil {
+			return ErrNotFound
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			entry = map[string]any{"addr": addr}
+		}
+		if domain == "" {
+			delete(entry, "domain")
+		} else {
+			entry["domain"] = domain
+		}
+		buf, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(addr), buf)
+	})
+}
+
+// RuntimeDNDomain returns the failure-domain label of addr (or empty
+// string if unset). ErrNotFound when addr is not in the registry.
+func (m *MetaStore) RuntimeDNDomain(addr string) (string, error) {
+	var out string
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		raw := tx.Bucket(bucketDNsRuntime).Get([]byte(addr))
+		if raw == nil {
+			return ErrNotFound
+		}
+		var entry map[string]any
+		if jerr := json.Unmarshal(raw, &entry); jerr != nil {
+			return nil
+		}
+		if d, ok := entry["domain"].(string); ok {
+			out = d
+		}
+		return nil
+	})
+	return out, err
+}
+
+// ListRuntimeDNsWithDomain returns the addr→domain mapping for every
+// registered runtime DN. Empty-domain entries appear with "" value —
+// callers (placer rebuild) treat that as the "default" failure-domain
+// bucket.
+func (m *MetaStore) ListRuntimeDNsWithDomain() (map[string]string, error) {
+	out := make(map[string]string)
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketDNsRuntime).ForEach(func(k, v []byte) error {
+			addr := string(k)
+			out[addr] = ""
+			var entry map[string]any
+			if err := json.Unmarshal(v, &entry); err == nil {
+				if d, ok := entry["domain"].(string); ok {
+					out[addr] = d
+				}
+			}
+			return nil
+		})
+	})
+	return out, err
+}
+
 // RuntimeDNClass returns the class label of addr (or empty string if
 // unset). ErrNotFound when addr is not in the registry.
 func (m *MetaStore) RuntimeDNClass(addr string) (string, error) {

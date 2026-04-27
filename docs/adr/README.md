@@ -117,6 +117,12 @@ Accepted · YYYY-MM-DD
 |---|---|---|---|
 | [050](ADR-050-raft-stale-log-protection.md) | Raft §5.4.1 log-up-to-date vote check + coord bootstrap snapshot pull | Accepted · 2026-04-27 | `election.LastLogSeqFn` + `/v1/coord/admin/meta/snapshot` + `bootstrapFromPeer` · chaos-mixed verifier |
 
+## Season 7 — textbook primitives (in progress, frame 2 진척)
+
+| # | 제목 | 상태 | 연결 · demo |
+|---|---|---|---|
+| [051](ADR-051-failure-domain-hierarchy.md) | Failure domain hierarchy (topology-aware HRW) | Accepted · 2026-04-27 | `placement.Node.Domain` + `PickByDomain` + `/v1/coord/admin/dns/domain` · demo-samekh (Ep.1) |
+
 > 데모 letter — S1~S4 = α~ω (그리스 21자, demo-alpha~demo-omega), S5~S6 = aleph~nun (히브리 14자, demo-aleph~demo-nun). 합 35.
 
 ## 다음 시즌 / 미작성

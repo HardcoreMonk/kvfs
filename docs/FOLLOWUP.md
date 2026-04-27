@@ -109,13 +109,12 @@
 - 평균 episode 길이 ~120 LOC, 합계 ~1700 LOC. 기존 28 episode 의 평균 (~120 LOC) 와 동일한 톤.
 - 본 작업 마감으로 **frame 1 (헌장 기준 100%)** 도달.
 
-### [P8-04] Season 7 — textbook primitives
-- Ep.1 (ADR-050): **Failure domain hierarchy** — rack/DC tag 를 placement.Node 에 추가, HRW 가 topology-aware. CRUSH 의 simplest tier.
-- Ep.2 (ADR-051): **Degraded read** — read 시 첫 chunk 실패하면 즉시 RS Reconstruct (현 design 은 다음 replica fallback 후 별도 worker).
-- Ep.3 (ADR-052): **Tunable consistency** — per-request `X-KVFS-W`, `X-KVFS-R` (Dynamo W+R>N classic).
-- Ep.4 (ADR-053): **Anti-entropy / Merkle tree** — DN-to-DN periodic hash compare, silent corruption 자동 발견.
-- 각 episode = ADR + 코드 + demo (samekh/ayin/pe/tsadi) + blog episode.
-- 추정: ~3.5주. 모든 ep landing 시 frame 2 100%, blog 까지 마감 시 frame 1 100%.
+### [P8-04] Season 7 — textbook primitives (in progress)
+- ~~**Ep.1 (ADR-051)**: Failure domain hierarchy~~ — **DONE 2026-04-27**. `placement.Node.Domain` + `PickByDomain` greedy walk + admin endpoint + cli `dns domain` + demo-samekh (3 racks × 2 DN, R=3 spread + EC 4+2 per-stripe spread). 3 unit tests + ADR-051 + blog Ep.43.
+- Ep.2 (ADR-052): **Degraded read** — read 시 첫 chunk 실패하면 즉시 RS Reconstruct (현 design 은 다음 replica fallback 후 별도 worker).
+- Ep.3 (ADR-053): **Tunable consistency** — per-request `X-KVFS-W`, `X-KVFS-R` (Dynamo W+R>N classic).
+- Ep.4 (ADR-054): **Anti-entropy / Merkle tree** — DN-to-DN periodic hash compare, silent corruption 자동 발견.
+- ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
 
 ### [P8-05] Phase 1 chaos test 의 Phase D drift check 정확도 개선
 - **현황**: `coord_object_count` 가 admin/objects 응답 (raw JSON array) 의 length 를 jq 로 read. P8-01 에서 fix 됨.
@@ -211,10 +210,10 @@
 ## 현재 상태 요약 (2026-04-27)
 
 - **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
-- **테스트**: **161 test funcs PASS** (P8-06 의 `TestVoteRejectStaleLog` 신규 +1). `go vet` + staticcheck 클린
-- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) = **35개** 라이브 PASS
-- **ADR**: **46 Accepted** — ADR-001~050 중 020/021/023/026 4개 결번. post-S4 wave: 032~037, S5: 015·038~042, S6: 043~049, P8: 050
-- **Blog**: Ep.1~42 완성. S5 (Ep.29~35) + S6 (Ep.36~42) blog backfill (P8-03) 마감
+- **테스트**: **164 test funcs PASS** (P8-06 +1, S7 Ep.1 +3). `go vet` + staticcheck 클린
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + samekh (S7 Ep.1) = **36개** 라이브 PASS
+- **ADR**: **47 Accepted** — ADR-001~051 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050, S7: 051
+- **Blog**: Ep.1~43 완성. S5/S6 blog backfill (P8-03) 마감 + S7 Ep.1 (Ep.43)
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 

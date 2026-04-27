@@ -89,12 +89,21 @@ import (
 // Node represents a storage target (DN).
 // ID is a stable human-readable identifier (e.g. "dn1").
 // Addr is the network endpoint for actual I/O (e.g. "dn1:8080").
+// Domain is an optional failure-domain label (e.g. "rack1", "us-west-2a")
+// — when set, [PickFromNodesByDomain] spreads replicas across distinct
+// values to avoid storing all R replicas in the same rack/AZ. Empty
+// Domain is treated as "default" — back-compat with pre-S7 nodes that
+// don't carry a domain tag.
 //
 // ID가 점수 계산의 키이므로 **재시작 후에도 변하지 않아야** 한다.
 // Addr은 네트워크 경로만 바꾸면 되므로 변경 가능.
+// Domain 은 운영자 지정 — 같은 rack/AZ 의 DN 들이 동일 값을 가지면
+// HRW 가 자동으로 다른 domain 을 우선 골라 R replica 가 한 도메인에
+// 다 가지 않도록 한다 (CRUSH 의 rack-aware 의 단순 등가물).
 type Node struct {
-	ID   string
-	Addr string
+	ID     string
+	Addr   string
+	Domain string
 }
 
 // Placer picks N nodes for a given chunk.
@@ -180,6 +189,98 @@ func PickFromNodes(chunkID string, n int, nodes []Node) []Node {
 		out[i] = scoreds[i].node
 	}
 	return out
+}
+
+// PickFromNodesByDomain runs HRW with a failure-domain diversity
+// constraint (ADR-051, S7 Ep.1). When any node has Domain != "", the
+// pick walks scored-descending nodes and prefers ones whose Domain has
+// not been used yet — only after every distinct domain is represented
+// does it allow a second pick from the same domain.
+//
+// Behavior:
+//   - All nodes have empty Domain → identical to PickFromNodes (back-compat).
+//   - n ≤ distinct domain count → every replica in a different domain.
+//   - n > distinct domain count → the first D picks span all domains,
+//     remaining n-D picks fill in by raw HRW score (still deterministic).
+//
+// Determinism: same (chunkID, node-set) → same output. The greedy domain
+// walk is fully ordered by score, then by ID as the tiebreaker — no
+// randomness, no map iteration order in the result.
+func PickFromNodesByDomain(chunkID string, n int, nodes []Node) []Node {
+	if n <= 0 || len(nodes) == 0 {
+		return nil
+	}
+	if n > len(nodes) {
+		n = len(nodes)
+	}
+
+	// Fast path: no domain info anywhere → score-only (identical result
+	// to PickFromNodes; saves the diversity walk).
+	hasDomain := false
+	for _, nd := range nodes {
+		if nd.Domain != "" {
+			hasDomain = true
+			break
+		}
+	}
+	if !hasDomain {
+		return PickFromNodes(chunkID, n, nodes)
+	}
+
+	type scored struct {
+		node  Node
+		score uint64
+	}
+	scoreds := make([]scored, len(nodes))
+	for i, nd := range nodes {
+		scoreds[i] = scored{node: nd, score: hrwScore(chunkID, nd.ID)}
+	}
+	sort.Slice(scoreds, func(i, j int) bool {
+		if scoreds[i].score != scoreds[j].score {
+			return scoreds[i].score > scoreds[j].score
+		}
+		return scoreds[i].node.ID < scoreds[j].node.ID
+	})
+
+	out := make([]Node, 0, n)
+	usedDomain := make(map[string]bool, n)
+	usedID := make(map[string]bool, n)
+
+	// First pass: pick the top-scored node per distinct domain.
+	for _, s := range scoreds {
+		if len(out) >= n {
+			break
+		}
+		if usedDomain[s.node.Domain] {
+			continue
+		}
+		out = append(out, s.node)
+		usedDomain[s.node.Domain] = true
+		usedID[s.node.ID] = true
+	}
+
+	// Second pass (only if n > distinct-domain count): fill remaining
+	// slots by raw score, allowing same-domain picks but not the same
+	// node twice.
+	if len(out) < n {
+		for _, s := range scoreds {
+			if len(out) >= n {
+				break
+			}
+			if usedID[s.node.ID] {
+				continue
+			}
+			out = append(out, s.node)
+			usedID[s.node.ID] = true
+		}
+	}
+	return out
+}
+
+// PickByDomain is the Placer's domain-aware variant of Pick. Uses the
+// same node set the Placer was constructed with.
+func (p *Placer) PickByDomain(chunkID string, n int) []Node {
+	return PickFromNodesByDomain(chunkID, n, p.nodes)
 }
 
 // hrwScore computes the HRW score for a (chunkID, nodeID) pair.

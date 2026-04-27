@@ -216,6 +216,92 @@ func makeNodes(n int) []Node {
 	return out
 }
 
+// makeNodesInDomains: build N DN, distributing them round-robin across the
+// given domains. e.g. makeNodesInDomains(6, "rack1", "rack2", "rack3")
+// returns dn1@rack1, dn2@rack2, dn3@rack3, dn4@rack1, dn5@rack2, dn6@rack3.
+func makeNodesInDomains(n int, domains ...string) []Node {
+	out := make([]Node, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("dn%d", i+1)
+		out[i] = Node{ID: id, Addr: id + ":8080", Domain: domains[i%len(domains)]}
+	}
+	return out
+}
+
+// TestPickByDomain_DistinctDomainsWhenPossible (ADR-051): when n ≤ distinct
+// domain count, every replica must land in a different domain. Probes a
+// representative key population to catch any chunk that lands all R in
+// one rack.
+func TestPickByDomain_DistinctDomainsWhenPossible(t *testing.T) {
+	// 6 nodes in 3 domains: 2 per domain, R=3 → expect each replica in a
+	// distinct domain for every chunk.
+	nodes := makeNodesInDomains(6, "rack1", "rack2", "rack3")
+	p := New(nodes)
+	for i := 0; i < 100; i++ {
+		picked := p.PickByDomain(fmt.Sprintf("chunk-%d", i), 3)
+		if len(picked) != 3 {
+			t.Fatalf("chunk-%d: want 3 picks, got %d", i, len(picked))
+		}
+		seen := make(map[string]bool, 3)
+		for _, nd := range picked {
+			if seen[nd.Domain] {
+				t.Errorf("chunk-%d: domain %q used twice (picks=%v)", i, nd.Domain, ids(picked))
+			}
+			seen[nd.Domain] = true
+		}
+	}
+}
+
+// TestPickByDomain_FallsBackWhenDomainsScarce: if R > distinct domain
+// count, the first D picks span all domains, the rest fill in by score
+// (allowing same-domain duplicates but never the same node twice).
+func TestPickByDomain_FallsBackWhenDomainsScarce(t *testing.T) {
+	// 6 nodes in 2 domains (3 per domain). R=3, so domain 1 must take 2
+	// replicas + domain 2 takes 1 (or vice versa).
+	nodes := makeNodesInDomains(6, "rack1", "rack2")
+	p := New(nodes)
+	for i := 0; i < 100; i++ {
+		picked := p.PickByDomain(fmt.Sprintf("chunk-%d", i), 3)
+		if len(picked) != 3 {
+			t.Fatalf("chunk-%d: want 3 picks, got %d", i, len(picked))
+		}
+		// Both domains must appear at least once.
+		seenD := make(map[string]int, 2)
+		for _, nd := range picked {
+			seenD[nd.Domain]++
+		}
+		if len(seenD) != 2 {
+			t.Errorf("chunk-%d: only %d domains spanned (want 2): %v", i, len(seenD), ids(picked))
+		}
+		// No node duplicated.
+		seenID := make(map[string]bool, 3)
+		for _, nd := range picked {
+			if seenID[nd.ID] {
+				t.Errorf("chunk-%d: node %q picked twice", i, nd.ID)
+			}
+			seenID[nd.ID] = true
+		}
+	}
+}
+
+// TestPickByDomain_BackCompat_NoDomainTags: when no node has Domain set,
+// PickByDomain must return identical results to legacy Pick — guarantees
+// that adding the API does not silently change behavior on existing
+// clusters before they tag domains.
+func TestPickByDomain_BackCompat_NoDomainTags(t *testing.T) {
+	nodes := makeNodes(5) // all empty Domain
+	p := New(nodes)
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("chunk-%d", i)
+		legacy := p.Pick(key, 3)
+		domain := p.PickByDomain(key, 3)
+		if !sameNodes(legacy, domain) {
+			t.Errorf("chunk-%s: PickByDomain diverges from Pick when no domains set\n  legacy=%v\n  domain=%v",
+				key, ids(legacy), ids(domain))
+		}
+	}
+}
+
 func ids(nodes []Node) []string {
 	out := make([]string, len(nodes))
 	for i, n := range nodes {
