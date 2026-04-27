@@ -25,6 +25,7 @@
 package edge
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/HardcoreMonk/kvfs/internal/chunker"
@@ -41,6 +42,7 @@ type metricsHandle struct {
 	walAppended    *metrics.Counter // labels: op (put_object|delete_object|...)
 	failover       *metrics.Counter // election term changes (informational)
 	ecDegradedRead *metrics.Counter // ADR-052: EC GET stripes that needed RS Reconstruct
+	tunableQuorum  *metrics.Counter // ADR-053: requests with explicit X-KVFS-W or X-KVFS-R; labels: op="read"|"write", value (string)
 }
 
 // SetupMetrics builds the registry + all metric definitions and attaches
@@ -55,6 +57,7 @@ func (s *Server) SetupMetrics() {
 		walAppended:    reg.Counter("kvfs_wal_appended_total", "WAL entries appended", "op"),
 		failover:       reg.Counter("kvfs_election_term_changes_total", "Election term increments observed"),
 		ecDegradedRead: reg.Counter("kvfs_ec_degraded_read_total", "EC GET stripes served with reconstruct (one or more shards missing)"),
+		tunableQuorum:  reg.Counter("kvfs_tunable_quorum_total", "Requests using explicit X-KVFS-W / X-KVFS-R quorum override (ADR-053)", "op", "value"),
 	}
 
 	// Object count gauge: cheap if Stats() is fast (it's not — full scan;
@@ -144,6 +147,16 @@ func (s *Server) recordDelete() {
 func (s *Server) recordEcDegradedRead() {
 	if s.Metrics != nil {
 		s.Metrics.ecDegradedRead.WithLabels().Add(1)
+	}
+}
+
+// recordTunableQuorum bumps the counter when a request uses an explicit
+// X-KVFS-W or X-KVFS-R header (ADR-053). op = "read" | "write", value
+// is the requested integer quorum stringified — labels stay bounded
+// because R is small (typically 1..5).
+func (s *Server) recordTunableQuorum(op string, value int) {
+	if s.Metrics != nil {
+		s.Metrics.tunableQuorum.WithLabels(op, fmt.Sprintf("%d", value)).Add(1)
 	}
 }
 

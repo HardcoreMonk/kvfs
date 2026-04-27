@@ -311,11 +311,34 @@ func (c *Coordinator) WriteChunk(ctx context.Context, chunkID string, data []byt
 // over a class-filtered subset). Same fan-out + quorum semantics as
 // WriteChunk; if len(targets) < quorum, returns an error without trying.
 func (c *Coordinator) WriteChunkToAddrs(ctx context.Context, chunkID string, data []byte, targets []string) ([]string, error) {
+	return c.WriteChunkToAddrsW(ctx, chunkID, data, targets, 0)
+}
+
+// WriteChunkToAddrsW is the tunable-quorum variant (ADR-053, S7 Ep.3).
+// Caller passes an explicit minimum-ack count `w`. w == 0 means "use
+// the Coordinator's default quorumWrite" (back-compat with WriteChunkToAddrs
+// which always used the default).
+//
+// Validation:
+//   - w < 0 → return error (caller bug; should validate at HTTP layer first)
+//   - w > len(targets) → return error (impossible quorum, immediate fail —
+//     would otherwise wait until all fanned-out PUTs complete just to fail)
+//   - w == 0 → fall back to c.quorumWrite (default = ⌊R/2⌋+1)
+//
+// Fan-out + acks 로직은 변하지 않음 — quorum 임계값만 caller-controlled.
+// 모든 target 에 PUT 발사 후 결과 수집; w 미달 시 error.
+func (c *Coordinator) WriteChunkToAddrsW(ctx context.Context, chunkID string, data []byte, targets []string, w int) ([]string, error) {
 	if len(targets) == 0 {
 		return nil, errors.New("coordinator: no target nodes available")
 	}
-	if len(targets) < c.quorumWrite {
-		return nil, fmt.Errorf("coordinator: %d targets < quorum %d", len(targets), c.quorumWrite)
+	if w < 0 {
+		return nil, fmt.Errorf("coordinator: invalid quorum %d", w)
+	}
+	if w == 0 {
+		w = c.quorumWrite
+	}
+	if w > len(targets) {
+		return nil, fmt.Errorf("coordinator: requested quorum %d > %d available targets", w, len(targets))
 	}
 	type result struct {
 		addr string
@@ -341,9 +364,9 @@ func (c *Coordinator) WriteChunkToAddrs(ctx context.Context, chunkID string, dat
 			errs = append(errs, fmt.Errorf("%s: %w", r.addr, r.err))
 		}
 	}
-	if len(ok) < c.quorumWrite {
+	if len(ok) < w {
 		return ok, fmt.Errorf("quorum not reached: %d/%d success; errors: %v",
-			len(ok), c.quorumWrite, errs)
+			len(ok), w, errs)
 	}
 	return ok, nil
 }

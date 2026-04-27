@@ -335,13 +335,21 @@ func (s *Server) handleListBucket(w http.ResponseWriter, r *http.Request) {
 //     ReplicationFactor → place there only (local subset HRW). Otherwise
 //     fall back to (1).
 func (s *Server) writeChunkPreferClass(ctx context.Context, chunkID string, data []byte) ([]string, error) {
+	return s.writeChunkPreferClassW(ctx, chunkID, data, 0)
+}
+
+// writeChunkPreferClassW: tunable-quorum variant (ADR-053). w == 0 keeps
+// the default quorum (⌊R/2⌋+1); >0 overrides for this single PUT.
+// Caller (handlePut) parses X-KVFS-W header and validates against R
+// before calling so this layer can trust the value.
+func (s *Server) writeChunkPreferClassW(ctx context.Context, chunkID string, data []byte, w int) ([]string, error) {
 	r := s.Coord.ReplicationFactor()
 	if s.PlacementPreferClass == "" {
 		targets, err := s.placeN(ctx, chunkID, r)
 		if err != nil {
 			return nil, err
 		}
-		return s.Coord.WriteChunkToAddrs(ctx, chunkID, data, targets)
+		return s.Coord.WriteChunkToAddrsW(ctx, chunkID, data, targets, w)
 	}
 	classDNs, err := s.Store.ListRuntimeDNsByClass(s.PlacementPreferClass)
 	if err != nil || len(classDNs) < r {
@@ -349,14 +357,14 @@ func (s *Server) writeChunkPreferClass(ctx context.Context, chunkID string, data
 		if perr != nil {
 			return nil, perr
 		}
-		return s.Coord.WriteChunkToAddrs(ctx, chunkID, data, targets)
+		return s.Coord.WriteChunkToAddrsW(ctx, chunkID, data, targets, w)
 	}
 	// Class subset path stays local — coord doesn't yet expose a
 	// PlaceFromAddrs RPC and the class label set lives on the local
 	// store anyway. Future ep can move it to coord if class becomes a
 	// coord-side responsibility.
 	targets := s.Coord.PlaceNFromAddrs(chunkID, r, classDNs)
-	return s.Coord.WriteChunkToAddrs(ctx, chunkID, data, targets)
+	return s.Coord.WriteChunkToAddrsW(ctx, chunkID, data, targets, w)
 }
 
 // placeN picks n DN addrs for the given key. Routes through coord when
@@ -519,6 +527,18 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordPut("replication")
 
+	// ADR-053 (S7 Ep.3) tunable consistency: optional X-KVFS-W header
+	// overrides the default write quorum (⌊R/2⌋+1) per request. 0 / missing
+	// keeps the default. Validation: 1 ≤ W ≤ R, else 400.
+	wQuorum, werr := parseQuorumHeader(r, "X-KVFS-W", s.Coord.ReplicationFactor())
+	if werr != nil {
+		writeError(w, http.StatusBadRequest, werr.Error())
+		return
+	}
+	if wQuorum > 0 {
+		s.recordTunableQuorum("write", wQuorum)
+	}
+
 	// Replication mode: stream per chunk (ADR-017). Memory bound = chunkSize
 	// regardless of object size. Each chunk gets its own content-addressable id
 	// and is placed independently via Rendezvous Hashing.
@@ -540,7 +560,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("read chunk %d: %v", i+1, err))
 			return
 		}
-		replicas, werr := s.writeChunkPreferClass(ctx, piece.ID, piece.Data)
+		replicas, werr := s.writeChunkPreferClassW(ctx, piece.ID, piece.Data, wQuorum)
 		if werr != nil {
 			// Partial-success orphan chunks remain on disk; GC (ADR-012) cleans
 			// them after min-age. We do NOT commit metadata, so reads can't see
@@ -618,19 +638,38 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordGet("replication")
 
+	// ADR-053 (S7 Ep.3): X-KVFS-R requests N-replica agreement read.
+	// Default 1 (any one replica wins) keeps current behavior. R > 1 reads
+	// R replicas in parallel and returns body iff all R agree on sha256.
+	rQuorum, rerr := parseQuorumHeader(r, "X-KVFS-R", maxReplicas(meta.Chunks))
+	if rerr != nil {
+		writeError(w, http.StatusBadRequest, rerr.Error())
+		return
+	}
+	if rQuorum > 1 {
+		s.recordTunableQuorum("read", rQuorum)
+	}
+
 	// Replication mode: stream each chunk to the response writer (ADR-017).
 	// Memory bound = chunkSize per iteration, regardless of object size.
 	//
-	// Header order matters: once we Write the first byte, headers are flushed.
+	// Header order: once we Write the first byte, headers are flushed.
 	// If a mid-stream chunk fetch fails, we cannot change status — only abort
-	// the connection so the client sees a truncated body.
-	w.Header().Set("Content-Type", meta.ContentType)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
-	w.Header().Set("X-KVFS-Chunks", fmt.Sprintf("%d", len(meta.Chunks)))
-	w.Header().Set("X-KVFS-Version", fmt.Sprintf("%d", meta.Version))
+	// the connection so the client sees a truncated body. We therefore defer
+	// Content-Length until *after* the first chunk fetch succeeds; setting it
+	// up front would leak meta.Size into the headers of a 502 (writeError
+	// can change status but not headers already buffered), which Go's HTTP
+	// stack then reports to the client as "transfer closed with N bytes
+	// remaining" — confusing curl users + breaking strict client retries.
 
 	for i, c := range meta.Chunks {
-		data, _, ferr := s.Coord.ReadChunk(ctx, c.ChunkID, c.Replicas)
+		var data []byte
+		var ferr error
+		if rQuorum > 1 {
+			data, ferr = s.readChunkAgreement(ctx, c.ChunkID, c.Replicas, rQuorum)
+		} else {
+			data, _, ferr = s.Coord.ReadChunk(ctx, c.ChunkID, c.Replicas)
+		}
 		if ferr != nil {
 			if i == 0 {
 				writeError(w, http.StatusBadGateway, ferr.Error())
@@ -646,6 +685,16 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 				slog.String("chunk_id", c.ChunkID),
 				slog.Int("got", len(data)), slog.Int64("want", c.Size))
 			return
+		}
+		// On the first successful chunk: now that we know we'll be sending
+		// a real body (not a 502), commit the success headers. Setting
+		// these here means writeError's earlier-than-this calls can still
+		// emit a clean error response.
+		if i == 0 {
+			w.Header().Set("Content-Type", meta.ContentType)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
+			w.Header().Set("X-KVFS-Chunks", fmt.Sprintf("%d", len(meta.Chunks)))
+			w.Header().Set("X-KVFS-Version", fmt.Sprintf("%d", meta.Version))
 		}
 		if _, werr := w.Write(data); werr != nil {
 			// Client disconnect — log and stop.
@@ -1858,6 +1907,108 @@ func (s *Server) parallelFetchShards(ctx context.Context, shards []store.ChunkRe
 		}
 	}
 	return out, survivors
+}
+
+// parseQuorumHeader extracts X-KVFS-W or X-KVFS-R into a positive int
+// (ADR-053). Empty/missing → 0 (= use default in callers). Validation:
+// 1 ≤ value ≤ max. Returns error for non-numeric or out-of-range, which
+// the handler translates to HTTP 400 — bad client request, not server bug.
+func parseQuorumHeader(r *http.Request, name string, max int) (int, error) {
+	v := strings.TrimSpace(r.Header.Get(name))
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: not an integer: %v", name, err)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("%s=%d: must be ≥ 1", name, n)
+	}
+	if max > 0 && n > max {
+		return 0, fmt.Errorf("%s=%d: exceeds available replicas %d", name, n, max)
+	}
+	return n, nil
+}
+
+// maxReplicas returns the smallest replica count across all chunks of
+// an object — used as the upper bound for X-KVFS-R validation. Reading
+// at quorum R requires every chunk to have ≥R replicas; a chunk with
+// fewer caps the request.
+func maxReplicas(chunks []store.ChunkRef) int {
+	if len(chunks) == 0 {
+		return 0
+	}
+	m := len(chunks[0].Replicas)
+	for _, c := range chunks[1:] {
+		if len(c.Replicas) < m {
+			m = len(c.Replicas)
+		}
+	}
+	return m
+}
+
+// readChunkAgreement fetches `r` replicas of one chunk in parallel and
+// returns the body iff all r succeed AND all r agree on sha256 ==
+// chunk_id (which they must, content-addressable). Used by ADR-053
+// X-KVFS-R > 1 GETs.
+//
+// Why r-replica agreement vs first-r-and-pick-any: any replica that
+// acks a different sha256 is corrupt — the agreement check turns a
+// silent corruption into a 502. With ADR-005's content-addressable
+// chunks all R replicas must have the same hash by definition; the
+// check is effectively a free integrity probe.
+//
+// Latency: dominated by the slowest of r replicas. Caller chose r > 1
+// understanding this trade — stronger consistency, slower tail.
+func (s *Server) readChunkAgreement(ctx context.Context, chunkID string, replicas []string, r int) ([]byte, error) {
+	if r <= 0 {
+		return nil, fmt.Errorf("readChunkAgreement: r=%d must be ≥ 1", r)
+	}
+	if r > len(replicas) {
+		return nil, fmt.Errorf("readChunkAgreement: r=%d > %d replicas", r, len(replicas))
+	}
+	type result struct {
+		data []byte
+		ok   bool
+	}
+	ch := make(chan result, r)
+	fetchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// Hit the first r replicas in parallel — no fallback to replicas[r:]
+	// for now; the caller's contract is "agreement among the configured r".
+	for i := 0; i < r; i++ {
+		go func(addr string) {
+			body, _, err := s.Coord.ReadChunk(fetchCtx, chunkID, []string{addr})
+			res := result{}
+			if err == nil {
+				sum := sha256.Sum256(body)
+				if hex.EncodeToString(sum[:]) == chunkID {
+					res.data = body
+					res.ok = true
+				}
+			}
+			ch <- res
+		}(replicas[i])
+	}
+	var first []byte
+	for i := 0; i < r; i++ {
+		got := <-ch
+		if !got.ok {
+			return nil, fmt.Errorf("read quorum %d not reached: replica did not return verified body", r)
+		}
+		if first == nil {
+			first = got.data
+			continue
+		}
+		// All replicas of a content-addressable chunk must be byte-identical;
+		// any mismatch means corruption (or a bug). Length comparison is a
+		// fast pre-check before the rare full compare.
+		if len(got.data) != len(first) || string(got.data) != string(first) {
+			return nil, fmt.Errorf("read quorum %d: replica disagreement", r)
+		}
+	}
+	return first, nil
 }
 
 // handleGetEC reconstructs an EC-stored object.

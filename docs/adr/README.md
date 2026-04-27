@@ -123,6 +123,7 @@ Accepted · YYYY-MM-DD
 |---|---|---|---|
 | [051](ADR-051-failure-domain-hierarchy.md) | Failure domain hierarchy (topology-aware HRW) | Accepted · 2026-04-27 | `placement.Node.Domain` + `PickByDomain` + `/v1/coord/admin/dns/domain` · demo-samekh (Ep.1) |
 | [052](ADR-052-degraded-read.md) | Degraded read (parallel shard fetch + first-K-wins) | Accepted · 2026-04-27 | `Server.parallelFetchShards` + `kvfs_ec_degraded_read_total` · demo-ayin (Ep.2) |
+| [053](ADR-053-tunable-consistency.md) | Tunable consistency (per-request W/R quorum, Dynamo-style) | Accepted · 2026-04-27 | `X-KVFS-W` + `X-KVFS-R` headers · `WriteChunkToAddrsW` + `readChunkAgreement` · `kvfs_tunable_quorum_total` · demo-pe (Ep.3) |
 
 > 데모 letter — S1~S4 = α~ω (그리스 21자, demo-alpha~demo-omega), S5~S6 = aleph~nun (히브리 14자, demo-aleph~demo-nun). 합 35.
 
