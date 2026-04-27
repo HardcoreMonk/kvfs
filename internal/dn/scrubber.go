@@ -13,6 +13,14 @@
 // Pacing: scan one chunk per ScrubInterval to keep IO bounded. A 10⁵-
 // chunk DN at 10 ms/chunk finishes in ~17 minutes — fast enough that
 // a corruption window is short, slow enough not to thrash the disk.
+//
+// ADR-061 (P8-14) — corrupt set persistence:
+// The corrupt set is written to <DN_DATA_DIR>/scrub-state.json on every
+// mutation (markCorrupt + clear). Atomic temp+rename. Boot-time load
+// from the file restores state across DN restart. Without this an
+// operator's first repair after a DN crash would miss whatever the
+// previous scrubber pass had detected; the corrupt set would only
+// re-populate after a full new scan.
 package dn
 
 import (
@@ -26,6 +34,16 @@ import (
 	"sort"
 	"time"
 )
+
+// scrubStateFile is the on-disk JSON name (under DN dataDir).
+const scrubStateFile = "scrub-state.json"
+
+// scrubStatePersistedShape is what we serialize. Keep it minimal +
+// versioned so a future format change can detect-and-migrate.
+type scrubStatePersistedShape struct {
+	Version int      `json:"version"`
+	Corrupt []string `json:"corrupt"`
+}
 
 // ScrubStatus is the JSON body of GET /chunks/scrub-status. Mostly
 // observability — coord uses it to know "is the scrubber alive?" and
@@ -58,6 +76,10 @@ type scrubState struct {
 // per-Server — a second call is a no-op (ScrubInterval cannot be changed
 // once started). interval ≤ 0 disables the scrubber entirely (default
 // off — operators opt in via DN_SCRUB_INTERVAL or programmatic call).
+//
+// ADR-061: also loads the persisted corrupt set if scrub-state.json
+// exists in dataDir. Missing or unreadable file is fine — the scrubber
+// rebuilds its corrupt view via the next pass.
 func (s *Server) StartScrubber(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
@@ -70,11 +92,64 @@ func (s *Server) StartScrubber(ctx context.Context, interval time.Duration) {
 	s.scrub = scrubState{
 		enabled:  true,
 		interval: interval,
-		corrupt:  make(map[string]struct{}),
+		corrupt:  s.loadCorruptSet(),
 	}
 	s.scrubMu.Unlock()
 
 	go s.scrubLoop(ctx)
+}
+
+// loadCorruptSet reads scrub-state.json and returns the corrupt set.
+// Returns an empty map on any failure (missing file, parse error,
+// version mismatch) — restart proceeds without the prior state, which
+// is safe since the next scrub pass detects corruption again. We log
+// at debug level only; an unreadable file is not actionable until
+// someone investigates the disk.
+func (s *Server) loadCorruptSet() map[string]struct{} {
+	out := make(map[string]struct{})
+	path := filepath.Join(s.dataDir, scrubStateFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	var st scrubStatePersistedShape
+	if err := json.Unmarshal(data, &st); err != nil {
+		return out
+	}
+	if st.Version != 1 {
+		return out
+	}
+	for _, id := range st.Corrupt {
+		if validChunkID(id) {
+			out[id] = struct{}{}
+		}
+	}
+	return out
+}
+
+// persistCorruptSet writes scrub-state.json atomically (temp + rename).
+// Caller MUST hold scrubMu — we read s.scrub.corrupt without lock here.
+// On write failure we proceed silently: the in-memory state is the
+// truth, persistence is best-effort. A future scrub pass will retry.
+func (s *Server) persistCorruptSetLocked() {
+	path := filepath.Join(s.dataDir, scrubStateFile)
+	st := scrubStatePersistedShape{
+		Version: 1,
+		Corrupt: make([]string, 0, len(s.scrub.corrupt)),
+	}
+	for id := range s.scrub.corrupt {
+		st.Corrupt = append(st.Corrupt, id)
+	}
+	sort.Strings(st.Corrupt)
+	data, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 // scrubLoop walks the on-disk chunks at one-per-tick pace. A full scan
@@ -154,8 +229,12 @@ func (s *Server) scrubOne(path, id string) {
 	// Healthy read — clear from corrupt set in case a previous scan
 	// flagged it (e.g. transient read error already remediated).
 	s.scrubMu.Lock()
+	_, was := s.scrub.corrupt[id]
 	delete(s.scrub.corrupt, id)
 	s.scrub.chunksScrubbed++
+	if was {
+		s.persistCorruptSetLocked()
+	}
 	s.scrubMu.Unlock()
 }
 
@@ -164,8 +243,12 @@ func (s *Server) markCorrupt(id string) {
 	if s.scrub.corrupt == nil {
 		s.scrub.corrupt = make(map[string]struct{})
 	}
+	_, was := s.scrub.corrupt[id]
 	s.scrub.corrupt[id] = struct{}{}
 	s.scrub.chunksScrubbed++
+	if !was {
+		s.persistCorruptSetLocked()
+	}
 	s.scrubMu.Unlock()
 }
 

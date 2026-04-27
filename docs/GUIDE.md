@@ -616,14 +616,16 @@ Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을
 - Ep.23~28 (P4-09 wave): metrics · SIMD-RS · hot/cold · NFS deferred · log compaction · strict-vs-txn — `blog/23..28`.
 - Ep.29~35 (Season 5): coord 분리 — `blog/29..35` (skeleton → meta client → HA → WAL repl → txn commit → placement RPC → cli admin).
 - Ep.36~42 (Season 6): coord operational migration — `blog/36..42` (rebalance plan/apply → GC → repair → DN registry → URLKey → edge propagation).
+- Ep.43~46 (Season 7): textbook primitives — `blog/43..46` (failure domain hierarchy → degraded read → tunable consistency → anti-entropy/Merkle).
+- Ep.47~53 (P8 anti-entropy wave): self-heal + polish — `blog/47..53` (auto-repair → corrupt + dry-run → EC inline → EC corrupt → throttle/precision → concurrent EC → resilience polishes).
 
 ### 13.3 ADR
 
-[`docs/adr/README.md`](adr/README.md) — **56 ADR** (S1~S6 + P8 + S7 close + P8-08~13 self-heal + concurrent EC), 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.
+[`docs/adr/README.md`](adr/README.md) — **57 ADR** (S1~S6 + P8 + S7 close + P8-08~14 self-heal + concurrent + resilience polishes), 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.
 
 ### 13.4 라이브 데모
 
-`./scripts/demo-*.sh` — **35개** = α~ω (S1~S4, 그리스 21자) + aleph~nun (S5~S6, 히브리 14자). ADR README 의 시즌 표에서 episode → 데모 매핑 확인.
+`./scripts/demo-*.sh` — **46개** = α~ω (S1~S4, 그리스 21자) + aleph~nun (S5~S6, 히브리 14자) + samekh~tsadi (S7, 4자) + P8-08~14 anti-entropy specials (7개). ADR README 의 시즌 표에서 episode → 데모 매핑 확인.
 
 ---
 

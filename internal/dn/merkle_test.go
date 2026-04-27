@@ -6,6 +6,7 @@ package dn
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -157,6 +158,61 @@ func TestScrubber_DetectsCorruptChunk(t *testing.T) {
 	}
 	if cnt < 1 {
 		t.Errorf("ChunksScrubbed=%d, want ≥ 1", cnt)
+	}
+}
+
+// TestScrubber_CorruptStatePersistsAcrossRestart (ADR-061): a corrupt
+// chunk flagged on one Server instance should reappear in the corrupt
+// set when a fresh Server starts on the same dataDir, without waiting
+// for a new scrub pass to detect it.
+func TestScrubber_CorruptStatePersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	srv1, _ := NewServer("dn-1", dir)
+	id := putTestChunk(t, dir, "real-payload")
+	// Corrupt on disk + manually flag (simulates a scrub pass that found it).
+	path := srv1.chunkPath(id)
+	if err := os.WriteFile(path, []byte("flipped-bytes-mismatch-now"), 0o644); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+	srv1.scrubOne(path, id)
+	srv1.scrubMu.Lock()
+	_, found := srv1.scrub.corrupt[id]
+	srv1.scrubMu.Unlock()
+	if !found {
+		t.Fatalf("scrubOne should have flagged %s as corrupt", id[:8])
+	}
+
+	// Simulate restart: a fresh Server on the SAME dataDir.
+	srv2, _ := NewServer("dn-1", dir)
+	loaded := srv2.loadCorruptSet()
+	if _, ok := loaded[id]; !ok {
+		t.Errorf("loadCorruptSet should have restored %s after restart", id[:8])
+	}
+}
+
+// TestScrubber_PersistedFileShape: minimal proof the on-disk shape
+// matches the documented schema (Version 1 + Corrupt array). Catches
+// the case where someone bumps the format without updating the
+// version field.
+func TestScrubber_PersistedFileShape(t *testing.T) {
+	dir := t.TempDir()
+	srv, _ := NewServer("dn-1", dir)
+	srv.MarkCorruptForTest("a" + strings.Repeat("0", 63))
+	srv.MarkCorruptForTest("b" + strings.Repeat("0", 63))
+
+	data, err := os.ReadFile(filepath.Join(dir, scrubStateFile))
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var st scrubStatePersistedShape
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if st.Version != 1 {
+		t.Errorf("Version = %d, want 1", st.Version)
+	}
+	if len(st.Corrupt) != 2 {
+		t.Errorf("Corrupt len = %d, want 2", len(st.Corrupt))
 	}
 }
 

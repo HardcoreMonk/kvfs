@@ -571,31 +571,38 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 	}
 
 	successCount := 0
+	// mu guards out.Repairs / out.Skipped append + successCount across
+	// concurrent replication and EC workers. Critical sections are pure
+	// pointer / int writes, sub-microsecond.
+	var mu sync.Mutex
 	throttled := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
 		return opts.MaxRepairs > 0 && successCount >= opts.MaxRepairs
 	}
 
 	repairOne := func(targetDN, chunkID, reason string) {
 		if throttled() {
+			mu.Lock()
 			out.Skipped = append(out.Skipped, ChunkRepairOutcome{
 				TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
 				Mode: repairModeThrottled,
 				Err:  fmt.Sprintf("max_repairs=%d limit reached (ADR-059)", opts.MaxRepairs),
 			})
+			mu.Unlock()
 			return
 		}
 		if _, isEC := ecChunks[chunkID]; isEC {
 			if !opts.EC {
+				mu.Lock()
 				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
 					TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
 					Mode: repairModeECDeferred,
 					Err:  "EC chunk — pass ec=1 to inline-repair (ADR-057), or use kvfs-cli repair --apply --coord (ADR-046)",
 				})
+				mu.Unlock()
 				return
 			}
-			// EC reconstruct happens in the per-stripe pass below; this
-			// stub lets the caller see the chunk was claimed. The pass
-			// flips OK / Err once the stripe's repair.Run returns.
 			oc := ChunkRepairOutcome{
 				TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
 				Mode: repairModeECInline,
@@ -603,12 +610,16 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			if opts.DryRun {
 				oc.Planned = true
 			}
+			mu.Lock()
 			out.Repairs = append(out.Repairs, oc)
+			mu.Unlock()
 			return
 		}
 		// Find a healthy source: a DN that owns the chunk per ObjectMeta,
 		// is reachable, doesn't have it listed in its own MissingFromDN,
 		// AND (for corrupt-mode) doesn't itself report the chunk as corrupt.
+		// chunkOwners / dnHas / corruptByDN are immutable after their build
+		// passes, so the read here is lock-free.
 		var srcDN string
 		for _, owner := range chunkOwners[chunkID] {
 			if owner == targetDN {
@@ -616,7 +627,7 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			}
 			ownerMissing := dnHas[owner]
 			if ownerMissing == nil {
-				continue // owner unreachable
+				continue
 			}
 			if _, gone := ownerMissing[chunkID]; gone {
 				continue
@@ -628,28 +639,42 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			break
 		}
 		if srcDN == "" {
+			mu.Lock()
 			out.Skipped = append(out.Skipped, ChunkRepairOutcome{
 				TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
 				Mode: repairModeNoSource,
 				Err:  "no healthy replica found",
 			})
+			mu.Unlock()
 			return
 		}
 		if opts.DryRun {
+			mu.Lock()
 			out.Repairs = append(out.Repairs, ChunkRepairOutcome{
 				TargetDN: targetDN, ChunkID: chunkID, SourceDN: srcDN,
 				Mode: repairModeReplication, Reason: reason, Planned: true,
 			})
+			mu.Unlock()
 			return
 		}
+		// I/O OUTSIDE the lock — copyChunk does HTTP read + write. Holding
+		// mu across that would serialize all workers right back to the
+		// pre-P8-14 wallclock.
 		oc := s.copyChunk(ctx, srcDN, targetDN, chunkID, reason == repairReasonCorrupt)
 		oc.Reason = reason
+		mu.Lock()
 		if oc.OK {
 			successCount++
 		}
 		out.Repairs = append(out.Repairs, oc)
+		mu.Unlock()
 	}
 
+	// Replication pass — fan out (target, chunk, reason) jobs over a
+	// worker pool sized by Concurrency (ADR-061). The pool size is
+	// shared with the EC pass below; a single Concurrency knob controls
+	// both for operator simplicity.
+	var repJobs []struct{ target, chunkID, reason string }
 	for _, e := range audit.DNs {
 		if !e.Reachable {
 			for _, id := range e.MissingFromDN {
@@ -661,13 +686,32 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			continue
 		}
 		for _, missID := range e.MissingFromDN {
-			repairOne(e.DN, missID, repairReasonMissing)
+			repJobs = append(repJobs, struct{ target, chunkID, reason string }{e.DN, missID, repairReasonMissing})
 		}
-		// Scrubber-detected corrupt is independent of audit's MissingFromDN
-		// — file IS on disk, bytes wrong (sha mismatch). Force-overwrite path.
 		for _, corruptID := range corruptByDN[e.DN] {
-			repairOne(e.DN, corruptID, repairReasonCorrupt)
+			repJobs = append(repJobs, struct{ target, chunkID, reason string }{e.DN, corruptID, repairReasonCorrupt})
 		}
+	}
+	repConc := opts.Concurrency
+	if repConc < 1 {
+		repConc = 1
+	}
+	if repConc > len(repJobs) && len(repJobs) > 0 {
+		repConc = len(repJobs)
+	}
+	if len(repJobs) > 0 {
+		repSem := make(chan struct{}, repConc)
+		var repWg sync.WaitGroup
+		for _, j := range repJobs {
+			repSem <- struct{}{}
+			repWg.Add(1)
+			go func(j struct{ target, chunkID, reason string }) {
+				defer repWg.Done()
+				defer func() { <-repSem }()
+				repairOne(j.target, j.chunkID, j.reason)
+			}(j)
+		}
+		repWg.Wait()
 	}
 	// Per-stripe repair.Run (vs bulk) so each call's stats unambiguously
 	// refers to that single stripe — caller's per-shard Err can quote
@@ -733,11 +777,10 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			conc = len(scheduled)
 		}
 
-		// Worker pool: semaphore caps in-flight repair.Run goroutines
-		// at `conc`. mu guards out.Repairs index updates + stats
-		// accumulators (cheap critical section: pointer assignments
-		// and ints, no I/O).
-		var mu sync.Mutex
+		// Reuse the function-scope mu (now also covering the replication
+		// pass after ADR-061). Locking on the same mu keeps cross-pass
+		// stats updates serialised even though the passes don't overlap
+		// in time today.
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, conc)
 
@@ -793,6 +836,30 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 	}
 
 	out.Duration = time.Since(startedAt).String()
+	// ADR-061: surface unrecoverable cases via slog.Error so log
+	// aggregators (Loki / k8s logging / cron-mail) catch them. We
+	// distinguish by mode:
+	//   - no-source : every owner unreachable / corrupt — operator
+	//                 may need manual intervention or restoration.
+	//   - skip      : target DN was unreachable when audit ran;
+	//                 transient if the DN comes back, but worth
+	//                 surfacing if it persists across runs.
+	// ec-deferred is operator's deliberate flag choice; not unrecoverable.
+	for _, sk := range out.Skipped {
+		switch sk.Mode {
+		case repairModeNoSource:
+			s.Log.Error("anti-entropy: unrecoverable chunk",
+				"target_dn", sk.TargetDN,
+				"chunk_id", sk.ChunkID,
+				"reason", sk.Reason,
+				"err", sk.Err)
+		case repairModeSkip:
+			s.Log.Warn("anti-entropy: target DN unreachable",
+				"target_dn", sk.TargetDN,
+				"chunk_id", sk.ChunkID,
+				"reason", sk.Reason)
+		}
+	}
 	return out, nil
 }
 

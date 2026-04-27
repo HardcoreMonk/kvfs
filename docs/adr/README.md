@@ -120,9 +120,9 @@ Accepted · YYYY-MM-DD
 | [053](ADR-053-tunable-consistency.md) | Tunable consistency (per-request W/R quorum, Dynamo-style) | Accepted · 2026-04-27 | `X-KVFS-W` + `X-KVFS-R` headers · `WriteChunkToAddrsW` + `readChunkAgreement` · `kvfs_tunable_quorum_total` · demo-pe (Ep.3) |
 | [054](ADR-054-anti-entropy-merkle.md) | Anti-entropy / Merkle tree + bit-rot scrubber | Accepted · 2026-04-27 | DN `/chunks/merkle{,/bucket}` + `/chunks/scrub-status` (`DN_SCRUB_INTERVAL`) · coord `/v1/coord/admin/anti-entropy/run` · demo-tsadi (Ep.4 — S7 close) |
 
-## P8 — Frame-1+2 100% wave (Ep.01~12 done, polish 잔존)
+## P8 — Frame-1+2 100% wave (Ep.01~14 done, polish 잔존)
 
-P8-01·02·03·04·06·08~12 done — frame 1 (헌장) + frame 2 (textbook primitives) + self-heal (4채널) 모두 100%. 잔존은 P8-05·07·13 (operational polish).
+P8-01·02·03·04·06·08~14 done — frame 1 (헌장) + frame 2 (textbook primitives) + self-heal (4채널) 모두 100% + anti-entropy operational polish 완성. 잔존은 P8-05·07·15 (한계 효용 polish).
 
 | # | 제목 | wave 번호 | 연결 |
 |---|---|---|---|
@@ -133,10 +133,11 @@ P8-01·02·03·04·06·08~12 done — frame 1 (헌장) + frame 2 (textbook primi
 | [058](ADR-058-ec-corrupt-repair.md) | Anti-entropy EC corrupt repair (closes self-heal coverage) | P8-11 | `repair.DeadShard.Force` + `Coordinator.PutChunkToForce` 인터페이스 추가 · `?ec=1&corrupt=1` 조합 · demo-anti-entropy-repair-ec-corrupt |
 | [059](ADR-059-throttle-and-precision.md) | Repair throttle (`max_repairs`) + per-stripe precision | P8-12 | per-stripe `repair.Run` (정밀 OK/Err 매핑) · `?max_repairs=N` query + cli `--max-repairs` · demo-anti-entropy-throttle |
 | [060](ADR-060-concurrent-ec-repair.md) | Concurrent EC repair (worker pool) + `httputil.ParseNonNegIntQuery` helper | P8-13 | up-front throttle partition + worker pool + per-stripe `repair.Run` · `?concurrency=N` query + cli `--concurrency` · 2× speedup on 4-stripe demo · demo-anti-entropy-concurrent |
+| [061](ADR-061-resilience-polishes.md) | Resilience polishes (replication concurrent + persistent scrubber + unrecoverable slog.Error) | P8-14 | `runAntiEntropyRepair` replication worker pool · DN `<dataDir>/scrub-state.json` (Version 1, atomic temp+rename) · `out.Skipped[Mode=no_source]` → `slog.Error` 한 줄 · demo-anti-entropy-resilience |
 
-> 데모 letter — S1~S4 = α~ω (그리스 21) · S5~S6 = aleph~nun (히브리 14) · S7 = samekh~tsadi (히브리 4). letter demos 39. P8 anti-entropy specials 6 → 합 **45**.
+> 데모 letter — S1~S4 = α~ω (그리스 21) · S5~S6 = aleph~nun (히브리 14) · S7 = samekh~tsadi (히브리 4). letter demos 39. P8 anti-entropy specials 7 → 합 **46**.
 
 ## 다음 시즌 / 미작성
 
-- 차기 polish / 새 시즌 후보는 [`docs/FOLLOWUP.md`](../FOLLOWUP.md) 의 P8-05·07·13 참조.
+- 차기 polish / 새 시즌 후보는 [`docs/FOLLOWUP.md`](../FOLLOWUP.md) 의 P8-05·07·15 참조.
 - ADR 결번 (020/021/023/026): 작성 시점에 별도 결정 부재 (예: Season 5 Ep.2 의 `EDGE_COORD_URL` wiring — env 외 결정 없음).
