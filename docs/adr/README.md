@@ -111,29 +111,31 @@ Accepted · YYYY-MM-DD
 | [048](ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord (rotate/list/remove) | Accepted · 2026-04-27 | `/v1/coord/admin/urlkey{,/rotate}` + cli `urlkey --coord` · demo-mem (Ep.6) |
 | [049](ADR-049-edge-urlkey-propagation.md) | Edge urlkey.Signer propagation from coord (polling) | Accepted · 2026-04-27 | `EDGE_COORD_URLKEY_POLL_INTERVAL` + `Server.StartURLKeyPolling` + `SyncURLKeys` · demo-nun (Ep.7) |
 
-## P8 — Frame-1+2 100% wave (in progress)
-
-| # | 제목 | 상태 | 연결 |
-|---|---|---|---|
-| [050](ADR-050-raft-stale-log-protection.md) | Raft §5.4.1 log-up-to-date vote check + coord bootstrap snapshot pull | Accepted · 2026-04-27 | `election.LastLogSeqFn` + `/v1/coord/admin/meta/snapshot` + `bootstrapFromPeer` · chaos-mixed verifier |
-
-## Season 7 — textbook primitives (in progress, frame 2 진척)
+## Season 7 — textbook primitives (closed, Ep.1~4 → frame 2 = 100%)
 
 | # | 제목 | 상태 | 연결 · demo |
 |---|---|---|---|
 | [051](ADR-051-failure-domain-hierarchy.md) | Failure domain hierarchy (topology-aware HRW) | Accepted · 2026-04-27 | `placement.Node.Domain` + `PickByDomain` + `/v1/coord/admin/dns/domain` · demo-samekh (Ep.1) |
 | [052](ADR-052-degraded-read.md) | Degraded read (parallel shard fetch + first-K-wins) | Accepted · 2026-04-27 | `Server.parallelFetchShards` + `kvfs_ec_degraded_read_total` · demo-ayin (Ep.2) |
 | [053](ADR-053-tunable-consistency.md) | Tunable consistency (per-request W/R quorum, Dynamo-style) | Accepted · 2026-04-27 | `X-KVFS-W` + `X-KVFS-R` headers · `WriteChunkToAddrsW` + `readChunkAgreement` · `kvfs_tunable_quorum_total` · demo-pe (Ep.3) |
-| [054](ADR-054-anti-entropy-merkle.md) | Anti-entropy / Merkle tree + bit-rot scrubber | Accepted · 2026-04-27 | DN `/chunks/merkle{,/bucket}` + `/chunks/scrub-status` (`DN_SCRUB_INTERVAL`) · coord `/v1/coord/admin/anti-entropy/run` · demo-tsadi (Ep.4 — S7 close, frame 2 = 100%) |
-| [055](ADR-055-anti-entropy-auto-repair.md) | Anti-entropy auto-repair + scheduled audit | Accepted · 2026-04-27 | coord `/v1/coord/admin/anti-entropy/repair` + `COORD_ANTI_ENTROPY_INTERVAL` ticker · cli `anti-entropy repair` · demo-anti-entropy-repair (P8-08) |
-| [056](ADR-056-corrupt-repair-and-dry-run.md) | Anti-entropy corrupt-repair + dry-run preview | Accepted · 2026-04-27 | DN PUT `?force=1` + `Coord.PutChunkToForce` + `?corrupt=1` / `?dry_run=1` query params · cli `--corrupt`/`--dry-run` · demo-anti-entropy-repair-corrupt (P8-09) |
-| [057](ADR-057-ec-inline-repair.md) | Anti-entropy EC inline repair (delegates to ADR-046 worker) | Accepted · 2026-04-27 | `?ec=1` query param + per-stripe `repair.StripeRepair` build → `repair.Run` · cli `--ec` · `mode: "ec-inline"` / `"ec-summary"` outcomes · demo-anti-entropy-repair-ec (P8-10) |
-| [058](ADR-058-ec-corrupt-repair.md) | Anti-entropy EC corrupt repair (closes self-heal coverage) | Accepted · 2026-04-27 | `repair.DeadShard.Force` + `Coordinator.PutChunkToForce` 인터페이스 추가 · `?ec=1&corrupt=1` 조합으로 RS Reconstruct + force overwrite · demo-anti-entropy-repair-ec-corrupt (P8-11) |
-| [059](ADR-059-throttle-and-precision.md) | Repair throttle (`max_repairs`) + per-stripe precision | Accepted · 2026-04-27 | per-stripe `repair.Run` (정밀 OK/Err 매핑) · `?max_repairs=N` query + cli `--max-repairs` · demo-anti-entropy-throttle (P8-12) |
+| [054](ADR-054-anti-entropy-merkle.md) | Anti-entropy / Merkle tree + bit-rot scrubber | Accepted · 2026-04-27 | DN `/chunks/merkle{,/bucket}` + `/chunks/scrub-status` (`DN_SCRUB_INTERVAL`) · coord `/v1/coord/admin/anti-entropy/run` · demo-tsadi (Ep.4 — S7 close) |
 
-> 데모 letter — S1~S4 = α~ω (그리스 21자, demo-alpha~demo-omega), S5~S6 = aleph~nun (히브리 14자, demo-aleph~demo-nun). 합 35.
+## P8 — Frame-1+2 100% wave (Ep.01~12 done, polish 잔존)
+
+P8-01·02·03·04·06·08~12 done — frame 1 (헌장) + frame 2 (textbook primitives) + self-heal (4채널) 모두 100%. 잔존은 P8-05·07·13 (operational polish).
+
+| # | 제목 | wave 번호 | 연결 |
+|---|---|---|---|
+| [050](ADR-050-raft-stale-log-protection.md) | Raft §5.4.1 log-up-to-date vote check + coord bootstrap snapshot pull | P8-06 | `election.LastLogSeqFn` + `/v1/coord/admin/meta/snapshot` + `bootstrapFromPeer` · chaos-mixed verifier |
+| [055](ADR-055-anti-entropy-auto-repair.md) | Anti-entropy auto-repair + scheduled audit | P8-08 | coord `/v1/coord/admin/anti-entropy/repair` + `COORD_ANTI_ENTROPY_INTERVAL` ticker · cli `anti-entropy repair` · demo-anti-entropy-repair |
+| [056](ADR-056-corrupt-repair-and-dry-run.md) | Anti-entropy corrupt-repair + dry-run preview | P8-09 | DN PUT `?force=1` + `Coord.PutChunkToForce` + `?corrupt=1` / `?dry_run=1` query params · cli `--corrupt`/`--dry-run` · demo-anti-entropy-repair-corrupt |
+| [057](ADR-057-ec-inline-repair.md) | Anti-entropy EC inline repair (delegates to ADR-046 worker) | P8-10 | `?ec=1` query param + per-stripe `repair.StripeRepair` build → `repair.Run` · cli `--ec` · `mode: "ec-inline"` / `"ec-summary"` outcomes · demo-anti-entropy-repair-ec |
+| [058](ADR-058-ec-corrupt-repair.md) | Anti-entropy EC corrupt repair (closes self-heal coverage) | P8-11 | `repair.DeadShard.Force` + `Coordinator.PutChunkToForce` 인터페이스 추가 · `?ec=1&corrupt=1` 조합 · demo-anti-entropy-repair-ec-corrupt |
+| [059](ADR-059-throttle-and-precision.md) | Repair throttle (`max_repairs`) + per-stripe precision | P8-12 | per-stripe `repair.Run` (정밀 OK/Err 매핑) · `?max_repairs=N` query + cli `--max-repairs` · demo-anti-entropy-throttle |
+
+> 데모 letter — S1~S4 = α~ω (그리스 21) · S5~S6 = aleph~nun (히브리 14) · S7 = samekh~tsadi (히브리 4). letter demos 39. P8 anti-entropy specials 5 → 합 **44**.
 
 ## 다음 시즌 / 미작성
 
-- 차기 시즌 트랙은 [`docs/FOLLOWUP.md`](../FOLLOWUP.md) 의 P 시리즈 참조.
-- 모든 시즌 ADR 은 진행 시점에 추가 (Season 5 Ep.2 는 ADR 없이 wiring 만 — `EDGE_COORD_URL` env 으로 충분, 별도 결정 부재).
+- 차기 polish / 새 시즌 후보는 [`docs/FOLLOWUP.md`](../FOLLOWUP.md) 의 P8-05·07·13 참조.
+- ADR 결번 (020/021/023/026): 작성 시점에 별도 결정 부재 (예: Season 5 Ep.2 의 `EDGE_COORD_URL` wiring — env 외 결정 없음).

@@ -20,16 +20,20 @@ claude-zone L3 체인 상속. 여기는 **kvfs 고유**만.
 
 ## 아키텍처 핵심
 
-2-daemon MVP (상세: `docs/ARCHITECTURE.md`):
+2 모드 (상세: `docs/ARCHITECTURE.md`):
 
 ```
-Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 3
-                           │                        │
-                       bbolt meta               local files
+[default 2-daemon, S1~S4 호환]
+Client ─HTTP+UrlKey─▶ kvfs-edge ─HTTP REST─▶ kvfs-dn × N
+
+[3-daemon, S5~ ADR-015. EDGE_COORD_URL 설정 시 활성]
+Client ─HTTP+UrlKey─▶ kvfs-edge ─RPC─▶ kvfs-coord × N (placement·meta·HA·worker)
+                          └─chunk PUT/GET─▶ kvfs-dn × N
 ```
 
-- **kvfs-edge** (:8000): 게이트웨이 + 인라인 코디네이터
-- **kvfs-dn** (:8080, ×3): 로컬 파일 chunk 저장
+- **kvfs-edge** (:8000): HTTP 게이트웨이 + UrlKey verify + chunker/EC encoder. 2-daemon 모드면 인라인 coordinator 도 겸함
+- **kvfs-coord** (:9000, opt): placement (HRW) + 메타 owner + HA (Raft) + worker (rebalance/GC/repair/anti-entropy)
+- **kvfs-dn** (:8080, ×N): chunk byte 저장 + Merkle inventory + bit-rot scrubber
 
 ## 디렉토리 의미
 
@@ -53,13 +57,9 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `make test-race` | race 감지 (CGO 필요 — 로컬 Go 있을 때만) |
 | `make fmt` / `make lint` | `gofmt -w .` / `go vet ./...` |
 | `./scripts/up.sh` / `down.sh` | Docker 클러스터 기동·정리 (compose 플러그인 불필요) |
-| `./scripts/demo-*.sh` | 시즌별 라이브 데모. greek letter 순으로 정렬 (alpha → omega 진행). episode ↔ 데모 ↔ ADR 매핑은 `docs/adr/README.md` |
-| `./scripts/chaos-dn-killer.sh` | 주기적 random DN kill + GET 검증 (회귀 catch). 외부 cluster 가정 |
-| `./scripts/chaos-coord-flap.sh` | 자체 3-coord HA → 주기적 coord kill+restart → PUT/GET hammer → 모든 200-PUT 검증 (ADR-038/039/040 invariant) |
-| `./scripts/chaos-coord-quorum-loss.sh` | 자체 cluster → 2/3 coord kill → PUT 모두 503 검증 + bbolt drift 0 + post-restore phantom 0 (ADR-040 strict) |
-| `./scripts/chaos-coord-partition.sh` | docker network disconnect 으로 coord partition → split-brain 회피 (≤1 leader) + 재연결 후 catch-up (ADR-038) |
-| `./scripts/chaos-mixed.sh` | DN flap + coord flap 동시. simplified Raft 의 stale-follower-election + missing-entry-on-restart gap 을 확률적으로 노출 (FOLLOWUP P8-06) |
-| `./scripts/chaos-suite.sh [--quick] [--skip <name>]` | 위 chaos-* 일괄 실행 + 집계 |
+| `./scripts/demo-*.sh` | episode 라이브 데모. letter 순 (S1~S4 = α~ω, S5~S6 = aleph~nun, S7 = samekh~tsadi) + P8 anti-entropy specials. episode ↔ ADR 매핑은 `docs/adr/README.md` |
+| `./scripts/chaos-dn-killer.sh` | 외부 cluster 가정. 주기적 random DN kill + GET 검증 |
+| `./scripts/chaos-suite.sh [--quick] [--skip <name>]` | 자체 cluster 시나리오 batch — flap · quorum-loss · partition · mixed (각 자세는 `scripts/chaos-coord-*.sh`, `scripts/chaos-mixed.sh`). architectural invariant 검증 |
 
 Docker로 빌드 검증 (로컬 Go 없어도):
 
