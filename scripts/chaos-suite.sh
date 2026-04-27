@@ -29,6 +29,8 @@ done
 SCENARIOS=(
   "flap|./scripts/chaos-coord-flap.sh|--duration 30 --interval 8 --downtime 3|--duration 90 --interval 12 --downtime 4"
   "quorum-loss|./scripts/chaos-coord-quorum-loss.sh|--down-sec 6|--down-sec 8"
+  "partition|./scripts/chaos-coord-partition.sh|--duration 30 --cycles 1 --partition-sec 8|--duration 60 --cycles 2 --partition-sec 10"
+  "mixed|./scripts/chaos-mixed.sh|--duration 40 --interval 10 --downtime 3|--duration 90 --interval 12 --downtime 4"
   "dn-killer|./scripts/chaos-dn-killer.sh|--duration 30 --interval 6|--duration 60 --interval 10"
 )
 

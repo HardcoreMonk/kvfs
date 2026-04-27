@@ -84,13 +84,26 @@
 - ADR-040 transactional commit invariant 가 chaos 하에서 holds — 5/5 PUT 503 차단 + bbolt drift 0 + phantom 0 검증.
 - ADR-038/039 (coord HA + WAL repl) 도 holds — 90s 동안 random coord kill, 모든 200-PUT 복원.
 
-### [P8-02] Phase 1 chaos suite 확장
-- 잔여 시나리오:
-  - `chaos-coord-partition.sh` — `docker network disconnect/connect` 으로 split-brain 회피 검증 (term 기반 single-leader invariant)
-  - `chaos-mixed.sh` — DN flap + coord flap 동시
-  - `chaos-wal-corrupt.sh` — WAL tail truncate / mid-line garble → replay recover
-  - `chaos-disk-full.sh` — DN tmpfs cap → edge graceful 5xx + 회복 후 repair
-- 추정: 1주.
+### ~~[P8-02] Phase 1 chaos suite 확장 (partition + mixed)~~
+- **DONE 2026-04-27**: `chaos-coord-partition.sh` + `chaos-mixed.sh` 추가, `chaos-suite.sh` 에 등록.
+- partition 테스트: `docker network disconnect` 로 1 coord 격리 → split-brain count == 0 (ADR-038 invariant 검증) + 재연결 후 elected leader 정상.
+- mixed 테스트: DN + coord 동시 flap → **architectural finding 발생** (P8-06 참조). 확률적 — 같은 명령으로 한 번은 PASS, 한 번은 2/24 데이터 손실.
+- WAL corrupt + disk-full 시나리오는 P8-07 로 이연 (구현 비용 > Frame-1+2 100% 진척 비율).
+
+### [P8-06] Simplified Raft 강화 (chaos-mixed 의 finding)
+- **배경**: chaos-mixed 가 노출한 실 architectural gap 두 개 — 둘 다 kvfs Elector 가 ADR-031 단계에서 의도적으로 단순화해놓은 결과.
+  1. **Stale-follower election**: `internal/election/HandleVote` 가 term-only check, Raft 의 §5.4.1 "log up-to-date" invariant 부재. 죽었다 살아난 coord 가 자기 term 만 올려도 vote 받을 수 있음 → stale log 가 leader 됨 → query 시 데이터 안 보임.
+  2. **No follower bootstrap fetch**: ADR-039 의 walHook 은 push-only. follower 가 dead 인 동안 일어난 commit 은 follower 에 도달 못 함. follower 가 restart 해도 자동 catch-up 메커니즘 0. multi-edge HA (ADR-022) 에는 snapshot-pull 이 있는데 coord 측 미구현.
+- **해결 후보**:
+  - (1) `HandleVote` 에 `lastLogIndex/lastLogTerm` 비교 추가. Raft §5.4.1 그대로.
+  - (2) Follower coord boot 시 leader 의 latest snapshot pull (ADR-022 패턴 port). 또는 leader 가 heartbeat 에 prevLogIndex 동봉, 누락 entry replay.
+- **우선순위**: 중요 — production-ready 분산 storage 의 기본 invariant. frame 2 의 일부 (textbook Raft 의 ground truth). 다만 Season 7 의 4 primitive 와 별개라 본 P8-04 에 묶지 않고 P8-06 으로 독립.
+- **추정**: 1~1.5주 (테스트 + 둘 다 구현).
+
+### [P8-07] chaos suite 확장 wave 2 (저우선)
+- `chaos-wal-corrupt.sh` — WAL tail truncate / mid-line garble → replay recover. WAL 의 corruption tolerance 검증.
+- `chaos-disk-full.sh` — DN tmpfs cap → edge graceful 5xx, 회복 후 repair worker 자동 healing.
+- 추정: 3~5일.
 
 ### ~~[P8-03] S5/S6 blog backfill~~
 - **DONE 2026-04-27**: 14 episode 작성 (Ep.29~42). S5 (29-coord-skeleton ~ 35-cli-coord-admin) + S6 (36-coord-rebalance-plan ~ 42-edge-urlkey-sync). aleph→nun demo + ADR-015·038~049 본문 모두 cover.

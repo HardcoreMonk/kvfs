@@ -57,6 +57,8 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `./scripts/chaos-dn-killer.sh` | 주기적 random DN kill + GET 검증 (회귀 catch). 외부 cluster 가정 |
 | `./scripts/chaos-coord-flap.sh` | 자체 3-coord HA → 주기적 coord kill+restart → PUT/GET hammer → 모든 200-PUT 검증 (ADR-038/039/040 invariant) |
 | `./scripts/chaos-coord-quorum-loss.sh` | 자체 cluster → 2/3 coord kill → PUT 모두 503 검증 + bbolt drift 0 + post-restore phantom 0 (ADR-040 strict) |
+| `./scripts/chaos-coord-partition.sh` | docker network disconnect 으로 coord partition → split-brain 회피 (≤1 leader) + 재연결 후 catch-up (ADR-038) |
+| `./scripts/chaos-mixed.sh` | DN flap + coord flap 동시. simplified Raft 의 stale-follower-election + missing-entry-on-restart gap 을 확률적으로 노출 (FOLLOWUP P8-06) |
 | `./scripts/chaos-suite.sh [--quick] [--skip <name>]` | 위 chaos-* 일괄 실행 + 집계 |
 
 Docker로 빌드 검증 (로컬 Go 없어도):
