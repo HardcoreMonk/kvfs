@@ -13,7 +13,7 @@
 - **P5**: post-Season-4 wave — 모두 완료
 - **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
-- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08·09·10 DONE (Frame 1+2 = 100% + self-heal full coverage: replication missing/corrupt + EC missing), P8-05·07·11 (저우선) 잔존
+- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08·09·10·11 DONE (Frame 1+2 = 100% + self-heal coverage 100%: 4 detection 채널 모두 closed), P8-05·07·12 (operational polish, 저우선) 잔존
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -150,9 +150,16 @@
 - replication missing (ADR-055) + replication corrupt (ADR-056) + EC missing (ADR-057) 모두 anti-entropy 단일 명령으로 처리.
 - 남은 빈 칸: EC corrupt (P8-11 후보).
 
-### [P8-11] Anti-entropy 후속 wave 3 (저우선)
-- EC corrupt 자동 repair (force overwrite + RS reconstruct 통합)
-- per-shard 정확한 success/failure (현재는 ec-summary 단위 ambiguous)
+### ~~[P8-11] EC corrupt repair (self-heal coverage 마지막 빈 칸)~~
+- **DONE 2026-04-27**: ADR-058.
+  - `repair.DeadShard.Force bool` 필드 + `repair.Coordinator.PutChunkToForce` 인터페이스 메서드 추가. `repairStripe` 가 `d.Force` 분기로 PUT 메서드 선택.
+  - anti-entropy 의 EC plan 빌더가 corrupt switch case 추가 (`corruptHere → DeadShard{Force: true}`). Survivor 후보에서 corrupt 제외 (자기 source 가 corrupt 면 사용 X).
+  - 새 endpoint / cli flag 0 — 기존 `--corrupt --ec` 조합으로 활성.
+  - demo-anti-entropy-repair-ec-corrupt 7 stages: 1MB EC (4+2) → corrupt inject → scrubber detect → ec=1 alone fail → ec=1+corrupt=1 reconstruct + force overwrite → next scrub clean → GET sha256 정상.
+- **Self-heal coverage 100%** — 4 detection 채널 (replication missing/corrupt + EC missing/corrupt) 모두 anti-entropy 단일 명령 (`--corrupt --ec`) 으로 처리.
+
+### [P8-12] Anti-entropy 후속 polish (저우선, 모두 operational quality)
+- per-shard 정확한 success/failure (현재 stripe 단위 ambiguous)
 - Concurrent repair parallel
 - `COORD_AUTO_REPAIR_INTERVAL`
 - Repair throttling / rate-limit
@@ -257,9 +264,9 @@
 
 - **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
 - **테스트**: **174 test funcs PASS** (P8-06 +1, S7 Ep.1 +3, Ep.2 +3, Ep.3 +3, Ep.4 +4 dn merkle/scrub). `go vet` + staticcheck 클린
-- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~10 anti-entropy demos (3개) = **42개** 라이브 PASS
-- **ADR**: **53 Accepted** — ADR-001~057 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055·056·057, S7: 051·052·053·054
-- **Blog**: Ep.1~49 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~10 (Ep.47~49)
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~11 anti-entropy demos (4개) = **43개** 라이브 PASS
+- **ADR**: **54 Accepted** — ADR-001~058 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~058, S7: 051~054
+- **Blog**: Ep.1~50 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~11 (Ep.47~50)
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 

@@ -73,6 +73,14 @@ func (f *fakeCoord) PutChunkTo(_ context.Context, addr, chunkID string, data []b
 	return nil
 }
 
+// PutChunkToForce: same store mutation as PutChunkTo (the fake doesn't
+// model the idempotent-skip behavior of a real DN, so force == regular
+// for unit-test purposes — what matters is that repairStripe can call
+// it through the interface). ADR-058.
+func (f *fakeCoord) PutChunkToForce(_ context.Context, addr, chunkID string, data []byte) error {
+	return f.PutChunkTo(context.Background(), addr, chunkID, data)
+}
+
 func (f *fakeCoord) seed(addr, chunkID string, data []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

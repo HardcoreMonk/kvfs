@@ -469,6 +469,14 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 	// EC inline mode is on. Groups all missing shards of the same stripe
 	// together so repair.Run reconstructs once per stripe, not once per
 	// shard. Uses the SAME chunkID-keyed lookup as the rest of the audit.
+	//
+	// ADR-058 (this commit): when opts.Corrupt is also set, scrubber-
+	// detected corrupt EC shards join the DeadShards list with Force=true.
+	// repair.repairStripe routes those to PutChunkToForce so the corrupt
+	// on-disk file gets overwritten instead of skipped by the idempotent
+	// PUT path. Survivor selection also excludes shards on DNs whose
+	// scrubber flagged the same chunk_id as corrupt — we won't read from
+	// a known-bad source.
 	type ecKey struct{ Bucket, Key string; Stripe int }
 	ecPlanByKey := make(map[ecKey]*repair.StripeRepair)
 	if opts.EC {
@@ -494,17 +502,30 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 							missingHere = true
 						}
 					}
-					if missingHere {
+					corruptHere := opts.Corrupt && hasCorrupt(corruptByDN[addr], sh.ChunkID)
+					switch {
+					case missingHere:
 						rep.DeadShards = append(rep.DeadShards, repair.DeadShard{
 							ShardIndex: shi, ChunkID: sh.ChunkID,
-							OldAddr: addr, NewAddr: addr, // restore in place
+							OldAddr: addr, NewAddr: addr,
 							Size: sh.Size,
 						})
-					} else if dnHas[addr] != nil {
-						// Survivor: anti-entropy didn't mark missing → assume healthy.
-						rep.Survivors = append(rep.Survivors, repair.SurvivorRef{
-							ShardIndex: shi, ChunkID: sh.ChunkID, Addr: addr,
+					case corruptHere:
+						rep.DeadShards = append(rep.DeadShards, repair.DeadShard{
+							ShardIndex: shi, ChunkID: sh.ChunkID,
+							OldAddr: addr, NewAddr: addr,
+							Size:  sh.Size,
+							Force: true, // ADR-058: bytes wrong on disk, must overwrite
 						})
+					case dnHas[addr] != nil:
+						// Survivor candidate. Exclude if scrubber on its DN
+						// reported THIS chunk as corrupt — the bytes there are
+						// wrong, can't trust as a Reconstruct source.
+						if !hasCorrupt(corruptByDN[addr], sh.ChunkID) {
+							rep.Survivors = append(rep.Survivors, repair.SurvivorRef{
+								ShardIndex: shi, ChunkID: sh.ChunkID, Addr: addr,
+							})
+						}
 					}
 				}
 				if len(rep.DeadShards) > 0 {

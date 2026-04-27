@@ -39,6 +39,12 @@ type Coordinator interface {
 	PlaceN(key string, n int) []string
 	ReadChunk(ctx context.Context, chunkID string, candidates []string) ([]byte, string, error)
 	PutChunkTo(ctx context.Context, addr, chunkID string, data []byte) error
+	// PutChunkToForce (ADR-058): overwrite path for corrupt-shard repair.
+	// Vanilla PutChunkTo skips when the chunk file exists (idempotent, ADR-005
+	// invariant). For corrupt shards the file IS on disk but the bytes are
+	// wrong; force bypasses the existence-skip. Body still validated against
+	// chunk_id by the DN, so invariant holds.
+	PutChunkToForce(ctx context.Context, addr, chunkID string, data []byte) error
 }
 
 // ObjectStore 는 repair 가 사용하는 store 의 부분 인터페이스.
@@ -56,12 +62,17 @@ type SurvivorRef struct {
 
 // DeadShard는 옛 위치(OldAddr)가 cluster 에서 사라진 shard.
 // NewAddr 가 destination — sorted unused desired DNs 에서 결정적으로 할당.
+//
+// Force (ADR-058) 시 PutChunkToForce 사용 — corrupt 재작성 시나리오에서
+// 기존 file 존재 시의 idempotent skip 우회. ADR-046 / ADR-057 (missing) 은
+// 기본 false 그대로.
 type DeadShard struct {
 	ShardIndex int    `json:"shard_index"`
 	ChunkID    string `json:"chunk_id"`
 	OldAddr    string `json:"old_addr"`
 	NewAddr    string `json:"new_addr"`
 	Size       int64  `json:"size"`
+	Force      bool   `json:"force,omitempty"`
 }
 
 // StripeRepair는 한 stripe 의 repair 작업 정의.
@@ -307,7 +318,11 @@ func repairStripe(ctx context.Context, coord Coordinator, st ObjectStore, rep St
 			return false, bytesWritten, fmt.Errorf("%s/%s stripe %d shard %d: rebuilt data nil",
 				rep.Bucket, rep.Key, rep.StripeIndex, d.ShardIndex)
 		}
-		if err := coord.PutChunkTo(ctx, d.NewAddr, d.ChunkID, data); err != nil {
+		put := coord.PutChunkTo
+		if d.Force {
+			put = coord.PutChunkToForce
+		}
+		if err := put(ctx, d.NewAddr, d.ChunkID, data); err != nil {
 			return false, bytesWritten, fmt.Errorf("%s/%s stripe %d shard %d: PUT %s: %w",
 				rep.Bucket, rep.Key, rep.StripeIndex, d.ShardIndex, d.NewAddr, err)
 		}
