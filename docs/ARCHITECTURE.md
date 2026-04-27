@@ -6,25 +6,29 @@
 ## 한 장 요약
 
 ```
-Client ─HTTP+UrlKey─► kvfs-edge ─HTTP REST─► kvfs-dn (× N)
-                         │                       │
-                         ├─ placement (HRW)      └─ chunks/<sha256[0:2]>/<rest>
+                                      ┌─ kvfs-coord (× N) ──┐  (S5~, 옵션)
+                                      │  placement·메타 owner │
+                                      │  Raft + WAL replication │
+Client ─HTTP+UrlKey─► kvfs-edge ──────┴─ HTTP REST ──► kvfs-dn (× N)
+                         │                                 │
+                         ├─ thin gateway (coord-proxy 모드)   └─ chunks/<sha256[0:2]>/<rest>
+                         │   OR 인라인 coordinator (S1~S4 모드)
                          ├─ chunker / EC encoder
-                         ├─ rebalance / GC / repair
-                         ├─ heartbeat (DN liveness)
-                         ├─ snapshot scheduler
-                         └─ bbolt meta
+                         ├─ urlkey verify (multi-kid Signer)
+                         └─ bbolt meta (proxy 모드면 거의 빈 채로 유지)
                             objects:        bucket/key → ChunkRef[] | (EC) Stripes[]
-                            dns_runtime:    addr → registered_at
+                            dns_runtime:    addr → registered_at + class
                             urlkey_secrets: kid → secret + is_primary
 ```
 
-- **2 daemon**: `kvfs-edge` (게이트웨이 + 인라인 coordinator) · `kvfs-dn` (스토리지 노드, ×N)
+- **모드 선택**:
+  - **2-daemon (S1~S4 호환)**: `EDGE_COORD_URL` unset. edge 안에 coordinator 인라인 — placement·rebalance·GC·repair·heartbeat 모두 edge 가 처리. 단순함.
+  - **3-daemon (S5~)**: `EDGE_COORD_URL=http://coord:8090` 으로 coord 모드 활성. edge 는 thin gateway, coord 가 메타·placement·일관성 owner. cli admin 도 `--coord URL` 로 직접. HA 는 coord-side Raft (`COORD_PEERS`) + WAL replication (`COORD_WAL_PATH`) + transactional commit (`COORD_TRANSACTIONAL_RAFT`).
 - **객체 모델**: replication (default 3-way) **또는** Reed-Solomon EC (per-PUT `X-KVFS-EC: K+M` 헤더)
 - **Placement**: chunkID/stripeID → top-R DN (Rendezvous Hashing). DN 추가·제거 시 약 R/N 만 이동
 - **Quorum write**: `R/2+1` ack 시 성공
 - **GET fallback**: replicas 순차 시도, EC 면 K survivors 로 reconstruct (ADR-025)
-- **운영성**: edge 가 자기 cluster 의 정렬·청소·복구·snapshot·heartbeat 를 스스로 (ADR-013/016/030)
+- **운영성**: edge (또는 coord) 가 자기 cluster 의 정렬·청소·복구·snapshot·heartbeat 를 스스로 (ADR-013/016/030/043~049)
 
 ## 컴포넌트
 
@@ -48,6 +52,14 @@ Client ─HTTP+UrlKey─► kvfs-edge ─HTTP REST─► kvfs-dn (× N)
   - `GET /v1/admin/heartbeat` (ADR-030)
   - `GET /v1/admin/role` (ADR-022)
 
+### kvfs-coord (옵션, S5~)
+
+- **포트**: `:8090` (기본). HTTP/HTTPS.
+- **상태**: `<COORD_DATA_DIR>/coord.db` (bbolt, edge 와 동일 스키마) + 선택적 WAL.
+- **외부 의존**: DN N 개 (`COORD_DNS=`). HA 모드면 peer coord 들 (`COORD_PEERS=`).
+- **모드 결정**: edge 가 `EDGE_COORD_URL` 설정 시 메타·placement RPC 를 coord 로 위임 → coord-proxy 모드. unset 이면 edge 인라인 (S1~S4 동작).
+- **엔드포인트**: `/v1/coord/{place,commit,lookup,delete}` (메타 RPC) · `/v1/coord/admin/{objects,dns,dns/class,rebalance,gc,repair,urlkey,urlkey/rotate}` (admin) · `/v1/election/{vote,heartbeat,append-wal}` (HA).
+
 ### kvfs-dn (스토리지 노드)
 
 - **포트**: `:8080` (HTTP/HTTPS, ADR-029)
@@ -59,25 +71,32 @@ Client ─HTTP+UrlKey─► kvfs-edge ─HTTP REST─► kvfs-dn (× N)
 
 ```
 cmd/kvfs-edge/main.go          edge 엔트리포인트 + env wiring
+cmd/kvfs-coord/main.go         coord 엔트리포인트 (S5~)
 cmd/kvfs-dn/main.go            dn 엔트리포인트
 cmd/kvfs-cli/main.go           sign·inspect·placement-sim·rebalance·gc·auto·dns·
                                urlkey·repair·meta·heartbeat·role 서브커맨드
+                               (모든 mutating subcommand 가 --coord URL 지원, S6)
 
 internal/urlkey/               HMAC-SHA256 signer · multi-kid rotation (ADR-007/028)
-internal/store/                bbolt 래퍼 + Snapshot/Reload + SnapshotScheduler
-                               (ADR-004/014/016, atomic.Pointer hot-swap)
+internal/store/                bbolt 래퍼 + Snapshot/Reload + SnapshotScheduler + WAL
+                               (ADR-004/014/016/019/035, atomic.Pointer hot-swap)
 internal/dn/                   DN HTTP 서버 · 디스크 저장 · /chunks 리스트
 internal/placement/            Rendezvous Hashing — chunk→DN 선택 (ADR-009)
 internal/coordinator/          fanout · quorum · TLS · DNScheme (ADR-029)
-internal/chunker/              고정 크기 split/join (ADR-011)
-internal/reedsolomon/          GF(2^8) + Vandermonde + Gauss-Jordan (ADR-008)
-internal/rebalance/            chunk + EC stripe rebalance (ADR-010/024)
+internal/chunker/              고정 크기 + CDC split/join + scratch pool (ADR-011/018/035/037)
+internal/reedsolomon/          GF(2^8) + Vandermonde + Gauss-Jordan (ADR-008, mul-table 최적화)
+internal/rebalance/            chunk + EC stripe rebalance · class-aware (ADR-010/024)
 internal/gc/                   surplus chunk GC (ADR-012)
 internal/repair/               EC repair via Reed-Solomon Reconstruct (ADR-025)
 internal/heartbeat/            DN liveness monitor (ADR-030)
-internal/edge/                 HTTP 서버 · 핸들러 · auth 미들웨어
+internal/election/             Raft-style election (ADR-031, edge·coord 양쪽이 재사용)
+internal/edge/                 HTTP 서버 · 핸들러 · auth 미들웨어 · CoordClient (proxy 모드)
 internal/edge/replica.go       Multi-edge follower 로직 (ADR-022)
+internal/edge/urlkey_sync.go   coord urlkey 변경 polling 반영 (ADR-049)
+internal/coord/                coord daemon 핵심 — 메타·placement·HA·admin (S5~, ADR-015)
 internal/tlsutil/              TLS 헬퍼 (ADR-029)
+internal/cliutil/              EnvOr · AtoiOr · SplitCSV · Fatal (P6-09)
+internal/httputil/             WriteJSON · WriteError · WriteErr (P6-09)
 ```
 
 ## 주요 데이터 흐름
@@ -160,6 +179,10 @@ follower 의 PUT/DELETE → 503 + X-KVFS-Primary 헤더
 | S2 | Rendezvous Hashing → rebalance worker → GC → chunking → Reed-Solomon EC | 009·010·012·011·008 |
 | S3 | Auto-trigger → EC stripe rebalance → EC repair → meta backup → DN heartbeat → auto-snapshot → multi-edge HA | 013·024·025·014·030·016·022 |
 | 운영 보강 | Dynamic DN registry · UrlKey kid rotation · Optional TLS/mTLS | 027·028·029 |
+| S4 | Streaming PUT/GET → CDC → auto leader election → WAL | 017·018·031·019 |
+| post-S4 wave | NFS deferred · strict repl · transactional Raft · micro-opts · WAL gauges · chunker pool cap | 032·033·034·035·036·037 |
+| S5 | coord 분리 (ADR-002 supersede) → coord HA (Raft) → coord WAL repl → coord txn commit → edge → coord placement RPC → cli direct admin | 015·038·039·040·041·042 |
+| S6 | rebalance/gc/repair on coord → DN registry on coord → URLKey on coord → edge urlkey polling | 043·044·045·046·047·048·049 |
 
 전체: [`adr/README.md`](adr/README.md).
 

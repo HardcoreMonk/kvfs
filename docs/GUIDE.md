@@ -473,8 +473,7 @@ type Stripe struct {
 
 | 변수 | 기본 | 영향 |
 |---|---|---|
-| `EDGE_REPLICATION_FACTOR` | 3 | replication 모드의 R |
-| `EDGE_QUORUM_WRITE` | ⌊R/2⌋+1 | write ack 임계 명시 override (보통 자동) |
+| `EDGE_QUORUM_WRITE` | auto = ⌊R/2⌋+1 | write ack 임계 명시 override (`0` = auto) |
 | `EDGE_CHUNK_SIZE` | 4 MiB | fixed chunk size |
 | `EDGE_CHUNK_MODE` | `fixed` | `cdc` 로 설정 시 FastCDC 활성 |
 | `EDGE_WAL_PATH` | (off) | 설정 시 ADR-019 WAL 활성 |
@@ -585,9 +584,9 @@ ADR-015 Accept (2026-04-26). `kvfs-coord` daemon 신설 — placement + 메타 o
 
 이 트랙 완료 시 cluster 는 3-daemon (edge + coord + dn) — coord 가 placement·메타·일관성의 owner, edge 는 thin gateway.
 
-### 12.4 Season 6 — coord operational migration (in progress)
+### 12.4 Season 6 — coord operational migration (Ep.1~7 done)
 
-Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을 옮긴다. 끝나면 cli 가 모든 admin 을 coord 통해 함, edge 가 진짜 thin.
+Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을 옮긴다. Ep.7 까지 완료 — cli 가 모든 admin 을 coord 통해 함, edge 는 진짜 thin gateway + urlkey 자동 sync.
 
 - Ep.1: rebalance plan on coord (ADR-043). `/v1/coord/admin/rebalance/plan`. 데모 demo-chet (ח).
 - Ep.2: rebalance apply on coord (ADR-044). `COORD_DN_IO=1` → coord 가 DN HTTP I/O 보유. cli `rebalance --apply --coord`. 데모 demo-tet (ט).
@@ -595,7 +594,7 @@ Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을
 - Ep.4: EC repair on coord (ADR-046). K survivors → RS Reconstruct → 누락 shard 재배포. cli `repair --coord`. 데모 demo-kaf (כ).
 - Ep.5: DN registry mutation on coord (ADR-047). add/remove/class. cli `dns --coord {add|remove|class}`. 데모 demo-lamed (ל).
 - Ep.6: URLKey kid registry on coord (ADR-048). cli `urlkey --coord`. 데모 demo-mem (מ).
-- Ep.7 (현재): Edge urlkey.Signer propagation from coord (ADR-049). polling (`EDGE_COORD_URLKEY_POLL_INTERVAL`, default 30s). edge 가 coord 의 새 kid 를 자동 반영. 데모 demo-nun (히브리 נ).
+- Ep.7: Edge urlkey.Signer propagation from coord (ADR-049). polling (`EDGE_COORD_URLKEY_POLL_INTERVAL`, default 30s). edge 가 coord 의 새 kid 를 자동 반영. 데모 demo-nun (히브리 נ).
 
 ## 13. 다음에 읽을 것
 
@@ -616,11 +615,11 @@ Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을
 
 ### 13.3 ADR
 
-[`docs/adr/README.md`](adr/README.md) — 35 ADR, 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.
+[`docs/adr/README.md`](adr/README.md) — **45 ADR** (S1~S6), 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.
 
 ### 13.4 라이브 데모
 
-`./scripts/demo-*.sh` — α 부터 ω 까지 21개. ADR README 의 시즌 표에서 episode → 데모 매핑 확인.
+`./scripts/demo-*.sh` — **35개** = α~ω (S1~S4, 그리스 21자) + aleph~nun (S5~S6, 히브리 14자). ADR README 의 시즌 표에서 episode → 데모 매핑 확인.
 
 ---
 

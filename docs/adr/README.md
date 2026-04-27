@@ -88,7 +88,7 @@ Accepted · YYYY-MM-DD
 | [036](ADR-036-wal-batch-metrics.md) | WAL group commit observability (batch_size + durable_lag gauges) | Accepted · 2026-04-26 | `WAL.LastBatchSize` / `OldestUnsyncedAge` + `internal/edge/metrics.go` |
 | [037](ADR-037-chunker-pool-cap.md) | Chunker scratch-pool soft cap (memory pressure 대응) | Accepted · 2026-04-26 | `chunker.SetPoolCap` + `EDGE_CHUNKER_POOL_CAP_BYTES` |
 
-## Season 5 — coord 분리 (in progress, Ep.1~)
+## Season 5 — coord 분리 (closed, Ep.1~7)
 
 | # | 제목 | 상태 | 연결 · demo |
 |---|---|---|---|
@@ -99,7 +99,7 @@ Accepted · YYYY-MM-DD
 | [041](ADR-041-edge-placement-via-coord.md) | Edge routes placement decisions through coord (single source of truth) | Accepted · 2026-04-27 | `CoordClient.PlaceN` + `Server.placeN` helper · demo-vav (Ep.6) |
 | [042](ADR-042-cli-direct-coord-admin.md) | kvfs-cli direct coord admin (read-only inspect) | Accepted · 2026-04-27 | `coord /v1/coord/admin/{objects,dns}` + cli `inspect --coord` · demo-zayin (Ep.7) |
 
-## Season 6 — coord operational migration (in progress, Ep.1~)
+## Season 6 — coord operational migration (Ep.1~7 done)
 
 | # | 제목 | 상태 | 연결 · demo |
 |---|---|---|---|
@@ -111,10 +111,9 @@ Accepted · YYYY-MM-DD
 | [048](ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord (rotate/list/remove) | Accepted · 2026-04-27 | `/v1/coord/admin/urlkey{,/rotate}` + cli `urlkey --coord` · demo-mem (Ep.6) |
 | [049](ADR-049-edge-urlkey-propagation.md) | Edge urlkey.Signer propagation from coord (polling) | Accepted · 2026-04-27 | `EDGE_COORD_URLKEY_POLL_INTERVAL` + `Server.StartURLKeyPolling` + `SyncURLKeys` · demo-nun (Ep.7) |
 
-> Hebrew letters continue (chet = ח, 8th letter).
+> 데모 letter — S1~S4 = α~ω (그리스 21자, demo-alpha~demo-omega), S5~S6 = aleph~nun (히브리 14자, demo-aleph~demo-nun). 합 35.
 
-## 미작성 ADR (예상)
+## 다음 시즌 / 미작성
 
-- Season 5 Ep.2~5 의 별도 ADR 필요 시 추가 (현재로 ADR-015 이 마스터 결정).
-
-작성 시점: 해당 기능 설계 직전.
+- 차기 시즌 트랙은 [`docs/FOLLOWUP.md`](../FOLLOWUP.md) 의 P 시리즈 참조.
+- 모든 시즌 ADR 은 진행 시점에 추가 (Season 5 Ep.2 는 ADR 없이 wiring 만 — `EDGE_COORD_URL` env 으로 충분, 별도 결정 부재).

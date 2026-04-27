@@ -1,7 +1,7 @@
 # kvfs — Key-Value File System
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스.
-> **Go 1.26 · Apache 2.0 · 48 ADR · 28 blog episode · 36 라이브 데모 · 156 unit test**
+> **Go 1.26 · Apache 2.0 · 45 ADR · 28 blog episode · 35 라이브 데모 · 160 unit test**
 
 ## 이것은 무엇인가
 
@@ -14,8 +14,8 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **2** | 분산 알고리즘 | ✅ closed | HRW placement · rebalance · GC · chunking · EC |
 | **3** | 운영성 | ✅ closed | auto-trigger · EC repair · meta backup · heartbeat · multi-edge HA |
 | **4** | 성능·효율 | ✅ closed | streaming · CDC · WAL · election · sync repl · transactional Raft · micro-opts |
-| **5** | coord 분리 | ✅ closed | ADR-015. 7 episodes: skeleton → edge meta client → HA → WAL sync → txn commit → placement RPC → cli inspect |
-| **6** | coord operational migration | ▶ Ep.6 (urlkey admin) | ADR-043~048. rebalance · GC · repair · DN registry · URLKey rotation — all on coord |
+| **5** | coord 분리 | ✅ closed (Ep.1~7) | ADR-015·038~042. skeleton → edge meta client → HA → WAL sync → txn commit → placement RPC → cli inspect |
+| **6** | coord operational migration | ✅ Ep.1~7 done | ADR-043~049. rebalance · GC · repair · DN registry · URLKey rotation/propagation — all on coord |
 
 이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 목표는 production 이 아니라
 **이해 가능한 레퍼런스**.
@@ -36,20 +36,24 @@ cd kvfs
 ./scripts/demo-epsilon.sh
 ```
 
-전체 15개 데모 라이브 PASS — Season 별 매핑은 아래 ADR 표 참조 (`scripts/demo-*.sh`).
+전체 35개 데모 라이브 PASS — Season 별 매핑은 아래 ADR 표 참조 (`scripts/demo-*.sh`). 그리스 letter (α~ω, 21개) = S1~S4, 히브리 letter (aleph~nun, 14개) = S5~S6.
 
 ## 아키텍처
 
 ```
-   Client ─HTTP+UrlKey─► kvfs-edge ─HTTP REST─► kvfs-dn (× N)
-                            │                      │
-                            ├─ placement (HRW)     └─ chunks/<sha256[0:2]>/<rest>
-                            ├─ chunker / EC
-                            ├─ rebalance / GC / repair
-                            ├─ heartbeat (DN liveness)
-                            ├─ snapshot scheduler (auto backup)
-                            └─ bbolt meta (object → chunk[s] / shards)
+                                   ┌─ kvfs-coord (× N) ──┐  (S5 이후 옵션)
+                                   │  placement·메타 owner │
+                                   │  Raft + WAL replication │
+   Client ─HTTP+UrlKey─► kvfs-edge ─┴─ HTTP REST ──► kvfs-dn (× N)
+                            │                          │
+                            ├─ thin gateway              └─ chunks/<sha256[0:2]>/<rest>
+                            ├─ chunker / EC encoder
+                            ├─ urlkey verify (multi-kid)
+                            └─ (coord-proxy 모드 OR 인라인 coordinator)
 ```
+
+- **2-daemon 모드** (S1~S4 호환): edge 가 coordinator 인라인 — placement·rebalance·GC·repair 모두 edge 안에서.
+- **3-daemon 모드** (S5~): `EDGE_COORD_URL` 설정 시 edge 는 thin gateway, coord 가 placement·메타·일관성 owner. coord 는 Raft (`COORD_PEERS`) + WAL replication (`COORD_WAL_PATH`) + transactional commit (`COORD_TRANSACTIONAL_RAFT`) 으로 HA + zero-RPO 가능. cli 는 coord 에 직접 admin (`--coord URL`).
 
 - 처음 읽기: [`docs/GUIDE.md`](docs/GUIDE.md) (또는 브라우저용 [`docs/guide.html`](docs/guide.html)) — 13개 챕터 walkthrough
 - 짧은 reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
@@ -92,7 +96,7 @@ cd kvfs
 | [016](docs/adr/ADR-016-auto-snapshot-scheduler.md) | Auto-snapshot scheduler (ticker + retention) | π | [12](blog/12-auto-snapshot.md) |
 | [022](docs/adr/ADR-022-multi-edge-ha.md) | Multi-edge HA (read-replica + atomic.Pointer hot-swap) | ρ | [13](blog/13-multi-edge-ha.md) |
 
-### Season 4 (성능·효율, 진행 중)
+### Season 4 (성능·효율)
 
 | ADR | 주제 | Demo | Blog |
 |---|---|---|---|
@@ -101,17 +105,45 @@ cd kvfs
 | [031](docs/adr/ADR-031-auto-leader-election.md) | Auto leader election (Raft-style, multi-edge HA) | υ | [16](blog/16-leader-election.md) |
 | [019](docs/adr/ADR-019-wal-incremental-backup.md) | WAL of metadata mutations (audit + replay) | φ | [17](blog/17-wal.md) |
 
-### 운영 보강 (Accepted)
+EC streaming = Ep.6 follow-up (demo-χ). EC+CDC = Ep.7 follow-up (demo-ψ). Sync WAL push = Ep.8 follow-up (demo-ω).
+
+### 운영 보강 + post-S4 wave (Accepted)
 
 | ADR | 주제 |
 |---|---|
 | [027](docs/adr/ADR-027-dynamic-dn-registry.md) | Dynamic DN registry (admin endpoint + bbolt 영속) |
 | [028](docs/adr/ADR-028-urlkey-rotation.md) | UrlKey kid rotation (multi-key Signer) |
 | [029](docs/adr/ADR-029-optional-tls.md) | Optional TLS / mTLS (env-driven opt-in) |
+| [032](docs/adr/ADR-032-nfs-gateway-deferred.md) | NFS gateway — deferred (scope 평가) |
+| [033](docs/adr/ADR-033-strict-replication.md) | Strict replication (informational) |
+| [034](docs/adr/ADR-034-transactional-raft.md) | Transactional Raft (replicate-then-commit) |
+| [035](docs/adr/ADR-035-micro-optimizations.md) | WAL group commit · 3-region CDC · chunker pool |
+| [036](docs/adr/ADR-036-wal-batch-metrics.md) | WAL group commit observability gauges |
+| [037](docs/adr/ADR-037-chunker-pool-cap.md) | Chunker scratch-pool soft cap |
 
-### 예정 ([P4-02](docs/FOLLOWUP.md))
+### Season 5 (coord 분리)
 
-ADR-018 CDC chunking · ADR-019 WAL/incremental · ADR-031 자동 leader election
+| ADR | 주제 | Demo |
+|---|---|---|
+| [015](docs/adr/ADR-015-coordinator-daemon-split.md) | Coordinator daemon 분리 (ADR-002 supersede) | aleph (Ep.1) |
+| — | edge → coord meta client (`EDGE_COORD_URL`) | bet (Ep.2) |
+| [038](docs/adr/ADR-038-coord-ha-via-raft.md) | Coord HA via Raft (ADR-031 reuse) | gimel (Ep.3) |
+| [039](docs/adr/ADR-039-coord-wal-replication.md) | Coord-to-coord WAL replication | dalet (Ep.4) |
+| [040](docs/adr/ADR-040-coord-transactional-commit.md) | Coord transactional commit (ADR-034 port) | he (Ep.5) |
+| [041](docs/adr/ADR-041-edge-placement-via-coord.md) | Edge → coord placement RPC (single source of truth) | vav (Ep.6) |
+| [042](docs/adr/ADR-042-cli-direct-coord-admin.md) | kvfs-cli direct coord admin (read-only inspect) | zayin (Ep.7) |
+
+### Season 6 (coord operational migration)
+
+| ADR | 주제 | Demo |
+|---|---|---|
+| [043](docs/adr/ADR-043-coord-rebalance-plan.md) | Rebalance plan on coord | chet (Ep.1) |
+| [044](docs/adr/ADR-044-coord-rebalance-apply.md) | Rebalance apply on coord (`COORD_DN_IO`) | tet (Ep.2) |
+| [045](docs/adr/ADR-045-coord-gc.md) | GC plan + apply on coord | yod (Ep.3) |
+| [046](docs/adr/ADR-046-coord-repair.md) | EC repair on coord | kaf (Ep.4) |
+| [047](docs/adr/ADR-047-coord-dns-admin.md) | DN registry mutation on coord | lamed (Ep.5) |
+| [048](docs/adr/ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord | mem (Ep.6) |
+| [049](docs/adr/ADR-049-edge-urlkey-propagation.md) | Edge urlkey.Signer polling propagation | nun (Ep.7) |
 
 ## 환경 변수
 
@@ -140,9 +172,26 @@ ADR-018 CDC chunking · ADR-019 WAL/incremental · ADR-031 자동 leader electio
 | `EDGE_ELECTION_HB_INTERVAL` | 500ms | 031 | leader heartbeat 주기 |
 | `EDGE_ELECTION_TIMEOUT_MIN/MAX` | 1500ms / 3000ms | 031 | follower election timer (jitter range) |
 | `EDGE_WAL_PATH` | (off) | 019 | metadata mutation WAL file (opt-in audit log) |
+| `EDGE_WAL_BATCH_INTERVAL` | (off) | 035 | group commit interval (e.g. `5ms`) |
+| `EDGE_STRICT_REPL` | 0 | 033 | informational strict replication 503 on quorum miss |
+| `EDGE_TRANSACTIONAL_RAFT` | 0 | 034 | replicate-then-commit (PutObject only) |
+| `EDGE_PLACEMENT_PREFER` | (off) | — | DN class bias (e.g. `hot`) |
+| `EDGE_METRICS` | 1 | 036/037 | `/metrics` Prometheus endpoint |
+| `EDGE_CHUNKER_POOL_CAP_BYTES` | (off) | 037 | chunker scratch-pool soft cap |
 | `EDGE_TLS_CERT/KEY`, `EDGE_DN_TLS_CA/CLIENT_CERT/KEY` | (off) | 029 | TLS / mTLS |
 | `EDGE_SKIP_AUTH` | 0 | — | DEMO 전용 (production 금지) |
-| `DN_DATA_DIR`, `DN_TLS_CERT/KEY/CLIENT_CA` | — | 002/029 | DN 측 |
+| `EDGE_COORD_URL` | (off) | 015 | coord proxy mode 활성 (메타·placement 위임) |
+| `EDGE_COORD_URLKEY_POLL_INTERVAL` | 30s | 049 | coord urlkey 변경 polling 주기 |
+| `EDGE_COORD_LOOKUP_CACHE_TTL` | (off) | — | opt-in coord lookup 결과 캐시 TTL (e.g. `2s`) |
+| `COORD_ADDR` | `:8090` | 015 | coord HTTP bind |
+| `COORD_DATA_DIR` | `./coord-data` | 015 | coord bbolt 디렉토리 |
+| `COORD_DNS` | required | 015 | coord 가 알 DN addrs (comma-sep) |
+| `COORD_PEERS` / `COORD_SELF_URL` | (off) | 038 | coord-side election peer set |
+| `COORD_WAL_PATH` | (off) | 039 | coord-to-coord WAL replication |
+| `COORD_TRANSACTIONAL_RAFT` | 0 | 040 | coord replicate-then-commit (Elector + WAL 필수) |
+| `COORD_DN_IO` | 0 | 044 | coord 가 chunk I/O — rebalance/gc/repair apply on coord |
+| `DN_ADDR`, `DN_DATA_DIR`, `DN_ID` | — | 002 | DN 측 |
+| `DN_TLS_CERT/KEY/CLIENT_CA` | (off) | 029 | DN-side TLS / mTLS |
 
 ## 다음 작업
 

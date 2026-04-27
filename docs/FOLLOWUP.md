@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-26** · Season 4 close + P4-09 wave + 아키텍처 가이드 + doc-drift CI 까지 반영.
+문서 현행화 일자: **2026-04-27** · Season 5 close (Ep.1~7, ADR-015·038~042) + Season 6 Ep.1~7 (ADR-043~049) + 시즌 5/6 코멘트 refresh 까지 반영.
 
 ## 우선순위 맵
 
@@ -157,14 +157,14 @@
 
 ---
 
-## 현재 상태 요약 (2026-04-26)
+## 현재 상태 요약 (2026-04-27)
 
-- **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `f9a28b1` (doc-drift CI)
-- **테스트**: **138 unit tests PASS** (chunker +3 / store +3 ADR-035 회귀 추가). `go vet` 클린
-- **데모**: α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ φ χ ψ ω = 21개 (greek letter 전부) 라이브 PASS
-- **ADR**: 35 Accepted (ADR-001~035, 미작성 015/020/021/023/026/036/037)
-- **Blog**: Ep.1~17 완성. Ep.18~25 가 P5-06 punch list
-- **시즌**: S1·S2·S3·S4 모두 closed. S5 진입은 P5-03 (Coordinator 분리) 채택 시 자동 트리거
+- **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
+- **테스트**: **160 test funcs PASS** (S5/S6 단위 테스트 누적). `go vet` + staticcheck 클린
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) = **35개** 라이브 PASS
+- **ADR**: **45 Accepted** — ADR-001~049 중 020/021/023/026 4개만 결번 (작성 시점에 결정 부재). post-S4 wave: 032~037, S5: 015·038~042, S6: 043~049
+- **Blog**: Ep.1~28 완성 (P5-06 + P5-09 wave 모두 마감). S5/S6 episode 는 미작성 — 후속 작업 후보
+- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 
 ## 업데이트 규칙
 
