@@ -343,21 +343,30 @@ func (s *Server) handleAntiEntropyRun(w http.ResponseWriter, r *http.Request) {
 
 // AntiEntropyRepairReport: result of POST /v1/coord/admin/anti-entropy/repair.
 // Bundles the original audit + per-DN repair attempts (ADR-055).
+// ADR-056 added: corrupt-chunk repair (sourced from /chunks/scrub-status)
+// and DryRun mode (preview without copying bytes).
 type AntiEntropyRepairReport struct {
-	Audit       *AntiEntropyReport       `json:"audit"`
-	Repairs     []ChunkRepairOutcome     `json:"repairs"`
-	Skipped     []ChunkRepairOutcome     `json:"skipped"` // EC + unreachable + no-source
-	StartedAt   time.Time                `json:"started_at"`
-	Duration    string                   `json:"duration"`
+	Audit     *AntiEntropyReport   `json:"audit"`
+	DryRun    bool                 `json:"dry_run"`
+	Repairs   []ChunkRepairOutcome `json:"repairs"`
+	Skipped   []ChunkRepairOutcome `json:"skipped"` // EC + unreachable + no-source
+	StartedAt time.Time            `json:"started_at"`
+	Duration  string               `json:"duration"`
 }
 
 // ChunkRepairOutcome: one row per (dn, chunk_id) the worker tried to fix.
+//
+// Reason ("missing" or "corrupt") tells operator WHY repair was needed:
+//   - missing: chunk file absent on the DN (inventory drift, ADR-054)
+//   - corrupt: scrubber found sha mismatch on the DN's copy (bit-rot, ADR-054)
 type ChunkRepairOutcome struct {
 	TargetDN string `json:"target_dn"`
 	ChunkID  string `json:"chunk_id"`
 	SourceDN string `json:"source_dn,omitempty"` // empty if Skipped
 	Mode     string `json:"mode"`                // "replication" or "ec-deferred"
+	Reason   string `json:"reason"`              // "missing" | "corrupt"
 	OK       bool   `json:"ok"`
+	Planned  bool   `json:"planned,omitempty"`   // DryRun: would have run
 	Err      string `json:"err,omitempty"`
 }
 
@@ -374,13 +383,28 @@ type ChunkRepairOutcome struct {
 //
 // Requires Coord (DN-IO) — without it we have no way to read/write
 // chunks from coord. Returns 503 at the handler level if missing.
-func (s *Server) runAntiEntropyRepair(ctx context.Context) (*AntiEntropyRepairReport, error) {
+//
+// ADR-056 extends the original ADR-055 design with two flags packed
+// into a single AntiEntropyRepairOpts struct:
+//   - Corrupt: also fetch each DN's /chunks/scrub-status, treat
+//     scrubber-flagged chunk_ids as repair candidates (overwrite the
+//     bad bytes with a healthy replica's copy). DN's PUT handler
+//     validates sha256 = chunk_id, so a healthy source guarantees the
+//     overwrite restores correctness.
+//   - DryRun: skip the actual ReadChunk/PutChunkTo, mark each outcome
+//     Planned=true so operator can preview impact before committing.
+type AntiEntropyRepairOpts struct {
+	Corrupt bool
+	DryRun  bool
+}
+
+func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepairOpts) (*AntiEntropyRepairReport, error) {
 	startedAt := time.Now().UTC()
 	audit, err := s.runAntiEntropy(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := &AntiEntropyRepairReport{Audit: audit, StartedAt: startedAt}
+	out := &AntiEntropyRepairReport{Audit: audit, DryRun: opts.DryRun, StartedAt: startedAt}
 
 	// Build chunk_id → []dn (which DNs are supposed to have it). Used
 	// as the source candidate list per repair attempt.
@@ -423,60 +447,152 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context) (*AntiEntropyRepairRe
 		dnHas[e.DN] = miss // we'll invert during lookup
 	}
 
+	// ADR-056: also gather scrubber-detected corrupt chunks per DN. We
+	// fetch /chunks/scrub-status from each reachable DN and treat its
+	// `corrupt` ids as additional repair candidates. The audit DOESN'T
+	// see these (the file is on disk so MissingFromDN doesn't list it),
+	// only the scrubber knows the bytes are wrong.
+	corruptByDN := make(map[string][]string)
+	if opts.Corrupt {
+		corruptByDN = s.collectCorruptByDN(ctx, audit.DNs)
+	}
+
+	// Repair pass: per-DN. Iterate inventory missing first, then corrupt.
+	// `repairOne` is the shared body so dry-run / fail / source-missing
+	// branches stay in one place.
+	repairOne := func(targetDN, chunkID, reason string) {
+		if _, isEC := ecChunks[chunkID]; isEC {
+			out.Skipped = append(out.Skipped, ChunkRepairOutcome{
+				TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
+				Mode: "ec-deferred",
+				Err:  "EC chunk — use kvfs-cli repair --apply --coord (ADR-046)",
+			})
+			return
+		}
+		// Find a healthy source: a DN that owns the chunk per ObjectMeta,
+		// is reachable, doesn't have it listed in its own MissingFromDN,
+		// AND (for corrupt-mode) doesn't itself report the chunk as corrupt.
+		var srcDN string
+		for _, owner := range chunkOwners[chunkID] {
+			if owner == targetDN {
+				continue
+			}
+			ownerMissing := dnHas[owner]
+			if ownerMissing == nil {
+				continue // owner unreachable
+			}
+			if _, gone := ownerMissing[chunkID]; gone {
+				continue
+			}
+			if hasCorrupt(corruptByDN[owner], chunkID) {
+				continue
+			}
+			srcDN = owner
+			break
+		}
+		if srcDN == "" {
+			out.Skipped = append(out.Skipped, ChunkRepairOutcome{
+				TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
+				Mode: "no-source",
+				Err:  "no healthy replica found",
+			})
+			return
+		}
+		if opts.DryRun {
+			out.Repairs = append(out.Repairs, ChunkRepairOutcome{
+				TargetDN: targetDN, ChunkID: chunkID, SourceDN: srcDN,
+				Mode: "replication", Reason: reason, Planned: true,
+			})
+			return
+		}
+		oc := s.copyChunk(ctx, srcDN, targetDN, chunkID, reason == "corrupt")
+		oc.Reason = reason
+		out.Repairs = append(out.Repairs, oc)
+	}
+
 	for _, e := range audit.DNs {
 		if !e.Reachable {
 			for _, id := range e.MissingFromDN {
 				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
-					TargetDN: e.DN, ChunkID: id, OK: false,
+					TargetDN: e.DN, ChunkID: id, Reason: "missing",
 					Err: "target DN unreachable", Mode: "skip",
 				})
 			}
 			continue
 		}
 		for _, missID := range e.MissingFromDN {
-			if _, isEC := ecChunks[missID]; isEC {
-				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
-					TargetDN: e.DN, ChunkID: missID,
-					Mode: "ec-deferred",
-					Err:  "EC chunk — use kvfs-cli repair --apply --coord (ADR-046)",
-				})
-				continue
-			}
-			// Find a healthy source: a DN that owns the chunk per ObjectMeta
-			// AND doesn't have it listed in its own MissingFromDN.
-			var srcDN string
-			for _, owner := range chunkOwners[missID] {
-				if owner == e.DN {
-					continue
-				}
-				ownerMissing := dnHas[owner]
-				if ownerMissing == nil {
-					continue // owner unreachable
-				}
-				if _, gone := ownerMissing[missID]; gone {
-					continue
-				}
-				srcDN = owner
-				break
-			}
-			if srcDN == "" {
-				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
-					TargetDN: e.DN, ChunkID: missID,
-					Mode: "no-source",
-					Err:  "no healthy replica found",
-				})
-				continue
-			}
-			oc := s.copyChunk(ctx, srcDN, e.DN, missID)
-			out.Repairs = append(out.Repairs, oc)
+			repairOne(e.DN, missID, "missing")
+		}
+		// ADR-056: scrubber-detected corrupt list. Independent of the
+		// audit's MissingFromDN — chunk file IS on disk, just bytes wrong.
+		for _, corruptID := range corruptByDN[e.DN] {
+			repairOne(e.DN, corruptID, "corrupt")
 		}
 	}
 	out.Duration = time.Since(startedAt).String()
 	return out, nil
 }
 
+// collectCorruptByDN fetches /chunks/scrub-status from each reachable DN
+// and returns a map of dn_addr → list of corrupt chunk_ids. Best-effort:
+// unreachable DNs / fetch errors yield an empty entry (already handled
+// upstream — those DNs were marked unreachable in the audit).
+func (s *Server) collectCorruptByDN(ctx context.Context, dns []DNAuditEntry) map[string][]string {
+	out := make(map[string][]string)
+	for _, e := range dns {
+		if !e.Reachable {
+			continue
+		}
+		corrupt, err := fetchDNCorrupt(ctx, e.DN)
+		if err != nil {
+			s.Log.Debug("scrub-status fetch failed", "dn", e.DN, "err", err)
+			continue
+		}
+		out[e.DN] = corrupt
+	}
+	return out
+}
+
+// fetchDNCorrupt: GET http://<dn>/chunks/scrub-status, return .corrupt.
+func fetchDNCorrupt(ctx context.Context, dnAddr string) ([]string, error) {
+	url := "http://" + dnAddr + "/chunks/scrub-status"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Corrupt []string `json:"corrupt"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	return body.Corrupt, nil
+}
+
+// hasCorrupt: linear scan, fine for small lists (corrupt sets are
+// expected to be small in healthy clusters; binary search would be
+// premature optimization).
+func hasCorrupt(list []string, id string) bool {
+	for _, c := range list {
+		if c == id {
+			return true
+		}
+	}
+	return false
+}
+
 // copyChunk: read chunkID from src, PUT to target, log the outcome.
-func (s *Server) copyChunk(ctx context.Context, src, target, chunkID string) ChunkRepairOutcome {
+// `force` triggers ADR-056 overwrite path (used for corrupt-repair where
+// the target already has a bad file; idempotent PUT would skip).
+func (s *Server) copyChunk(ctx context.Context, src, target, chunkID string, force bool) ChunkRepairOutcome {
 	oc := ChunkRepairOutcome{
 		TargetDN: target, ChunkID: chunkID, SourceDN: src, Mode: "replication",
 	}
@@ -485,7 +601,11 @@ func (s *Server) copyChunk(ctx context.Context, src, target, chunkID string) Chu
 		oc.Err = "read from " + src + ": " + err.Error()
 		return oc
 	}
-	if perr := s.Coord.PutChunkTo(ctx, target, chunkID, body); perr != nil {
+	put := s.Coord.PutChunkTo
+	if force {
+		put = s.Coord.PutChunkToForce
+	}
+	if perr := put(ctx, target, chunkID, body); perr != nil {
 		oc.Err = "put to " + target + ": " + perr.Error()
 		return oc
 	}
@@ -496,6 +616,13 @@ func (s *Server) copyChunk(ctx context.Context, src, target, chunkID string) Chu
 // handleAntiEntropyRepair serves POST /v1/coord/admin/anti-entropy/repair.
 // Audits + auto-fixes replication chunks. EC paths return skipped.
 // 503 if Coord (DN-IO) is unset — repair needs to actually move bytes.
+//
+// Query parameters (ADR-056):
+//   - corrupt=1 : also repair scrubber-detected corrupt chunks per DN
+//                 (default off — keeps repair scope to inventory-missing
+//                  unless operator opts in).
+//   - dry_run=1 : preview-only; mark each candidate Planned=true and
+//                 do not call ReadChunk/PutChunkTo. No bytes moved.
 func (s *Server) handleAntiEntropyRepair(w http.ResponseWriter, r *http.Request) {
 	if s.requireLeader(w) {
 		return
@@ -505,7 +632,12 @@ func (s *Server) handleAntiEntropyRepair(w http.ResponseWriter, r *http.Request)
 			fmt.Errorf("anti-entropy repair requires COORD_DN_IO=1 (ADR-044)"))
 		return
 	}
-	rep, err := s.runAntiEntropyRepair(r.Context())
+	q := r.URL.Query()
+	opts := AntiEntropyRepairOpts{
+		Corrupt: q.Get("corrupt") == "1",
+		DryRun:  q.Get("dry_run") == "1",
+	}
+	rep, err := s.runAntiEntropyRepair(r.Context(), opts)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

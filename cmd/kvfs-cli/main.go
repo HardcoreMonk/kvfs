@@ -1672,6 +1672,8 @@ func cmdAntiEntropy(args []string) {
 	sub := args[0]
 	fs := flag.NewFlagSet("anti-entropy "+sub, flag.ExitOnError)
 	coordURL := fs.String("coord", "", "coord base URL (required)")
+	corruptFlag := fs.Bool("corrupt", false, "ADR-056: also repair scrubber-detected corrupt chunks (repair only)")
+	dryRunFlag := fs.Bool("dry-run", false, "ADR-056: preview which chunks would be repaired without copying bytes (repair only)")
 	fs.Parse(args[1:])
 
 	switch sub {
@@ -1692,11 +1694,24 @@ func cmdAntiEntropy(args []string) {
 		// ADR-055: detect-and-repair. Replication chunks copied from a
 		// healthy replica; EC chunks reported as skipped (use existing
 		// `kvfs-cli repair --apply --coord URL`, ADR-046).
+		// ADR-056 adds --corrupt (also fix scrubber-detected) and
+		// --dry-run (preview).
 		if *coordURL == "" {
 			fmt.Fprintln(os.Stderr, "anti-entropy repair: --coord URL required")
 			os.Exit(2)
 		}
-		body := mustHTTPJSON(http.MethodPost, *coordURL+"/v1/coord/admin/anti-entropy/repair", "")
+		path := "/v1/coord/admin/anti-entropy/repair"
+		var qs []string
+		if *corruptFlag {
+			qs = append(qs, "corrupt=1")
+		}
+		if *dryRunFlag {
+			qs = append(qs, "dry_run=1")
+		}
+		if len(qs) > 0 {
+			path += "?" + strings.Join(qs, "&")
+		}
+		body := mustHTTPJSON(http.MethodPost, *coordURL+path, "")
 		var rep map[string]any
 		if err := json.Unmarshal(body, &rep); err != nil {
 			fmt.Println(string(body))

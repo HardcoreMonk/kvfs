@@ -435,10 +435,35 @@ func (c *Coordinator) DeleteChunkFrom(ctx context.Context, addr, chunkID string)
 // PutChunkTo writes a chunk to a single DN address (no fanout, no quorum).
 // Used by rebalance to copy an existing chunk to a specific target DN.
 //
-// Idempotent: DN's PUT /chunk/{id} overwrites if same chunk_id (content-addressable).
-// Same body → same chunk_id → safe to re-run.
+// Idempotent: DN's PUT /chunk/{id} skips if file exists with same chunk_id
+// (content-addressable invariant). Same body → same chunk_id → safe to re-run.
 func (c *Coordinator) PutChunkTo(ctx context.Context, addr, chunkID string, data []byte) error {
 	return c.putChunk(ctx, addr, chunkID, data)
+}
+
+// PutChunkToForce (ADR-056): force-overwrite variant. DN's PUT honors a
+// ?force=1 query param that bypasses the existence-skip optimization
+// and rewrites the file. Used by anti-entropy corrupt-repair where the
+// existing on-disk bytes are wrong but the filename's chunk_id is right
+// — vanilla PUT would see "file exists" and skip, leaving the corrupt
+// bytes in place. Body still validated against chunk_id by DN, so we
+// can't accidentally write something inconsistent.
+func (c *Coordinator) PutChunkToForce(ctx context.Context, addr, chunkID string, data []byte) error {
+	url := fmt.Sprintf("%s://%s/chunk/%s?force=1", c.dnScheme, addr, chunkID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("PUT force chunk %s @ %s: %d: %s", chunkID, addr, resp.StatusCode, string(b))
+	}
+	return nil
 }
 
 // DeleteChunk fires a DELETE to each replica (best-effort).

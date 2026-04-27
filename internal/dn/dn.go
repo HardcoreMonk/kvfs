@@ -137,11 +137,18 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := s.chunkPath(id)
-	if _, err := os.Stat(path); err == nil {
-		// idempotent: if chunk already stored with same content, 200 OK.
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, `{"dn":"%s","status":"already-stored","size":%d}`, s.id, len(body))
-		return
+	// ADR-056: ?force=1 bypasses the idempotent-existence skip. Used by
+	// anti-entropy corrupt-repair where the file IS on disk but the bytes
+	// are wrong (sha mismatch caught by scrubber). Body has already been
+	// validated against id above so we can safely overwrite.
+	force := r.URL.Query().Get("force") == "1"
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			// idempotent: if chunk already stored with same content, 200 OK.
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"dn":"%s","status":"already-stored","size":%d}`, s.id, len(body))
+			return
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
