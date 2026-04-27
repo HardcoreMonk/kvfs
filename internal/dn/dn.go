@@ -43,6 +43,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -62,6 +63,11 @@ type Server struct {
 	// metrics (exposed via /healthz as a courtesy)
 	chunkCount atomic.Int64
 	bytesTotal atomic.Int64
+
+	// Anti-entropy support (ADR-054). Default state = disabled (zero
+	// value). Operator opts in via StartScrubber().
+	scrubMu sync.Mutex
+	scrub   scrubState
 }
 
 // NewServer constructs a Server and ensures the chunks directory exists.
@@ -82,6 +88,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /chunk/{id}", s.handlePut)
 	mux.HandleFunc("DELETE /chunk/{id}", s.handleDelete)
 	mux.HandleFunc("GET /chunks", s.handleListChunks)
+	// ADR-054 (S7 Ep.4) anti-entropy:
+	mux.HandleFunc("GET /chunks/merkle", s.handleMerkle)
+	mux.HandleFunc("GET /chunks/merkle/bucket", s.handleMerkleBucket)
+	mux.HandleFunc("GET /chunks/scrub-status", s.handleScrubStatus)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return logRequests(mux)
 }

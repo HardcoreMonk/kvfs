@@ -177,6 +177,10 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/coord/admin/urlkey", s.handleAdminListURLKeys)
 	mux.HandleFunc("POST /v1/coord/admin/urlkey/rotate", s.handleAdminRotateURLKey)
 	mux.HandleFunc("DELETE /v1/coord/admin/urlkey", s.handleAdminRemoveURLKey)
+	// ADR-054 (Season 7 Ep.4): one-shot anti-entropy audit. Leader-only
+	// because it walks the authoritative ObjectMeta. Returns per-DN diff
+	// of expected vs actual chunk inventory using DN-side Merkle trees.
+	mux.HandleFunc("POST /v1/coord/admin/anti-entropy/run", s.handleAntiEntropyRun)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)

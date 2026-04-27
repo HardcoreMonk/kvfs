@@ -86,6 +86,8 @@ func main() {
 		cmdRole(os.Args[2:])
 	case "wal":
 		cmdWAL(os.Args[2:])
+	case "anti-entropy":
+		cmdAntiEntropy(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -1650,5 +1652,45 @@ func cmdWALStream(args []string) {
 	}
 	if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
 		fail(err)
+	}
+}
+
+// cmdAntiEntropy: ADR-054 (S7 Ep.4) — trigger one-shot anti-entropy
+// audit on coord. Coord-only command (audit walks the authoritative
+// ObjectMeta, which lives on coord since ADR-015).
+//
+// Usage:
+//   kvfs-cli anti-entropy run --coord http://coord1:9000
+//
+// Output: per-DN summary (reachable, expected/actual chunk count,
+// root match, missing/extra ids when divergent).
+func cmdAntiEntropy(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "anti-entropy: missing subcommand (run)")
+		os.Exit(2)
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("anti-entropy "+sub, flag.ExitOnError)
+	coordURL := fs.String("coord", "", "coord base URL (required)")
+	fs.Parse(args[1:])
+
+	switch sub {
+	case "run":
+		if *coordURL == "" {
+			fmt.Fprintln(os.Stderr, "anti-entropy run: --coord URL required")
+			os.Exit(2)
+		}
+		body := mustHTTPJSON(http.MethodPost, *coordURL+"/v1/coord/admin/anti-entropy/run", "")
+		// Pretty-print: parse, then re-emit indented.
+		var rep map[string]any
+		if err := json.Unmarshal(body, &rep); err != nil {
+			fmt.Println(string(body))
+			return
+		}
+		out, _ := json.MarshalIndent(rep, "", "  ")
+		fmt.Println(string(out))
+	default:
+		fmt.Fprintf(os.Stderr, "anti-entropy: unknown subcommand %q (want run)\n", sub)
+		os.Exit(2)
 	}
 }

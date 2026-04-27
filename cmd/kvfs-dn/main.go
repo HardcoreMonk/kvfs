@@ -62,6 +62,19 @@ func main() {
 	if err != nil {
 		fatal(err.Error())
 	}
+
+	// ADR-054 (S7 Ep.4): opt-in bit-rot scrubber. DN_SCRUB_INTERVAL is
+	// the per-chunk pacing — e.g. "100ms" → ~10 chunks/sec, full-pass
+	// time = N × 100 ms. Empty / unset disables (default off; production
+	// turns on, demo turns on with a fast interval).
+	var scrubDur time.Duration
+	if v := envOr("DN_SCRUB_INTERVAL", ""); v != "" {
+		var perr error
+		scrubDur, perr = time.ParseDuration(v)
+		if perr != nil {
+			fatal("DN_SCRUB_INTERVAL parse: " + perr.Error())
+		}
+	}
 	tlsCfg, terr := buildServerTLS(log)
 	if terr != nil {
 		fatal("TLS: " + terr.Error())
@@ -76,6 +89,11 @@ func main() {
 	// graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if scrubDur > 0 {
+		log.Info("kvfs-dn scrubber enabled (ADR-054)", "interval", scrubDur)
+		srv.StartScrubber(ctx, scrubDur)
+	}
 
 	tlsCert := envOr("DN_TLS_CERT", "")
 	tlsKey := envOr("DN_TLS_KEY", "")

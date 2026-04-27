@@ -13,7 +13,7 @@
 - **P5**: post-Season-4 wave — 모두 완료
 - **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
-- **P8**: Frame-1+2 100% wave — P8-01·02·03·06 DONE, P8-04 (Season 7) + P8-05·07 (저우선) 잔존
+- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06 DONE (Frame 1+2 = 100% 도달), P8-05·07 (저우선) 잔존
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -113,7 +113,12 @@
 - ~~**Ep.1 (ADR-051)**: Failure domain hierarchy~~ — **DONE 2026-04-27**. `placement.Node.Domain` + `PickByDomain` greedy walk + admin endpoint + cli `dns domain` + demo-samekh (3 racks × 2 DN, R=3 spread + EC 4+2 per-stripe spread). 3 unit tests + ADR-051 + blog Ep.43.
 - ~~**Ep.2 (ADR-052)**: Degraded read~~ — **DONE 2026-04-27**. `Server.parallelFetchShards` (K+M goroutine, first-K-wins, cancel + drain) + `kvfs_ec_degraded_read_total` metric (data shards missing 시) + demo-ayin (1MB EC 4+2, 2 DN kill, GET 정상). 3 unit tests + ADR-052 + blog Ep.44.
 - ~~**Ep.3 (ADR-053)**: Tunable consistency~~ — **DONE 2026-04-27**. `X-KVFS-W` + `X-KVFS-R` 헤더 + `WriteChunkToAddrsW` + `readChunkAgreement` (sha256 agreement = free integrity probe) + `kvfs_tunable_quorum_total{op,value}` metric + demo-pe (9 stages: default·invalid·strong·weak·R=3 agreement). 3 unit tests + ADR-053 + blog Ep.45. **부수 fix**: handleGet 의 phantom Content-Length 정정 (502 응답에 잘못된 CL 빼기).
-- Ep.4 (ADR-054): **Anti-entropy / Merkle tree** — DN-to-DN periodic hash compare, silent corruption 자동 발견.
+- ~~**Ep.4 (ADR-054)**: Anti-entropy / Merkle tree~~ — **DONE 2026-04-27**. DN `/chunks/merkle` (256-bucket flat tree) + `/chunks/merkle/bucket` + `/chunks/scrub-status` + 백그라운드 scrubber (`DN_SCRUB_INTERVAL`). Coord `/v1/coord/admin/anti-entropy/run` worker (expected vs actual per-DN diff via Merkle root → bucket → enumerate). cli `anti-entropy run --coord URL`. demo-tsadi 6 stages (clean / inventory drift / bit-rot 모두 detect). 4 unit tests + ADR-054 + blog Ep.46. **S7 close → frame 2 = 100%**.
+
+### P8-04 마감 — Frame 1 + Frame 2 = 100%
+- Frame 1 (헌장 — 살아있는 reference): **100%** (P8-03 마감)
+- Frame 2 (textbook primitives): **100%** (P8-04 4 ep 모두 마감)
+- 다음 wave 결정 펜딩 — auto-repair / scheduled audit / multi-tier Merkle 등 ADR-054 후속, 또는 새 시즌.
 - ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
 
 ### [P8-05] Phase 1 chaos test 의 Phase D drift check 정확도 개선
@@ -210,10 +215,10 @@
 ## 현재 상태 요약 (2026-04-27)
 
 - **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
-- **테스트**: **170 test funcs PASS** (P8-06 +1, S7 Ep.1 +3, Ep.2 +3, Ep.3 +3 incl ParseQuorumHeader subtests). `go vet` + staticcheck 클린
-- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + samekh + ayin + pe (S7 Ep.1~3) = **38개** 라이브 PASS
-- **ADR**: **49 Accepted** — ADR-001~053 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050, S7: 051·052·053
-- **Blog**: Ep.1~45 완성. S5/S6 blog backfill (P8-03) 마감 + S7 Ep.1~3 (Ep.43~45)
+- **테스트**: **174 test funcs PASS** (P8-06 +1, S7 Ep.1 +3, Ep.2 +3, Ep.3 +3, Ep.4 +4 dn merkle/scrub). `go vet` + staticcheck 클린
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) = **39개** 라이브 PASS
+- **ADR**: **50 Accepted** — ADR-001~054 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050, S7: 051·052·053·054
+- **Blog**: Ep.1~46 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) — frame 1+2 모두 마감
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 
