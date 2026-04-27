@@ -13,7 +13,7 @@
 - **P5**: post-Season-4 wave — 모두 완료
 - **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
-- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08·09·10·11·12 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish), P8-05·07·13 (한계효용 polish, 저우선) 잔존
+- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~13 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair), P8-05·07·14 (한계효용 polish, 저우선) 잔존
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -165,15 +165,23 @@
   - throttled outcomes 는 stateless resumable — 다음 repair 호출에서 audit 다시 잡힘.
   - demo-anti-entropy-throttle 6 stages: 5 chunks rm → max_repairs=2 → 2 repaired + 3 throttled → 두 번째 호출에서 나머지 → audit clean.
 
-### [P8-13] Anti-entropy 후속 polish wave (저우선, 한계효용 줄어듦)
+### ~~[P8-13] Concurrent EC repair + httputil helper~~
+- **DONE 2026-04-27**: ADR-060.
+  - `AntiEntropyRepairOpts.Concurrency` + `?concurrency=N` query + cli `--concurrency N`.
+  - up-front throttle partition (워커 시작 전 schedule 결정) → counter race 0. 워커 pool 은 deterministic 잡 큐만 처리.
+  - mu-guarded outcome update + stats. critical section sub-microsecond.
+  - `httputil.ParseNonNegIntQuery` 추출 (P8-12 reviewer deferred 항목): max_repairs + concurrency 두 use site 가 같은 helper. 9 subtests cover (empty/valid/zero/upper/exceeds/max=0/negative/non-numeric/empty-value).
+  - demo-anti-entropy-concurrent 6 stages: 64 MiB EC (4+2) → 4-stripe corrupt → serial 272ms vs concurrent=4 135ms = **2.01× speedup** (single-host demo, multi-host 더 큼).
+
+### [P8-14] Anti-entropy 후속 polish wave (저우선, 한계효용 점점 작음)
 - per-shard 정확한 success/failure (repair package refactor — 현재는 per-stripe)
-- Concurrent repair parallel (per-stripe loop 위에 worker pool)
+- Replication path concurrent
+- `repair.Run` 자체 multi-stripe parallelism 활용
 - `COORD_AUTO_REPAIR_INTERVAL`
-- Persistent scrubber state (DN restart 시 corrupt set 보존)
+- Persistent scrubber state
 - Multi-tier hierarchical Merkle
 - Peer-to-peer DN self-heal
 - Notify on unrecoverable
-- **Non-negative integer query-param helper**: P8-12 reviewer 가 `internal/coord/anti_entropy.go::handleAntiEntropyRepair` 의 `max_repairs` 파싱이 두 번째 인스턴스 (`?concurrency=N` 같은 예상 후속 사용처) 와 같은 6-line 패턴 형성 시 `internal/httputil` 추출 후보로 등록.
 - ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
 
 ### [P8-05] Phase 1 chaos test 의 Phase D drift check 정확도 개선
@@ -270,10 +278,10 @@
 ## 현재 상태 요약 (2026-04-27)
 
 - **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
-- **테스트**: **174 test funcs PASS** (P8-06 +1, S7 Ep.1 +3, Ep.2 +3, Ep.3 +3, Ep.4 +4 dn merkle/scrub). `go vet` + staticcheck 클린
-- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~12 anti-entropy demos (5개) = **44개** 라이브 PASS
-- **ADR**: **55 Accepted** — ADR-001~059 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~059, S7: 051~054
-- **Blog**: Ep.1~51 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~12 (Ep.47~51)
+- **테스트**: **183 test funcs PASS** (P8-13 의 httputil ParseNonNegIntQuery +9). `go vet` + staticcheck 클린
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~13 anti-entropy demos (6개) = **45개** 라이브 PASS
+- **ADR**: **56 Accepted** — ADR-001~060 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~060, S7: 051~054
+- **Blog**: Ep.1~52 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~13 (Ep.47~52)
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 

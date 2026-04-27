@@ -36,6 +36,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/HardcoreMonk/kvfs/internal/httputil"
 	"github.com/HardcoreMonk/kvfs/internal/repair"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 )
@@ -426,11 +427,18 @@ type ChunkRepairOutcome struct {
 //     unlimited (back-compat). Once the cap is hit subsequent
 //     candidates land in Skipped with mode="throttled". Lets operators
 //     run cautious, bounded repair sweeps on big clusters.
+//
+// ADR-060 (P8-13) adds:
+//   - Concurrency: parallel EC stripe reconstruct workers. 0/1 = serial
+//     (back-compat). >=2 dispatches a worker pool over the per-stripe
+//     loop ADR-059 set up. Replication path stays serial; its work is
+//     dominated by per-chunk RTT, not CPU, so a pool there yields less.
 type AntiEntropyRepairOpts struct {
-	Corrupt    bool
-	DryRun     bool
-	EC         bool
-	MaxRepairs int
+	Corrupt     bool
+	DryRun      bool
+	EC          bool
+	MaxRepairs  int
+	Concurrency int
 }
 
 func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepairOpts) (*AntiEntropyRepairReport, error) {
@@ -664,6 +672,7 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 	// Per-stripe repair.Run (vs bulk) so each call's stats unambiguously
 	// refers to that single stripe — caller's per-shard Err can quote
 	// stats.Errors directly without parsing back from a flat bulk list.
+	// Concurrency > 1 dispatches the loop over a worker pool (ADR-060).
 	if opts.EC && len(ecPlanByKey) > 0 && !opts.DryRun {
 		var attemptedStripes, totalRepaired, totalFailed int
 		var totalBytes int64
@@ -690,9 +699,21 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			}
 		}
 
+		// Up-front throttle partition. Replication path already spent
+		// `successCount` of the budget; remaining slots go to EC. The
+		// concurrent worker pool below sees a deterministic schedule —
+		// no in-flight CAS races on the counter.
+		var scheduled []ecKey
+		ecBudget := -1
+		if opts.MaxRepairs > 0 {
+			ecBudget = opts.MaxRepairs - successCount
+			if ecBudget < 0 {
+				ecBudget = 0
+			}
+		}
 		for _, k := range ecKeys {
-			sr := ecPlanByKey[k]
-			if throttled() {
+			if ecBudget == 0 || (ecBudget > 0 && len(scheduled) >= ecBudget) {
+				sr := ecPlanByKey[k]
 				for _, d := range sr.DeadShards {
 					if i, ok := ecOutcomeIdx[d.ChunkID]; ok {
 						out.Repairs[i].Mode = repairModeThrottled
@@ -701,15 +722,39 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 				}
 				continue
 			}
-			attemptedStripes++
+			scheduled = append(scheduled, k)
+		}
+
+		conc := opts.Concurrency
+		if conc < 1 {
+			conc = 1
+		}
+		if conc > len(scheduled) {
+			conc = len(scheduled)
+		}
+
+		// Worker pool: semaphore caps in-flight repair.Run goroutines
+		// at `conc`. mu guards out.Repairs index updates + stats
+		// accumulators (cheap critical section: pointer assignments
+		// and ints, no I/O).
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, conc)
+
+		runOne := func(k ecKey) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			sr := ecPlanByKey[k]
 			plan := repair.Plan{Repairs: []repair.StripeRepair{*sr}}
 			stats := repair.Run(ctx, s.Coord, s.Store, plan, 1)
+			ok := stats.Repaired == 1 && len(stats.Errors) == 0
+
+			mu.Lock()
+			attemptedStripes++
 			totalRepaired += stats.Repaired
 			totalFailed += stats.Failed
 			totalBytes += stats.BytesWritten
 			allErrors = append(allErrors, stats.Errors...)
-
-			ok := stats.Repaired == 1 && len(stats.Errors) == 0
 			for _, d := range sr.DeadShards {
 				if i, found := ecOutcomeIdx[d.ChunkID]; found {
 					if ok {
@@ -722,11 +767,16 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			if ok {
 				successCount++
 			}
+			mu.Unlock()
 		}
 
-		// Emit summary only when at least one stripe actually ran;
-		// otherwise OK=true with zero totals would read as success
-		// rather than "all stripes throttled before their turn".
+		for _, k := range scheduled {
+			sem <- struct{}{}
+			wg.Add(1)
+			go runOne(k)
+		}
+		wg.Wait()
+
 		if attemptedStripes > 0 {
 			summary := ChunkRepairOutcome{
 				TargetDN: "(ec-summary)",
@@ -735,8 +785,8 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 				OK:       len(allErrors) == 0,
 			}
 			if len(allErrors) > 0 {
-				summary.Err = fmt.Sprintf("ec stripes attempted=%d repaired=%d failed=%d bytes=%d errs=%v",
-					attemptedStripes, totalRepaired, totalFailed, totalBytes, allErrors)
+				summary.Err = fmt.Sprintf("ec stripes attempted=%d repaired=%d failed=%d bytes=%d errs=%v concurrency=%d",
+					attemptedStripes, totalRepaired, totalFailed, totalBytes, allErrors, conc)
 			}
 			out.Repairs = append(out.Repairs, summary)
 		}
@@ -851,15 +901,18 @@ func (s *Server) handleAntiEntropyRepair(w http.ResponseWriter, r *http.Request)
 		DryRun:  q.Get("dry_run") == "1",
 		EC:      q.Get("ec") == "1",
 	}
-	// ADR-059: max_repairs throttle. 0 / unset = unlimited.
-	if v := q.Get("max_repairs"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("max_repairs: must be non-negative integer, got %q", v))
-			return
-		}
-		opts.MaxRepairs = n
+	mr, err := httputil.ParseNonNegIntQuery(q, "max_repairs", 0)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
+	opts.MaxRepairs = mr
+	cc, err := httputil.ParseNonNegIntQuery(q, "concurrency", 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	opts.Concurrency = cc
 	rep, err := s.runAntiEntropyRepair(r.Context(), opts)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)

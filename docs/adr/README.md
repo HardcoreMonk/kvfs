@@ -132,8 +132,9 @@ P8-01·02·03·04·06·08~12 done — frame 1 (헌장) + frame 2 (textbook primi
 | [057](ADR-057-ec-inline-repair.md) | Anti-entropy EC inline repair (delegates to ADR-046 worker) | P8-10 | `?ec=1` query param + per-stripe `repair.StripeRepair` build → `repair.Run` · cli `--ec` · `mode: "ec-inline"` / `"ec-summary"` outcomes · demo-anti-entropy-repair-ec |
 | [058](ADR-058-ec-corrupt-repair.md) | Anti-entropy EC corrupt repair (closes self-heal coverage) | P8-11 | `repair.DeadShard.Force` + `Coordinator.PutChunkToForce` 인터페이스 추가 · `?ec=1&corrupt=1` 조합 · demo-anti-entropy-repair-ec-corrupt |
 | [059](ADR-059-throttle-and-precision.md) | Repair throttle (`max_repairs`) + per-stripe precision | P8-12 | per-stripe `repair.Run` (정밀 OK/Err 매핑) · `?max_repairs=N` query + cli `--max-repairs` · demo-anti-entropy-throttle |
+| [060](ADR-060-concurrent-ec-repair.md) | Concurrent EC repair (worker pool) + `httputil.ParseNonNegIntQuery` helper | P8-13 | up-front throttle partition + worker pool + per-stripe `repair.Run` · `?concurrency=N` query + cli `--concurrency` · 2× speedup on 4-stripe demo · demo-anti-entropy-concurrent |
 
-> 데모 letter — S1~S4 = α~ω (그리스 21) · S5~S6 = aleph~nun (히브리 14) · S7 = samekh~tsadi (히브리 4). letter demos 39. P8 anti-entropy specials 5 → 합 **44**.
+> 데모 letter — S1~S4 = α~ω (그리스 21) · S5~S6 = aleph~nun (히브리 14) · S7 = samekh~tsadi (히브리 4). letter demos 39. P8 anti-entropy specials 6 → 합 **45**.
 
 ## 다음 시즌 / 미작성
 
