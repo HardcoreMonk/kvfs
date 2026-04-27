@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/HardcoreMonk/kvfs/internal/repair"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 )
 
@@ -393,9 +394,16 @@ type ChunkRepairOutcome struct {
 //     overwrite restores correctness.
 //   - DryRun: skip the actual ReadChunk/PutChunkTo, mark each outcome
 //     Planned=true so operator can preview impact before committing.
+//
+// ADR-057 (P8-10) adds:
+//   - EC: inline EC missing repair. Anti-entropy's per-shard missing
+//     set is grouped by stripe, packed into repair.StripeRepair, and
+//     handed to the existing ADR-046 repair.Run. Default off — when
+//     unset, EC chunks remain "ec-deferred" (back-compat with ADR-055).
 type AntiEntropyRepairOpts struct {
 	Corrupt bool
 	DryRun  bool
+	EC      bool
 }
 
 func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepairOpts) (*AntiEntropyRepairReport, error) {
@@ -457,16 +465,79 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 		corruptByDN = s.collectCorruptByDN(ctx, audit.DNs)
 	}
 
+	// ADR-057: build per-(bucket, key, stripe_idx) → StripeRepair when
+	// EC inline mode is on. Groups all missing shards of the same stripe
+	// together so repair.Run reconstructs once per stripe, not once per
+	// shard. Uses the SAME chunkID-keyed lookup as the rest of the audit.
+	type ecKey struct{ Bucket, Key string; Stripe int }
+	ecPlanByKey := make(map[ecKey]*repair.StripeRepair)
+	if opts.EC {
+		for _, o := range objs {
+			if !o.IsEC() {
+				continue
+			}
+			for si, st := range o.Stripes {
+				k, m := o.EC.K, o.EC.M
+				key := ecKey{o.Bucket, o.Key, si}
+				rep := &repair.StripeRepair{
+					Bucket: o.Bucket, Key: o.Key, StripeIndex: si,
+					K: k, M: m,
+				}
+				for shi, sh := range st.Shards {
+					if len(sh.Replicas) == 0 {
+						continue
+					}
+					addr := sh.Replicas[0]
+					missingHere := false
+					if dnHas[addr] != nil {
+						if _, gone := dnHas[addr][sh.ChunkID]; gone {
+							missingHere = true
+						}
+					}
+					if missingHere {
+						rep.DeadShards = append(rep.DeadShards, repair.DeadShard{
+							ShardIndex: shi, ChunkID: sh.ChunkID,
+							OldAddr: addr, NewAddr: addr, // restore in place
+							Size: sh.Size,
+						})
+					} else if dnHas[addr] != nil {
+						// Survivor: anti-entropy didn't mark missing → assume healthy.
+						rep.Survivors = append(rep.Survivors, repair.SurvivorRef{
+							ShardIndex: shi, ChunkID: sh.ChunkID, Addr: addr,
+						})
+					}
+				}
+				if len(rep.DeadShards) > 0 {
+					ecPlanByKey[key] = rep
+				}
+			}
+		}
+	}
+
 	// Repair pass: per-DN. Iterate inventory missing first, then corrupt.
 	// `repairOne` is the shared body so dry-run / fail / source-missing
 	// branches stay in one place.
 	repairOne := func(targetDN, chunkID, reason string) {
 		if _, isEC := ecChunks[chunkID]; isEC {
-			out.Skipped = append(out.Skipped, ChunkRepairOutcome{
+			if !opts.EC {
+				out.Skipped = append(out.Skipped, ChunkRepairOutcome{
+					TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
+					Mode: "ec-deferred",
+					Err:  "EC chunk — pass ec=1 to inline-repair (ADR-057), or use kvfs-cli repair --apply --coord (ADR-046)",
+				})
+				return
+			}
+			// ADR-057: EC inline repair. The actual reconstruct + PUT happens
+			// in the per-stripe pass below; here we just record an "ec-inline"
+			// outcome so the caller can see this chunk was claimed.
+			oc := ChunkRepairOutcome{
 				TargetDN: targetDN, ChunkID: chunkID, Reason: reason,
-				Mode: "ec-deferred",
-				Err:  "EC chunk — use kvfs-cli repair --apply --coord (ADR-046)",
-			})
+				Mode: "ec-inline",
+			}
+			if opts.DryRun {
+				oc.Planned = true
+			}
+			out.Repairs = append(out.Repairs, oc)
 			return
 		}
 		// Find a healthy source: a DN that owns the chunk per ObjectMeta,
@@ -529,6 +600,60 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 			repairOne(e.DN, corruptID, "corrupt")
 		}
 	}
+	// ADR-057: EC stripe reconstruct pass. Replication outcomes are
+	// already in out.Repairs. Now run the EC plan accumulated above
+	// (only when opts.EC). Stats are aggregated; each shard outcome
+	// already inserted as ec-inline (or Planned in DryRun) — here we
+	// just flip OK to true on success or set Err on failure.
+	if opts.EC && len(ecPlanByKey) > 0 && !opts.DryRun {
+		repairs := make([]repair.StripeRepair, 0, len(ecPlanByKey))
+		for _, sr := range ecPlanByKey {
+			repairs = append(repairs, *sr)
+		}
+		plan := repair.Plan{Repairs: repairs}
+		stats := repair.Run(ctx, s.Coord, s.Store, plan, 1)
+		// Mark outcomes for the stripes that succeeded. For simplicity,
+		// success/failure is per-stripe — if a stripe repaired, all its
+		// dead shards are healthy now.
+		// Rebuild a lookup: chunk_id → stripeOK.
+		stripeOK := make(map[string]bool, 32)
+		for _, sr := range repairs {
+			ok := stats.Repaired > 0 && len(stats.Errors) == 0
+			// More precise: stats.Errors mentions Bucket/Key in messages but
+			// matching them back is brittle. For now: if any errors, mark
+			// all stripes ambiguous (false); else all ok. Operator sees the
+			// raw RunStats via the Audit field if needed. Future tightens this.
+			for _, d := range sr.DeadShards {
+				stripeOK[d.ChunkID] = ok
+			}
+		}
+		// Walk out.Repairs, flip ec-inline entries' OK based on stripeOK.
+		for i, oc := range out.Repairs {
+			if oc.Mode != "ec-inline" {
+				continue
+			}
+			if stripeOK[oc.ChunkID] {
+				out.Repairs[i].OK = true
+			} else {
+				out.Repairs[i].Err = "stripe reconstruct failed (see audit + run kvfs-cli repair --apply for diagnostics)"
+			}
+		}
+		// Append a synthetic summary outcome so totals make sense.
+		out.Repairs = append(out.Repairs, ChunkRepairOutcome{
+			TargetDN: "(ec-summary)",
+			Mode:     "ec-summary",
+			Reason:   "ec-stats",
+			OK:       len(stats.Errors) == 0,
+			Err: func() string {
+				if len(stats.Errors) > 0 {
+					return fmt.Sprintf("ec stripes attempted=%d repaired=%d failed=%d bytes=%d errs=%v",
+						stats.Stripes, stats.Repaired, stats.Failed, stats.BytesWritten, stats.Errors)
+				}
+				return ""
+			}(),
+		})
+	}
+
 	out.Duration = time.Since(startedAt).String()
 	return out, nil
 }
@@ -636,6 +761,7 @@ func (s *Server) handleAntiEntropyRepair(w http.ResponseWriter, r *http.Request)
 	opts := AntiEntropyRepairOpts{
 		Corrupt: q.Get("corrupt") == "1",
 		DryRun:  q.Get("dry_run") == "1",
+		EC:      q.Get("ec") == "1",
 	}
 	rep, err := s.runAntiEntropyRepair(r.Context(), opts)
 	if err != nil {

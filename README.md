@@ -1,7 +1,7 @@
 # kvfs — Key-Value File System
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스.
-> **Go 1.26 · Apache 2.0 · 52 ADR · 48 blog episode · 41 라이브 데모 · 174 unit test**
+> **Go 1.26 · Apache 2.0 · 53 ADR · 49 blog episode · 42 라이브 데모 · 174 unit test**
 
 ## 이것은 무엇인가
 
