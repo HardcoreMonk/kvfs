@@ -13,6 +13,7 @@
 - **P5**: post-Season-4 wave — 모두 완료
 - **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
+- **P8**: Frame-1+2 100% wave (chaos suite + S5/S6 blog backfill + Season 7) — Phase 1 (chaos seed) DONE, P8-02~04 진행 예정
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -69,6 +70,44 @@
 
 ### ~~[P6-07] coord transactional commit (ADR-034 port)~~
 - **DONE 2026-04-27**: ADR-040 작성 + 구현. `coord.Server.{TransactionalCommit, ReplicateTimeout}` field, `commit()` helper 가 분기. `COORD_TRANSACTIONAL_RAFT=1` env (Elector + WAL 둘 다 필수, mismatch 시 startup fatal). 2 unit tests: quorum failure → bbolt 무변화 + WAL.LastSeq 무변화, prerequisite 누락 시 fallback. 데모 demo-he.sh (히브리 ה) — 2/3 coord kill 후 PUT 503 + lookup 404 + 복구 후 PUT 200. 148 tests PASS.
+
+---
+
+## P8 — Frame-1+2 마감 wave (chaos suite + textbook primitives)
+
+목표: 헌장 기준(frame 1) + 학부 텍스트북 기준(frame 2) 모두 100%. 약 5주 작업으로 추정.
+2026-04-27 진입. 순서: chaos suite → S5/S6 blog backfill → Season 7 (textbook primitives).
+
+### ~~[P8-01] Phase 1 chaos suite 시드~~
+- **DONE 2026-04-27**: 3개 시나리오 (chaos-coord-flap, chaos-coord-quorum-loss, chaos-suite orchestrator) + scripts/lib/cluster.sh 에 `rebuild_images` 헬퍼.
+- 발견 (test 의 self-discovery): `ensure_images` 가 "한 번만 빌드" 라서 stale-image 가능. P7-07/P7-08 이 들어오기 전에 빌드된 edge image 가 잡혀있어 chaos test 가 거짓 phantom 을 보고했음. 신규 `rebuild_images` (Docker BuildKit 캐시 의존) 로 chaos/CI 는 항상 fresh 보장. ensure_images 는 demo 용으로 보존 (속도 우선).
+- ADR-040 transactional commit invariant 가 chaos 하에서 holds — 5/5 PUT 503 차단 + bbolt drift 0 + phantom 0 검증.
+- ADR-038/039 (coord HA + WAL repl) 도 holds — 90s 동안 random coord kill, 모든 200-PUT 복원.
+
+### [P8-02] Phase 1 chaos suite 확장
+- 잔여 시나리오:
+  - `chaos-coord-partition.sh` — `docker network disconnect/connect` 으로 split-brain 회피 검증 (term 기반 single-leader invariant)
+  - `chaos-mixed.sh` — DN flap + coord flap 동시
+  - `chaos-wal-corrupt.sh` — WAL tail truncate / mid-line garble → replay recover
+  - `chaos-disk-full.sh` — DN tmpfs cap → edge graceful 5xx + 회복 후 repair
+- 추정: 1주.
+
+### [P8-03] S5/S6 blog backfill
+- S5 Ep.1~7 → Ep.29~35 (7편), S6 Ep.1~7 → Ep.36~42 (7편). aleph→nun 데모 + ADR-015·038~049 본문.
+- S5 Ep.2 의 ADR 결번 백필 (`EDGE_COORD_URL` proxy 모드 — 환경변수 wiring 결정의 공식 기록).
+- 추정: ~5일.
+
+### [P8-04] Season 7 — textbook primitives
+- Ep.1 (ADR-050): **Failure domain hierarchy** — rack/DC tag 를 placement.Node 에 추가, HRW 가 topology-aware. CRUSH 의 simplest tier.
+- Ep.2 (ADR-051): **Degraded read** — read 시 첫 chunk 실패하면 즉시 RS Reconstruct (현 design 은 다음 replica fallback 후 별도 worker).
+- Ep.3 (ADR-052): **Tunable consistency** — per-request `X-KVFS-W`, `X-KVFS-R` (Dynamo W+R>N classic).
+- Ep.4 (ADR-053): **Anti-entropy / Merkle tree** — DN-to-DN periodic hash compare, silent corruption 자동 발견.
+- 각 episode = ADR + 코드 + demo (samekh/ayin/pe/tsadi) + blog episode.
+- 추정: ~3.5주. 모든 ep landing 시 frame 2 100%, blog 까지 마감 시 frame 1 100%.
+
+### [P8-05] Phase 1 chaos test 의 Phase D drift check 정확도 개선
+- **현황**: `coord_object_count` 가 admin/objects 응답 (raw JSON array) 의 length 를 jq 로 read. P8-01 에서 fix 됨.
+- **잔여 보강**: 단순 length 가 아니라 specific phase-A 키 존재 / phase-C 키 부재까지 검증하면 더 강력. 우선순위 낮음 — Phase F 가 이미 phantom 검증을 cover 하므로 중복.
 
 ---
 

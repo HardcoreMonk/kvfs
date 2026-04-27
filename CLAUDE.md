@@ -54,7 +54,10 @@ Client ──HTTP+UrlKey──▶ kvfs-edge ──HTTP REST──▶ kvfs-dn × 
 | `make fmt` / `make lint` | `gofmt -w .` / `go vet ./...` |
 | `./scripts/up.sh` / `down.sh` | Docker 클러스터 기동·정리 (compose 플러그인 불필요) |
 | `./scripts/demo-*.sh` | 시즌별 라이브 데모. greek letter 순으로 정렬 (alpha → omega 진행). episode ↔ 데모 ↔ ADR 매핑은 `docs/adr/README.md` |
-| `./scripts/chaos-dn-killer.sh` | 주기적 random DN kill + GET 검증 (회귀 catch) |
+| `./scripts/chaos-dn-killer.sh` | 주기적 random DN kill + GET 검증 (회귀 catch). 외부 cluster 가정 |
+| `./scripts/chaos-coord-flap.sh` | 자체 3-coord HA → 주기적 coord kill+restart → PUT/GET hammer → 모든 200-PUT 검증 (ADR-038/039/040 invariant) |
+| `./scripts/chaos-coord-quorum-loss.sh` | 자체 cluster → 2/3 coord kill → PUT 모두 503 검증 + bbolt drift 0 + post-restore phantom 0 (ADR-040 strict) |
+| `./scripts/chaos-suite.sh [--quick] [--skip <name>]` | 위 chaos-* 일괄 실행 + 집계 |
 
 Docker로 빌드 검증 (로컬 Go 없어도):
 

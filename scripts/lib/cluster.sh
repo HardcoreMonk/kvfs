@@ -28,6 +28,7 @@ start_dns() {
 
 # ensure_images <target>... — `docker build` each missing kvfs-* image.
 # Default targets if no args: kvfs-coord kvfs-edge kvfs-dn kvfs-cli.
+# "Missing" only — see rebuild_images for chaos/CI freshness semantics.
 ensure_images() {
   local targets=("$@")
   if [ "${#targets[@]}" -eq 0 ]; then
@@ -36,6 +37,23 @@ ensure_images() {
   for tgt in "${targets[@]}"; do
     docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${tgt}:dev$" \
       || { echo "==> building ${tgt} (one-time)"; docker build --target "${tgt}" -t "${tgt}:dev" . >/dev/null; }
+  done
+}
+
+# rebuild_images <target>... — always run `docker build` (cached layers fast
+# on no-source-change). Use this in chaos / CI scripts where the test
+# would silently pass against a stale binary if `ensure_images` skipped.
+# A real bug discovered 2026-04-27: a chaos test mis-flagged a "phantom
+# commit" because the running kvfs-edge image predated P7-07/P7-08
+# (CoordClient retry) — the test was honest, the deployment was stale.
+rebuild_images() {
+  local targets=("$@")
+  if [ "${#targets[@]}" -eq 0 ]; then
+    targets=(kvfs-coord kvfs-edge kvfs-dn kvfs-cli)
+  fi
+  for tgt in "${targets[@]}"; do
+    echo "==> rebuilding ${tgt} (chaos/CI freshness)"
+    docker build --target "${tgt}" -t "${tgt}:dev" . >/dev/null
   done
 }
 
