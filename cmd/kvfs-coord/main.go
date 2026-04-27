@@ -82,6 +82,11 @@ func main() {
 		// instance to do chunk Read/Put against DNs directly. Required for
 		// rebalance/gc/repair APPLY paths to run on coord.
 		flagDNIO = flag.Bool("dn-io", envOr("COORD_DN_IO", "") == "1", "ADR-044: enable coord-side DN I/O so apply paths (rebalance/gc/repair) run on coord")
+		// ADR-062 (P8-15): Prometheus /metrics surface + auto-repair ticker.
+		flagMetrics        = flag.Bool("metrics", envOr("COORD_METRICS", "1") == "1", "expose /metrics Prometheus endpoint (default on)")
+		flagAutoRepair     = flag.String("auto-repair-interval", envOr("COORD_AUTO_REPAIR_INTERVAL", ""), "ADR-062: leader-only periodic anti-entropy REPAIR (corrupt+ec, capped). Empty = disabled. Distinct from COORD_ANTI_ENTROPY_INTERVAL which only audits.")
+		flagAutoRepairMax  = flag.String("auto-repair-max", envOr("COORD_AUTO_REPAIR_MAX", "100"), "ADR-062: max repairs per auto-repair tick (cap to bound DN I/O burst)")
+		flagAutoRepairConc = flag.String("auto-repair-concurrency", envOr("COORD_AUTO_REPAIR_CONCURRENCY", "4"), "ADR-062: worker pool size for auto-repair (replication + EC). 1 = serial.")
 	)
 	flag.Parse()
 
@@ -245,6 +250,13 @@ func main() {
 		Coord:               dnCoord,
 	}
 
+	// ADR-062: /metrics endpoint. Default on; the route is always wired
+	// (handleMetrics is nil-safe), SetupMetrics just populates the registry.
+	if *flagMetrics {
+		srv.SetupMetrics()
+		log.Info("kvfs-coord /metrics enabled (ADR-062)")
+	}
+
 	httpSrv := &http.Server{
 		Addr:              *flagAddr,
 		Handler:           srv.Routes(),
@@ -280,6 +292,32 @@ func main() {
 		if d > 0 {
 			log.Info("kvfs-coord scheduled anti-entropy enabled (ADR-055)", "interval", d)
 			srv.StartAntiEntropyTicker(ctx, d)
+		}
+	}
+	// ADR-062 (P8-15): scheduled AUTO-REPAIR — distinct from the audit-only
+	// ticker above. Runs corrupt+ec on a cap (max-repairs) so DN I/O bursts
+	// stay bounded. Requires COORD_DN_IO (the apply path) — no-op warn
+	// otherwise. Leader-only (StartAutoRepairTicker checks Elector).
+	if *flagAutoRepair != "" {
+		d, perr := time.ParseDuration(*flagAutoRepair)
+		if perr != nil {
+			fatal("COORD_AUTO_REPAIR_INTERVAL parse: " + perr.Error())
+		}
+		if d > 0 {
+			if dnCoord == nil {
+				log.Warn("COORD_AUTO_REPAIR_INTERVAL set but COORD_DN_IO disabled — auto-repair has no apply path; skipping")
+			} else {
+				maxRep := cliutil.AtoiOr(*flagAutoRepairMax, 100)
+				conc := cliutil.AtoiOr(*flagAutoRepairConc, 4)
+				log.Info("kvfs-coord scheduled auto-repair enabled (ADR-062)",
+					"interval", d, "max_repairs", maxRep, "concurrency", conc)
+				srv.StartAutoRepairTicker(ctx, d, coord.AntiEntropyRepairOpts{
+					Corrupt:     true,
+					EC:          true,
+					MaxRepairs:  maxRep,
+					Concurrency: conc,
+				})
+			}
 		}
 	}
 

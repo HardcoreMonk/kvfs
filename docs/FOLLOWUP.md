@@ -13,7 +13,7 @@
 - **P5**: post-Season-4 wave — 모두 완료
 - **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
-- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~14 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal), P8-05·07·15 (한계효용 polish, 저우선) 잔존
+- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~15 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface), P8-05·07·16 (한계효용 polish, 저우선) 잔존
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -180,13 +180,24 @@
   - **Part C — Unrecoverable slog.Error**: `out.Skipped[Mode=no_source]` → `slog.Error("anti-entropy: unrecoverable chunk", target_dn, chunk_id, reason, err)`. log aggregator (ELK/Loki/Datadog) 의 `level=ERROR` + `msg` 키 한 줄로 alert rule 가능. API/JSON 응답 변경 0.
   - demo-anti-entropy-resilience 3 stage 모두 PASS. dn merkle_test +2 신규 (TestScrubber_CorruptStatePersistsAcrossRestart, TestScrubber_PersistedFileShape).
 
-### [P8-15] Anti-entropy 한계효용 후속 polish (저우선)
+### ~~[P8-15] Auto-repair scheduling + coord /metrics surface~~
+- **DONE 2026-04-27**: ADR-062.
+  - **Part A — `COORD_AUTO_REPAIR_INTERVAL`**: ADR-055 의 audit-only ticker 의 자연 짝. 새 `StartAutoRepairTicker` (leader-only, DN_IO prerequisite) + 3 env (`INTERVAL`, `MAX`, `CONCURRENCY`). 기본 corrupt+ec=true 로 full self-heal, max-repairs cap 으로 burst 안전. failover 시 새 leader 가 즉시 인계.
+  - **Part B — Coord `/metrics`**: `internal/coord/metrics.go` (edge pattern 미러). 5 counter (`audits_total`, `repairs_total{reason}`, `unrecoverable_total`, `throttled_total`, `auto_repair_runs_total`) + 2 gauge (`election_state`, `objects`). `recordX` helpers nil-safe (SetupMetrics 미호출 시 no-op). `/metrics` route 항상 wired, default on (`COORD_METRICS=0` 으로만 off).
+  - ADR-061 의 slog.Error 와 lockstep — unrecoverable 발견 시 `slog.Error` + `recordUnrecoverable()` 동시 발화. operator 가 어느 채널이든 watch 하면 됨.
+  - demo-anti-entropy-auto-metrics 3 stage: ticker alive (interval=2s 후 runs ≥1) → 1 chunk rm → auto-tick 후 `repairs{reason="missing"} = 1` → 모든 replica rm → `unrecoverable_total` advance. 마지막에 `/metrics` 의 anti-entropy slice dump.
+  - 코드: ~130 LOC metrics.go + ~50 LOC ticker + ~30 LOC main wiring.
+  - 운영 패턴 두 가지 가능: light (audit-only ticker) / continuous self-heal (둘 다 set).
+
+### [P8-16] Anti-entropy 한계효용 후속 polish (저우선)
 - per-shard 정확한 success/failure (repair package refactor — 현재는 per-stripe)
 - `repair.Run` 자체 multi-stripe parallelism 활용
-- `COORD_AUTO_REPAIR_INTERVAL` (현재 audit 만 자동, repair 는 operator 수동)
 - Multi-tier hierarchical Merkle (256-bucket flat → depth ≥2)
 - Peer-to-peer DN self-heal
-- Coord-side metric counter (Prometheus 도입 후, ADR-061 의 slog ERROR 보강)
+- Histogram metrics (repair latency, audit duration)
+- `kvfs_anti_entropy_skipped_total{mode}` (skip / ec-deferred 카운트 보강)
+- Adaptive auto-repair (load 감지 시 burst cap 자동 축소)
+- Unrecoverable counter 의 chunk-level dedupe (첫 발견에만 알림)
 - Scrubber rate adaptive (load 감지 시 slowdown)
 - ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
 
@@ -283,11 +294,11 @@
 
 ## 현재 상태 요약 (2026-04-27)
 
-- **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `9deb4d8` (Season 5/6 package-level pedagogy refresh)
-- **테스트**: **185 test funcs PASS** (P8-14 의 dn merkle_test +2: PersistsAcrossRestart, PersistedFileShape). `go vet` + staticcheck 클린
-- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~14 anti-entropy demos (7개) = **46개** 라이브 PASS
-- **ADR**: **57 Accepted** — ADR-001~061 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~061, S7: 051~054
-- **Blog**: Ep.1~53 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~14 (Ep.47~53)
+- **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `69e88e7` (P8-14 resilience polishes)
+- **테스트**: **186 test funcs PASS** (P8-15 의 coord_test +1: TestMetrics_NilSafeAndRenderAfterSetup). `go vet` + staticcheck 클린
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~15 anti-entropy demos (8개) = **47개** 라이브 PASS
+- **ADR**: **58 Accepted** — ADR-001~062 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~062, S7: 051~054
+- **Blog**: Ep.1~54 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~15 (Ep.47~54)
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 

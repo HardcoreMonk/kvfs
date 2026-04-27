@@ -116,6 +116,11 @@ type Server struct {
 	// window: if quorum push fails, the leader's bbolt is NOT touched.
 	// Requires Elector + WAL to be active. Default false (Ep.4 behavior).
 	TransactionalCommit bool
+
+	// metrics is populated by SetupMetrics (ADR-062, P8-15). nil-safe — the
+	// recordX helpers no-op when this is unset, so unit tests that don't
+	// call SetupMetrics still work.
+	metrics *metricsHandle
 }
 
 // transactionalCommitTimeout caps each transactional commit's quorum wait.
@@ -185,6 +190,10 @@ func (s *Server) Routes() *http.ServeMux {
 	// the affected DN. Replication chunks only; EC stripes are reported
 	// as skipped (use the existing repair worker — ADR-046).
 	mux.HandleFunc("POST /v1/coord/admin/anti-entropy/repair", s.handleAntiEntropyRepair)
+	// ADR-062 (P8-15): Prometheus-compatible /metrics. Always wired —
+	// handleMetrics is nil-safe and returns 200 + empty body when SetupMetrics
+	// hasn't run, so an operator probe doesn't fail-closed.
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	if s.Elector != nil {
 		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
 		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)

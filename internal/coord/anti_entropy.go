@@ -73,6 +73,7 @@ type DNAuditEntry struct {
 //  3. Diff per DN → DNAuditEntry. Bundle into AntiEntropyReport.
 func (s *Server) runAntiEntropy(ctx context.Context) (*AntiEntropyReport, error) {
 	startedAt := time.Now().UTC()
+	s.recordAudit() // ADR-062: every audit (manual or scheduled) bumps the counter.
 
 	// (1) Expected map: dn_addr → bucket idx (0..255) → sorted chunk_ids.
 	expected, err := s.expectedChunksByDN(ctx)
@@ -853,11 +854,28 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 				"chunk_id", sk.ChunkID,
 				"reason", sk.Reason,
 				"err", sk.Err)
+			s.recordUnrecoverable() // ADR-062
 		case repairModeSkip:
 			s.Log.Warn("anti-entropy: target DN unreachable",
 				"target_dn", sk.TargetDN,
 				"chunk_id", sk.ChunkID,
 				"reason", sk.Reason)
+		case repairModeThrottled:
+			s.recordThrottled() // ADR-062
+		}
+	}
+	// ADR-062: per-reason repair counters. ec-summary is a synthetic
+	// aggregate (one row per call) — exclude to keep the counter equal
+	// to actual chunk-level repair operations.
+	for _, oc := range out.Repairs {
+		if !oc.OK || oc.Planned {
+			continue
+		}
+		switch oc.Mode {
+		case repairModeReplication:
+			s.recordRepair(oc.Reason) // missing | corrupt
+		case repairModeECInline:
+			s.recordRepair("ec")
 		}
 	}
 	return out, nil
@@ -1023,6 +1041,57 @@ func (s *Server) StartAntiEntropyTicker(ctx context.Context, interval time.Durat
 				s.Log.Info("scheduled anti-entropy",
 					"divergent_dns", divergent,
 					"total_missing", totalMissing,
+					"duration", rep.Duration)
+			}
+		}
+	}()
+}
+
+// StartAutoRepairTicker (ADR-062, P8-15): runs anti-entropy REPAIR every
+// interval on the leader. Distinct from StartAntiEntropyTicker (ADR-055)
+// which only audits — operators who want continuous self-heal opt into
+// this ticker AND COORD_DN_IO (auto-repair needs the apply path).
+//
+// Defaults from cmd/kvfs-coord/main.go: corrupt=true, ec=true, max_repairs
+// from COORD_AUTO_REPAIR_MAX (default 100), concurrency from
+// COORD_AUTO_REPAIR_CONCURRENCY (default 4). max_repairs caps the burst
+// of DN I/O per tick — operator can shrink for noisy clusters or grow
+// for batch-recovery scenarios.
+//
+// Each tick increments kvfs_anti_entropy_auto_repair_runs_total even when
+// the run errors (so a paging dashboard sees the heartbeat), and the
+// per-outcome counters (kvfs_anti_entropy_repairs_total / unrecoverable /
+// throttled) advance via runAntiEntropyRepair's existing instrumentation.
+func (s *Server) StartAutoRepairTicker(ctx context.Context, interval time.Duration, opts AntiEntropyRepairOpts) {
+	if interval <= 0 {
+		return
+	}
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if s.Elector != nil && !s.Elector.IsLeader() {
+					continue
+				}
+				s.recordAutoRepairRun()
+				rep, err := s.runAntiEntropyRepair(ctx, opts)
+				if err != nil {
+					s.Log.Warn("scheduled auto-repair failed", "err", err)
+					continue
+				}
+				okCount := 0
+				for _, oc := range rep.Repairs {
+					if oc.OK {
+						okCount++
+					}
+				}
+				s.Log.Info("scheduled auto-repair",
+					"repaired", okCount,
+					"skipped", len(rep.Skipped),
 					"duration", rep.Duration)
 			}
 		}

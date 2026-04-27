@@ -638,6 +638,76 @@ func TestTransactionalCommit_FallsBackWhenPrerequisitesMissing(t *testing.T) {
 	}
 }
 
+// ADR-062 (P8-15): /metrics surface and the per-event recorders. nil-safe
+// when SetupMetrics hasn't run; counters render in Prometheus text format
+// after it has, with the labels we feed in.
+func TestMetrics_NilSafeAndRenderAfterSetup(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	srv := &Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1:8080", Addr: "dn1:8080"}})}
+
+	// Before SetupMetrics: every recorder must no-op (no panic, no allocation
+	// surfaces). Hit the /metrics endpoint and expect 200 + empty body.
+	srv.recordAudit()
+	srv.recordRepair("missing")
+	srv.recordUnrecoverable()
+	srv.recordThrottled()
+	srv.recordAutoRepairRun()
+
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+	resp, err := http.Get(hs.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics pre-setup: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("pre-setup status %d, want 200", resp.StatusCode)
+	}
+
+	// Now wire metrics + bump several counters, then re-render.
+	srv.SetupMetrics()
+	srv.recordAudit()
+	srv.recordAudit()
+	srv.recordRepair("missing")
+	srv.recordRepair("corrupt")
+	srv.recordRepair("ec")
+	srv.recordUnrecoverable()
+	srv.recordThrottled()
+	srv.recordThrottled()
+	srv.recordAutoRepairRun()
+
+	resp2, err := http.Get(hs.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics post-setup: %v", err)
+	}
+	defer resp2.Body.Close()
+	body := make([]byte, 32*1024)
+	n, _ := resp2.Body.Read(body)
+	out := string(body[:n])
+
+	// Spot-check: each metric name appears with the expected value. The
+	// renderer is exercised in internal/metrics tests; here we just confirm
+	// the Server-level wiring + label tuples land correctly.
+	wants := []string{
+		"kvfs_anti_entropy_audits_total 2",
+		`kvfs_anti_entropy_repairs_total{reason="missing"} 1`,
+		`kvfs_anti_entropy_repairs_total{reason="corrupt"} 1`,
+		`kvfs_anti_entropy_repairs_total{reason="ec"} 1`,
+		"kvfs_anti_entropy_unrecoverable_total 1",
+		"kvfs_anti_entropy_throttled_total 2",
+		"kvfs_anti_entropy_auto_repair_runs_total 1",
+	}
+	for _, w := range wants {
+		if !bytes.Contains([]byte(out), []byte(w)) {
+			t.Errorf("missing %q in /metrics output:\n%s", w, out)
+		}
+	}
+}
+
 func TestPlaceRejectsBadInput(t *testing.T) {
 	st, _ := store.Open(filepath.Join(t.TempDir(), "coord.db"))
 	defer st.Close()
