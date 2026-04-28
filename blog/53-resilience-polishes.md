@@ -155,8 +155,9 @@ ERROR 가 됨.
 ## "왜 metric 이 아닌 slog?"
 
 운영자가 묻을 수 있는 질문. zone 의 표준이 slog 라 metric 인프라 (Prometheus
-등) 도입 전에는 slog 가 자연 채널. 도입 시 별도 ADR 로 counter 추가
-(ADR-061 의 후속 P8-15 후보).
+등) 도입 전에는 slog 가 자연 채널. 이후 ADR-062 가 coord `/metrics` 와
+`unrecoverable_total` counter 를 추가했고, ADR-063 이 같은 chunk 반복 알림을
+first-seen dedupe 로 줄였다.
 
 slog ERROR 자체로도 alert 가능: 대부분의 aggregator 가 `level` 필터를
 1급 시민으로 다룸.
@@ -200,16 +201,16 @@ $ kvfs-cli anti-entropy repair --coord URL \
     --corrupt --ec --max-repairs 1000 --concurrency 8
 ```
 
-후속 P8-15 후보 (한계 효용 더 작아짐):
+후속 현황 (2026-04-28):
 
 - Multi-tier hierarchical Merkle (256 bucket 평탄 → 깊이 ≥2)
 - Scrubber rate adaptive (load 감지)
-- Coord-side metric (Prometheus 도입 후)
+- Coord-side metric 은 ADR-062/063 으로 완료
 - `repair.Run` 의 multi-stripe 자체 parallelism
 
-이쯤에서 P8 wave 가 자연 종결 시점에 가깝다. 다음은 새 시즌 또는 다른
-방향 — 운영자 결정.
+이쯤에서 P8 wave 가 자연 종결 시점에 가깝다. 남은 것은 P8-17 저우선
+polish 후보.
 
 ## 다음
 
-P8-15 또는 새 시즌. 자연 정리 시점.
+P8-17 저우선 polish 또는 새 시즌. 자연 정리 시점.

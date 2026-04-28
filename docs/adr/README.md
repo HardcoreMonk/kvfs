@@ -120,9 +120,9 @@ Accepted · YYYY-MM-DD
 | [053](ADR-053-tunable-consistency.md) | Tunable consistency (per-request W/R quorum, Dynamo-style) | Accepted · 2026-04-27 | `X-KVFS-W` + `X-KVFS-R` headers · `WriteChunkToAddrsW` + `readChunkAgreement` · `kvfs_tunable_quorum_total` · demo-pe (Ep.3) |
 | [054](ADR-054-anti-entropy-merkle.md) | Anti-entropy / Merkle tree + bit-rot scrubber | Accepted · 2026-04-27 | DN `/chunks/merkle{,/bucket}` + `/chunks/scrub-status` (`DN_SCRUB_INTERVAL`) · coord `/v1/coord/admin/anti-entropy/run` · demo-tsadi (Ep.4 — S7 close) |
 
-## P8 — Frame-1+2 100% wave (Ep.01~15 done, 한계 효용 polish 잔존)
+## P8 — Frame-1+2 100% wave (Ep.01~16 done, 한계 효용 polish 잔존)
 
-P8-01·02·03·04·06·08~15 done — frame 1 (헌장) + frame 2 (textbook primitives) + self-heal (4채널) 모두 100% + anti-entropy operational polish + continuous self-heal (auto-repair ticker) + Prometheus surface 모두 완성. 잔존은 P8-05·07·16 (한계 효용 polish).
+P8-01·02·03·04·06·08~16 done — frame 1 (헌장) + frame 2 (textbook primitives) + self-heal (4채널) 모두 100% + anti-entropy operational polish + continuous self-heal (auto-repair ticker) + Prometheus surface + observability completions 모두 완성. 잔존은 P8-05·07·17 (한계 효용 polish).
 
 | # | 제목 | wave 번호 | 연결 |
 |---|---|---|---|
@@ -135,10 +135,11 @@ P8-01·02·03·04·06·08~15 done — frame 1 (헌장) + frame 2 (textbook primi
 | [060](ADR-060-concurrent-ec-repair.md) | Concurrent EC repair (worker pool) + `httputil.ParseNonNegIntQuery` helper | P8-13 | up-front throttle partition + worker pool + per-stripe `repair.Run` · `?concurrency=N` query + cli `--concurrency` · 2× speedup on 4-stripe demo · demo-anti-entropy-concurrent |
 | [061](ADR-061-resilience-polishes.md) | Resilience polishes (replication concurrent + persistent scrubber + unrecoverable slog.Error) | P8-14 | `runAntiEntropyRepair` replication worker pool · DN `<dataDir>/scrub-state.json` (Version 1, atomic temp+rename) · `out.Skipped[Mode=no_source]` → `slog.Error` 한 줄 · demo-anti-entropy-resilience |
 | [062](ADR-062-auto-repair-and-metrics.md) | Auto-repair scheduling + coord `/metrics` surface | P8-15 | `StartAutoRepairTicker` + `COORD_AUTO_REPAIR_{INTERVAL,MAX,CONCURRENCY}` (leader-only, DN_IO required) · `internal/coord/metrics.go` 5 counter + 2 gauge · `GET /metrics` always wired (nil-safe) · demo-anti-entropy-auto-metrics |
+| [063](ADR-063-anti-entropy-observability-completions.md) | Anti-entropy observability completions | P8-16 | histogram metrics · `kvfs_anti_entropy_skipped_total{mode}` · unrecoverable first-seen dedupe · demo-anti-entropy-observability · blog Ep.55 |
 
-> 데모 letter — S1~S4 = α~ω (그리스 21) · S5~S6 = aleph~nun (히브리 14) · S7 = samekh~tsadi (히브리 4). letter demos 39. P8 anti-entropy specials 8 → 합 **47**.
+> 데모 letter — S1~S4 = α~ω (그리스 21) · S5~S6 = aleph~nun (히브리 14) · S7 = samekh~tsadi (히브리 4). letter demos 39. P8 anti-entropy specials 9 → 합 **48**.
 
 ## 다음 시즌 / 미작성
 
-- 차기 polish / 새 시즌 후보는 [`docs/FOLLOWUP.md`](../FOLLOWUP.md) 의 P8-05·07·16 참조.
+- 차기 polish / 새 시즌 후보는 [`docs/FOLLOWUP.md`](../FOLLOWUP.md) 의 P8-05·07·17 참조.
 - ADR 결번 (020/021/023/026): 작성 시점에 별도 결정 부재 (예: Season 5 Ep.2 의 `EDGE_COORD_URL` wiring — env 외 결정 없음).

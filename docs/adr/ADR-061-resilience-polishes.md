@@ -132,7 +132,7 @@ operator 가 alert rule 로 바인딩.
 | Replication 도 up-front partition 으로 throttle race-free | replication throttle 은 successCount 를 매 작업 후 lock 안에서 읽음. up-front 는 EC 의 stripe-level granularity 에서 의미 — replication 의 per-chunk 는 best-effort 로 충분 |
 | Scrubber state 를 bbolt 에 통합 | DN 은 stateless-by-design (bbolt 없음). JSON 파일이 가장 단순 + grep 가능 |
 | Scrubber 마다 SQLite | 단일 파일 + atomic rename 으로 충분. SQLite 는 dependency |
-| Unrecoverable 을 metric counter 로 (slog 대신) | metric 인프라 없음 — slog 가 zone 의 표준. metric 시스템 도입 시 별도 ADR |
+| Unrecoverable 을 metric counter 로 (slog 대신) | 당시 metric 인프라 없음 — slog 가 zone 의 표준. 이후 ADR-062/063 이 coord metric + dedupe 를 추가 |
 | Unrecoverable 시 페이지 직접 호출 | coord 가 외부 alert 시스템 알면 안 됨. log → aggregator → alert 가 깔끔 |
 | Persist 를 mutation 마다 (현재) 가 아니라 throttled flush | 작성 빈도 낮음 (sec 당 ≤ 10) — 복잡도 추가 가치 0 |
 
@@ -168,9 +168,10 @@ operator 가 alert rule 로 바인딩.
 - `scripts/demo-anti-entropy-resilience.sh` 3 stage 모두 PASS (2026-04-27 실행).
 - 전체 test suite **185 PASS**.
 
-## 후속 (P8-15 후보)
+## 후속 현황 (2026-04-28)
 
 - Replication 의 throttle 도 EC 처럼 up-front partition (필요 시).
 - Multi-tier hierarchical Merkle (256 bucket 평탄 트리 → 깊이 ≥2).
 - Scrubber rate adaptive (load 감지 시 slowdown).
-- Coord-side unrecoverable counter metric (Prometheus 도입 시).
+- Coord-side unrecoverable counter metric 은 ADR-062 로 완료.
+- Unrecoverable first-seen dedupe 는 ADR-063 으로 완료.

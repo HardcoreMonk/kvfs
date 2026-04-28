@@ -44,9 +44,9 @@ import (
 // AntiEntropyReport is the JSON body returned by
 // POST /v1/coord/admin/anti-entropy/run. One entry per live DN.
 type AntiEntropyReport struct {
-	StartedAt time.Time         `json:"started_at"`
-	Duration  string            `json:"duration"`
-	DNs       []DNAuditEntry    `json:"dns"`
+	StartedAt time.Time      `json:"started_at"`
+	Duration  string         `json:"duration"`
+	DNs       []DNAuditEntry `json:"dns"`
 }
 
 // DNAuditEntry: per-DN summary. RootMatch == true means the on-disk
@@ -73,7 +73,8 @@ type DNAuditEntry struct {
 //  3. Diff per DN → DNAuditEntry. Bundle into AntiEntropyReport.
 func (s *Server) runAntiEntropy(ctx context.Context) (*AntiEntropyReport, error) {
 	startedAt := time.Now().UTC()
-	s.recordAudit() // ADR-062: every audit (manual or scheduled) bumps the counter.
+	s.recordAudit()                                                 // ADR-062: every audit (manual or scheduled) bumps the counter.
+	defer func() { s.recordAuditDuration(time.Since(startedAt)) }() // ADR-063
 
 	// (1) Expected map: dn_addr → bucket idx (0..255) → sorted chunk_ids.
 	expected, err := s.expectedChunksByDN(ctx)
@@ -349,13 +350,13 @@ func (s *Server) handleAntiEntropyRun(w http.ResponseWriter, r *http.Request) {
 // call site can't silently produce a JSON shape divergence — the
 // outcomes are part of the operator-facing API surface.
 const (
-	repairModeReplication = "replication"   // chunk copy from healthy replica
-	repairModeECDeferred  = "ec-deferred"   // EC chunk found but ec=1 not set
-	repairModeECInline    = "ec-inline"     // ADR-057 per-stripe reconstruct stub
-	repairModeECSummary   = "ec-summary"    // synthetic per-call EC stats row
-	repairModeThrottled   = "throttled"     // ADR-059 max_repairs cap reached
-	repairModeNoSource    = "no-source"     // every owner unreachable / corrupt
-	repairModeSkip        = "skip"          // target DN unreachable
+	repairModeReplication = "replication" // chunk copy from healthy replica
+	repairModeECDeferred  = "ec-deferred" // EC chunk found but ec=1 not set
+	repairModeECInline    = "ec-inline"   // ADR-057 per-stripe reconstruct stub
+	repairModeECSummary   = "ec-summary"  // synthetic per-call EC stats row
+	repairModeThrottled   = "throttled"   // ADR-059 max_repairs cap reached
+	repairModeNoSource    = "no-source"   // every owner unreachable / corrupt
+	repairModeSkip        = "skip"        // target DN unreachable
 )
 
 // ChunkRepairOutcome.Reason values.
@@ -389,7 +390,7 @@ type ChunkRepairOutcome struct {
 	Mode     string `json:"mode"`                // "replication" or "ec-deferred"
 	Reason   string `json:"reason"`              // "missing" | "corrupt"
 	OK       bool   `json:"ok"`
-	Planned  bool   `json:"planned,omitempty"`   // DryRun: would have run
+	Planned  bool   `json:"planned,omitempty"` // DryRun: would have run
 	Err      string `json:"err,omitempty"`
 }
 
@@ -444,6 +445,7 @@ type AntiEntropyRepairOpts struct {
 
 func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepairOpts) (*AntiEntropyRepairReport, error) {
 	startedAt := time.Now().UTC()
+	defer func() { s.recordRepairDuration(time.Since(startedAt)) }() // ADR-063
 	audit, err := s.runAntiEntropy(ctx)
 	if err != nil {
 		return nil, err
@@ -513,7 +515,10 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 	// PUT path. Survivor selection also excludes shards on DNs whose
 	// scrubber flagged the same chunk_id as corrupt — we won't read from
 	// a known-bad source.
-	type ecKey struct{ Bucket, Key string; Stripe int }
+	type ecKey struct {
+		Bucket, Key string
+		Stripe      int
+	}
 	ecPlanByKey := make(map[ecKey]*repair.StripeRepair)
 	if opts.EC {
 		for _, o := range objs {
@@ -849,17 +854,26 @@ func (s *Server) runAntiEntropyRepair(ctx context.Context, opts AntiEntropyRepai
 	for _, sk := range out.Skipped {
 		switch sk.Mode {
 		case repairModeNoSource:
-			s.Log.Error("anti-entropy: unrecoverable chunk",
-				"target_dn", sk.TargetDN,
-				"chunk_id", sk.ChunkID,
-				"reason", sk.Reason,
-				"err", sk.Err)
-			s.recordUnrecoverable() // ADR-062
+			// ADR-063 dedupe: only fire slog.Error + counter the first time
+			// this coord sees a given chunk_id as unrecoverable. auto-repair
+			// rediscovers the same lost chunk every tick; operator only needs
+			// the first signal.
+			if s.markUnrecoverableFirstSeen(sk.ChunkID) {
+				s.Log.Error("anti-entropy: unrecoverable chunk",
+					"target_dn", sk.TargetDN,
+					"chunk_id", sk.ChunkID,
+					"reason", sk.Reason,
+					"err", sk.Err)
+				s.recordUnrecoverable() // ADR-062
+			}
 		case repairModeSkip:
 			s.Log.Warn("anti-entropy: target DN unreachable",
 				"target_dn", sk.TargetDN,
 				"chunk_id", sk.ChunkID,
 				"reason", sk.Reason)
+			s.recordSkipped("skip") // ADR-063
+		case repairModeECDeferred:
+			s.recordSkipped("ec-deferred") // ADR-063
 		case repairModeThrottled:
 			s.recordThrottled() // ADR-062
 		}
@@ -967,10 +981,10 @@ func (s *Server) copyChunk(ctx context.Context, src, target, chunkID string, for
 //
 // Query parameters (ADR-056):
 //   - corrupt=1 : also repair scrubber-detected corrupt chunks per DN
-//                 (default off — keeps repair scope to inventory-missing
-//                  unless operator opts in).
+//     (default off — keeps repair scope to inventory-missing
+//     unless operator opts in).
 //   - dry_run=1 : preview-only; mark each candidate Planned=true and
-//                 do not call ReadChunk/PutChunkTo. No bytes moved.
+//     do not call ReadChunk/PutChunkTo. No bytes moved.
 func (s *Server) handleAntiEntropyRepair(w http.ResponseWriter, r *http.Request) {
 	if s.requireLeader(w) {
 		return
@@ -1096,6 +1110,27 @@ func (s *Server) StartAutoRepairTicker(ctx context.Context, interval time.Durati
 			}
 		}
 	}()
+}
+
+// markUnrecoverableFirstSeen (ADR-063, P8-16): atomic-style "have we seen
+// this chunk as unrecoverable yet on this coord process?". Returns true
+// only on first sighting. Caps the seen-set to bound memory in pathological
+// clusters — when full, the map clears (re-alerting on the next pass is
+// the correct fail-safe behavior for a degraded cluster).
+func (s *Server) markUnrecoverableFirstSeen(chunkID string) bool {
+	s.unrecoverableMu.Lock()
+	defer s.unrecoverableMu.Unlock()
+	if s.unrecoverableSeen == nil {
+		s.unrecoverableSeen = make(map[string]struct{})
+	}
+	if _, seen := s.unrecoverableSeen[chunkID]; seen {
+		return false
+	}
+	if len(s.unrecoverableSeen) >= unrecoverableSeenCap {
+		s.unrecoverableSeen = make(map[string]struct{})
+	}
+	s.unrecoverableSeen[chunkID] = struct{}{}
+	return true
 }
 
 // Avoid an unused-import warning when building without store referenced

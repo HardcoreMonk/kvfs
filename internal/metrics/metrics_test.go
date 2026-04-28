@@ -97,6 +97,54 @@ func TestCounterLabelMismatchPanics(t *testing.T) {
 	c.WithLabels("only-one").Add(1)
 }
 
+// ADR-063 (P8-16): Histogram counts observations into cumulative buckets.
+// Verifies bucket boundaries, +Inf, sum/count, and the Prometheus text
+// shape downstream tooling depends on.
+func TestHistogram_CumulativeBucketsSumCount(t *testing.T) {
+	r := NewRegistry()
+	h := r.Histogram("kvfs_test_duration_seconds", "Test histogram", []float64{0.005, 0.05, 0.5})
+
+	// 4 observations: 1ms, 30ms, 200ms, 2s.
+	h.Observe(0.001) // ≤ all 3 buckets
+	h.Observe(0.030) // ≤ 0.05, ≤ 0.5
+	h.Observe(0.200) // ≤ 0.5 only
+	h.Observe(2.0)   // > all → only +Inf
+
+	var buf bytes.Buffer
+	_ = r.Render(&buf)
+	out := buf.String()
+
+	wants := []string{
+		`kvfs_test_duration_seconds_bucket{le="0.005"} 1`,
+		`kvfs_test_duration_seconds_bucket{le="0.05"} 2`,
+		`kvfs_test_duration_seconds_bucket{le="0.5"} 3`,
+		`kvfs_test_duration_seconds_bucket{le="+Inf"} 4`,
+		`kvfs_test_duration_seconds_count 4`,
+		`# TYPE kvfs_test_duration_seconds histogram`,
+	}
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			t.Errorf("missing %q in:\n%s", w, out)
+		}
+	}
+	// Sum should be 0.001 + 0.030 + 0.200 + 2.0 = 2.231 (within float tolerance).
+	if !strings.Contains(out, "kvfs_test_duration_seconds_sum 2.231") {
+		t.Errorf("expected sum 2.231 in:\n%s", out)
+	}
+}
+
+func TestHistogram_NegativeClampsToZero(t *testing.T) {
+	r := NewRegistry()
+	h := r.Histogram("kvfs_test_clamp_seconds", "Negative clamp", []float64{0.001})
+	h.Observe(-1.0) // should land in 0.001 bucket as 0s
+	var buf bytes.Buffer
+	_ = r.Render(&buf)
+	out := buf.String()
+	if !strings.Contains(out, `kvfs_test_clamp_seconds_bucket{le="0.001"} 1`) {
+		t.Errorf("negative observation not clamped: %s", out)
+	}
+}
+
 func TestSortedOutput(t *testing.T) {
 	r := NewRegistry()
 	r.Counter("kvfs_b_total", "b")

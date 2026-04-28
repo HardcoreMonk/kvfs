@@ -200,7 +200,7 @@ ADR-055 의 정의가 "audit-only". 합치면 backcompat 깨짐 — 운영자가
 | 새 endpoints | `GET /metrics` on coord |
 | 새 metrics | 5 counter + 2 gauge |
 | 데모 | 3 stage (ticker alive → auto-heal → unrecoverable counter) |
-| 테스트 | 186 PASS (185 → 186, TestMetrics_NilSafeAndRenderAfterSetup +1) |
+| 테스트 | 186 PASS at landing (185 → 186, TestMetrics_NilSafeAndRenderAfterSetup +1). 현재 P8-16 후속 포함 target 은 190 |
 
 ## P8 wave 의 진짜 끝?
 
@@ -217,15 +217,15 @@ $ docker run -e COORD_DN_IO=1 \
 = cluster 가 자체 self-heal + audit 진행, operator 는 `/metrics` 만 watch.
 "운영 가능한 분산 storage 의 reference" 라는 frame 1 헌장 기준에 도달.
 
-남은 P8-16 후보:
-- per-shard 정확도 (repair package refactor)
-- adaptive burst cap (load-aware)
-- chunk-level dedupe of unrecoverable
-- multi-tier Merkle (depth ≥2)
-- histogram metrics (latency)
+후속 현황 (2026-04-28):
+- per-shard 정확도 (repair package refactor) — P8-17 후보
+- adaptive burst cap (load-aware) — P8-17 후보
+- chunk-level dedupe of unrecoverable — ADR-063 완료
+- multi-tier Merkle (depth ≥2) — P8-17 후보
+- histogram metrics (latency) — ADR-063 완료
 
 진정한 한계 효용. P8 wave 가 자연스럽게 종결되는 시점.
 
 ## 다음
 
-P8-16 또는 새 시즌 — 운영자 결정.
+P8-17 저우선 polish 또는 새 시즌 — 운영자 결정.

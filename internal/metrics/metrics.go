@@ -20,18 +20,18 @@
 //
 // 출력은 Prometheus text-exposition 0.0.4 포맷:
 //
-//   # HELP kvfs_put_total ...
-//   # TYPE kvfs_put_total counter
-//   kvfs_put_total{mode="replication"} 42
-//   kvfs_put_total{mode="ec"} 7
+//	# HELP kvfs_put_total ...
+//	# TYPE kvfs_put_total counter
+//	kvfs_put_total{mode="replication"} 42
+//	kvfs_put_total{mode="ec"} 7
 //
 // 사용:
 //
-//   reg := metrics.NewRegistry()
-//   putCounter := reg.Counter("kvfs_put_total", "Total PUT requests", "mode")
-//   putCounter.WithLabels("replication").Inc()
-//   ...
-//   reg.WriteTo(w)  // GET /metrics handler
+//	reg := metrics.NewRegistry()
+//	putCounter := reg.Counter("kvfs_put_total", "Total PUT requests", "mode")
+//	putCounter.WithLabels("replication").Inc()
+//	...
+//	reg.WriteTo(w)  // GET /metrics handler
 package metrics
 
 import (
@@ -207,4 +207,89 @@ func (g *Gauge) TypeName() string { return "gauge" }
 func (g *Gauge) Render(w io.Writer) error {
 	_, err := fmt.Fprintf(w, "%s %d\n", g.name, g.fn())
 	return err
+}
+
+// ─── Histogram ──────────────────────────────────────────────────────────
+
+// Histogram counts observations into a fixed bucket ladder + tracks sum
+// and count. Cumulative buckets per Prometheus convention — `le="0.1"`
+// means "≤100ms" and includes everything in the smaller buckets too.
+// `+Inf` is auto-appended and equals count.
+//
+// kvfs 의 histogram 사용 패턴은 시간 측정 (latency / duration) — observation
+// 단위는 초. buckets 는 power-of-two 조각 (1ms, 2ms, 4ms, ..., 32s) 가
+// 자연스러움. caller 가 buckets 정해서 NewHistogram 호출.
+//
+// labels 미지원 — 단순화. label 이 필요하면 metric 자체를 분리. (kvfs 의
+// 모든 histogram use case 는 single-tuple.)
+type Histogram struct {
+	name, help string
+	buckets    []float64        // cumulative upper bounds, ascending. +Inf 묵시.
+	counts     []*atomic.Uint64 // bucket 별 누적 (마지막은 +Inf bucket = count)
+	sum        *atomic.Uint64   // 마이크로초 단위 sum (정수 누적, drift 회피)
+}
+
+// Histogram registers a new histogram. buckets must be ascending, in
+// seconds. A trailing +Inf bucket is implicit; do not include it.
+func (r *Registry) Histogram(name, help string, buckets []float64) *Histogram {
+	bs := make([]float64, len(buckets))
+	copy(bs, buckets)
+	for i := 1; i < len(bs); i++ {
+		if bs[i] <= bs[i-1] {
+			panic(fmt.Sprintf("metrics: histogram %s buckets must be strictly ascending", name))
+		}
+	}
+	counts := make([]*atomic.Uint64, len(bs)+1)
+	for i := range counts {
+		counts[i] = &atomic.Uint64{}
+	}
+	h := &Histogram{
+		name:    name,
+		help:    help,
+		buckets: bs,
+		counts:  counts,
+		sum:     &atomic.Uint64{},
+	}
+	r.register(h)
+	return h
+}
+
+func (h *Histogram) Name() string     { return h.name }
+func (h *Histogram) Help() string     { return h.help }
+func (h *Histogram) TypeName() string { return "histogram" }
+
+// Observe records a single observation in seconds. Negative values clamp
+// to 0 — Prometheus histograms are non-negative by convention, and a
+// negative duration almost certainly means clock-skew.
+func (h *Histogram) Observe(secs float64) {
+	if secs < 0 {
+		secs = 0
+	}
+	for i, ub := range h.buckets {
+		if secs <= ub {
+			h.counts[i].Add(1)
+		}
+	}
+	h.counts[len(h.buckets)].Add(1) // +Inf bucket
+	h.sum.Add(uint64(secs * 1_000_000))
+}
+
+func (h *Histogram) Render(w io.Writer) error {
+	for i, ub := range h.buckets {
+		if _, err := fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", h.name, ub, h.counts[i].Load()); err != nil {
+			return err
+		}
+	}
+	count := h.counts[len(h.buckets)].Load()
+	if _, err := fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", h.name, count); err != nil {
+		return err
+	}
+	sumSecs := float64(h.sum.Load()) / 1_000_000
+	if _, err := fmt.Fprintf(w, "%s_sum %g\n", h.name, sumSecs); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "%s_count %d\n", h.name, count); err != nil {
+		return err
+	}
+	return nil
 }

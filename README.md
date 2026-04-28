@@ -1,7 +1,7 @@
 # kvfs — Key-Value File System
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스.
-> **Go 1.26 · Apache 2.0 · 58 ADR · 54 blog episode · 47 라이브 데모 · 186 unit test**
+> **Go 1.26 · Apache 2.0 · 59 ADR · 55 blog episode · 48 라이브 데모 · 190 unit test**
 
 ## 이것은 무엇인가
 
@@ -16,6 +16,8 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **4** | 성능·효율 | ✅ closed | streaming · CDC · WAL · election · sync repl · transactional Raft · micro-opts |
 | **5** | coord 분리 | ✅ closed (Ep.1~7) | ADR-015·038~042. skeleton → edge meta client → HA → WAL sync → txn commit → placement RPC → cli inspect |
 | **6** | coord operational migration | ✅ Ep.1~7 done | ADR-043~049. rebalance · GC · repair · DN registry · URLKey rotation/propagation — all on coord |
+| **7** | textbook primitives | ✅ closed (Ep.1~4) | ADR-051~054. failure domain · degraded read · tunable consistency · anti-entropy/Merkle |
+| **P8** | self-heal polish | ✅ P8-16 done | ADR-050·055~063. chaos hardening · 4채널 self-heal · continuous repair · Prometheus observability |
 
 이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 목표는 production 이 아니라
 **이해 가능한 레퍼런스**.
@@ -36,7 +38,7 @@ cd kvfs
 ./scripts/demo-epsilon.sh
 ```
 
-전체 35개 데모 라이브 PASS — Season 별 매핑은 아래 ADR 표 참조 (`scripts/demo-*.sh`). 그리스 letter (α~ω, 21개) = S1~S4, 히브리 letter (aleph~nun, 14개) = S5~S6.
+전체 48개 데모 라이브 PASS — Season 별 매핑은 아래 ADR 표 참조 (`scripts/demo-*.sh`). 그리스 letter (α~ω, 21개) = S1~S4, 히브리 letter (aleph~nun, 14개) = S5~S6, S7 + P8 anti-entropy specials 포함.
 
 ## 아키텍처
 
@@ -145,20 +147,48 @@ EC streaming = Ep.6 follow-up (demo-χ). EC+CDC = Ep.7 follow-up (demo-ψ). Sync
 | [048](docs/adr/ADR-048-coord-urlkey-admin.md) | URLKey kid registry on coord | mem (Ep.6) | [41](blog/41-coord-urlkey.md) |
 | [049](docs/adr/ADR-049-edge-urlkey-propagation.md) | Edge urlkey.Signer polling propagation | nun (Ep.7) | [42](blog/42-edge-urlkey-sync.md) |
 
+### Season 7 (textbook primitives)
+
+| ADR | 주제 | Demo | Blog |
+|---|---|---|---|
+| [051](docs/adr/ADR-051-failure-domain-hierarchy.md) | Failure domain hierarchy | samekh (Ep.1) | [43](blog/43-failure-domain-hierarchy.md) |
+| [052](docs/adr/ADR-052-degraded-read.md) | Degraded read | ayin (Ep.2) | [44](blog/44-degraded-read.md) |
+| [053](docs/adr/ADR-053-tunable-consistency.md) | Tunable consistency | pe (Ep.3) | [45](blog/45-tunable-consistency.md) |
+| [054](docs/adr/ADR-054-anti-entropy-merkle.md) | Anti-entropy / Merkle + scrubber | tsadi (Ep.4) | [46](blog/46-anti-entropy-merkle.md) |
+
+### P8 (chaos + anti-entropy self-heal polish)
+
+| ADR | 주제 | Demo | Blog |
+|---|---|---|---|
+| [050](docs/adr/ADR-050-raft-stale-log-protection.md) | Raft stale-log protection + coord bootstrap | chaos-mixed | — |
+| [055](docs/adr/ADR-055-anti-entropy-auto-repair.md) | Anti-entropy auto-repair + scheduled audit | anti-entropy-repair | [47](blog/47-anti-entropy-auto-repair.md) |
+| [056](docs/adr/ADR-056-corrupt-repair-and-dry-run.md) | Corrupt repair + dry-run | anti-entropy-repair-corrupt | [48](blog/48-corrupt-repair-and-dry-run.md) |
+| [057](docs/adr/ADR-057-ec-inline-repair.md) | EC inline repair | anti-entropy-repair-ec | [49](blog/49-ec-inline-repair.md) |
+| [058](docs/adr/ADR-058-ec-corrupt-repair.md) | EC corrupt repair | anti-entropy-repair-ec-corrupt | [50](blog/50-ec-corrupt-repair.md) |
+| [059](docs/adr/ADR-059-throttle-and-precision.md) | Repair throttle + precision | anti-entropy-throttle | [51](blog/51-throttle-and-precision.md) |
+| [060](docs/adr/ADR-060-concurrent-ec-repair.md) | Concurrent EC repair | anti-entropy-concurrent | [52](blog/52-concurrent-ec-repair.md) |
+| [061](docs/adr/ADR-061-resilience-polishes.md) | Resilience polishes | anti-entropy-resilience | [53](blog/53-resilience-polishes.md) |
+| [062](docs/adr/ADR-062-auto-repair-and-metrics.md) | Auto-repair scheduling + coord metrics | anti-entropy-auto-metrics | [54](blog/54-auto-repair-and-metrics.md) |
+| [063](docs/adr/ADR-063-anti-entropy-observability-completions.md) | Anti-entropy observability completions | anti-entropy-observability | [55](blog/55-anti-entropy-observability.md) |
+
 ## 환경 변수
 
 | Env | Default | ADR | 용도 |
 |---|---|---|---|
 | `EDGE_ADDR` | `:8000` | 002 | HTTP bind |
 | `EDGE_DNS` | required | 002 | comma-sep DN addrs |
+| `EDGE_DNS_RESET` | 0 | 027 | bbolt `dns_runtime` 을 `EDGE_DNS` 로 재시드 |
 | `EDGE_DATA_DIR` | `./edge-data` | 004 | bbolt 디렉토리 |
 | `EDGE_URLKEY_SECRET` | required | 007 | HMAC 시크릿 |
+| `EDGE_URLKEY_PRIMARY_KID` | (off) | 028 | primary URLKey kid override |
 | `EDGE_QUORUM_WRITE` | auto | 002 | write quorum (0=auto) |
 | `EDGE_CHUNK_SIZE` | 4 MiB | 011 | bytes per chunk (fixed mode) |
 | `EDGE_CHUNK_MODE` | `fixed` | 018 | `fixed` \| `cdc` (FastCDC, replication only) |
 | `EDGE_AUTO` | 0 | 013 | auto rebalance/GC opt-in |
 | `EDGE_AUTO_REBALANCE_INTERVAL` | 5m | 013 | — |
 | `EDGE_AUTO_GC_INTERVAL` | 15m | 013 | — |
+| `EDGE_AUTO_GC_MIN_AGE` | 60s | 013 | GC safety window |
+| `EDGE_AUTO_CONCURRENCY` | 4 | 013 | auto worker concurrency |
 | `EDGE_HEARTBEAT_INTERVAL` | 10s | 030 | DN probe interval (`0s` = off) |
 | `EDGE_HEARTBEAT_FAIL_THRESHOLD` | 3 | 030 | 연속 실패 → unhealthy |
 | `EDGE_SNAPSHOT_DIR` | (off) | 016 | auto-snapshot 디렉토리 |
@@ -178,19 +208,26 @@ EC streaming = Ep.6 follow-up (demo-χ). EC+CDC = Ep.7 follow-up (demo-ψ). Sync
 | `EDGE_PLACEMENT_PREFER` | (off) | — | DN class bias (e.g. `hot`) |
 | `EDGE_METRICS` | 1 | 036/037 | `/metrics` Prometheus endpoint |
 | `EDGE_CHUNKER_POOL_CAP_BYTES` | (off) | 037 | chunker scratch-pool soft cap |
-| `EDGE_TLS_CERT/KEY`, `EDGE_DN_TLS_CA/CLIENT_CERT/KEY` | (off) | 029 | TLS / mTLS |
+| `EDGE_TLS_CERT/KEY` | (off) | 029 | edge HTTPS server |
+| `EDGE_DN_TLS_CA`, `EDGE_DN_TLS_CLIENT_CERT/KEY` | (off) | 029 | edge → DN TLS / mTLS client |
 | `EDGE_SKIP_AUTH` | 0 | — | DEMO 전용 (production 금지) |
 | `EDGE_COORD_URL` | (off) | 015 | coord proxy mode 활성 (메타·placement 위임) |
 | `EDGE_COORD_URLKEY_POLL_INTERVAL` | 30s | 049 | coord urlkey 변경 polling 주기 |
 | `EDGE_COORD_LOOKUP_CACHE_TTL` | (off) | — | opt-in coord lookup 결과 캐시 TTL (e.g. `2s`) |
-| `COORD_ADDR` | `:8090` | 015 | coord HTTP bind |
+| `COORD_ADDR` | `:9000` | 015 | coord HTTP bind |
 | `COORD_DATA_DIR` | `./coord-data` | 015 | coord bbolt 디렉토리 |
 | `COORD_DNS` | required | 015 | coord 가 알 DN addrs (comma-sep) |
 | `COORD_PEERS` / `COORD_SELF_URL` | (off) | 038 | coord-side election peer set |
 | `COORD_WAL_PATH` | (off) | 039 | coord-to-coord WAL replication |
 | `COORD_TRANSACTIONAL_RAFT` | 0 | 040 | coord replicate-then-commit (Elector + WAL 필수) |
 | `COORD_DN_IO` | 0 | 044 | coord 가 chunk I/O — rebalance/gc/repair apply on coord |
-| `DN_ADDR`, `DN_DATA_DIR`, `DN_ID` | — | 002 | DN 측 |
+| `COORD_ANTI_ENTROPY_INTERVAL` | (off) | 055 | leader-only scheduled audit |
+| `COORD_AUTO_REPAIR_INTERVAL` | (off) | 062 | leader-only scheduled self-heal |
+| `COORD_AUTO_REPAIR_MAX` | 100 | 062 | auto-repair tick 당 max repairs |
+| `COORD_AUTO_REPAIR_CONCURRENCY` | 4 | 062 | auto-repair worker pool size |
+| `COORD_METRICS` | 1 | 062/063 | coord `/metrics` Prometheus endpoint |
+| `DN_ADDR`, `DN_DATA_DIR`, `DN_ID` | `:8080`, required, required | 002 | DN 측 |
+| `DN_SCRUB_INTERVAL` | (off) | 054 | bit-rot scrubber pacing |
 | `DN_TLS_CERT/KEY/CLIENT_CA` | (off) | 029 | DN-side TLS / mTLS |
 
 ## 다음 작업

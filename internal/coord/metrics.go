@@ -30,6 +30,7 @@ package coord
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/metrics"
@@ -40,12 +41,24 @@ import (
 // nil-safe access via the helper methods on Server below — handlers don't
 // have to check whether SetupMetrics ran.
 type metricsHandle struct {
-	reg              *metrics.Registry
-	audits           *metrics.Counter // anti-entropy audits
-	repairs          *metrics.Counter // labels: reason (missing|corrupt|ec)
-	unrecoverable    *metrics.Counter // chunks with no surviving replica
-	throttled        *metrics.Counter // outcomes capped by max_repairs
-	autoRepairRuns   *metrics.Counter // scheduled auto-repair invocations
+	reg            *metrics.Registry
+	audits         *metrics.Counter   // anti-entropy audits
+	repairs        *metrics.Counter   // labels: reason (missing|corrupt|ec)
+	unrecoverable  *metrics.Counter   // chunks with no surviving replica
+	throttled      *metrics.Counter   // outcomes capped by max_repairs
+	autoRepairRuns *metrics.Counter   // scheduled auto-repair invocations
+	skipped        *metrics.Counter   // ADR-063: labels: mode (skip|ec-deferred)
+	auditDuration  *metrics.Histogram // ADR-063: runAntiEntropy wallclock
+	repairDuration *metrics.Histogram // ADR-063: runAntiEntropyRepair wallclock
+}
+
+// histBucketsSeconds: low-latency ladder from 1ms to 30s. Captures the
+// realistic spread for kvfs anti-entropy ops — small audits run in tens
+// of ms, large repairs (corrupt + EC + many DNs) push to seconds. 30s
+// is the saturation marker; anything beyond is +Inf.
+var histBucketsSeconds = []float64{
+	0.001, 0.002, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250,
+	0.500, 1.0, 2.5, 5.0, 10.0, 30.0,
 }
 
 // SetupMetrics builds the registry + counter / gauge definitions and stores
@@ -56,9 +69,12 @@ func (s *Server) SetupMetrics() {
 		reg:            reg,
 		audits:         reg.Counter("kvfs_anti_entropy_audits_total", "Anti-entropy audits initiated"),
 		repairs:        reg.Counter("kvfs_anti_entropy_repairs_total", "Successful anti-entropy repairs", "reason"),
-		unrecoverable:  reg.Counter("kvfs_anti_entropy_unrecoverable_total", "Chunks with no surviving replica detected by anti-entropy"),
+		unrecoverable:  reg.Counter("kvfs_anti_entropy_unrecoverable_total", "Distinct chunks with no surviving replica (deduped, ADR-063)"),
 		throttled:      reg.Counter("kvfs_anti_entropy_throttled_total", "Repair outcomes capped by max_repairs budget"),
 		autoRepairRuns: reg.Counter("kvfs_anti_entropy_auto_repair_runs_total", "Auto-repair ticker invocations (leader-only)"),
+		skipped:        reg.Counter("kvfs_anti_entropy_skipped_total", "Anti-entropy outcomes skipped without repair attempt", "mode"),
+		auditDuration:  reg.Histogram("kvfs_anti_entropy_audit_duration_seconds", "Anti-entropy audit wallclock", histBucketsSeconds),
+		repairDuration: reg.Histogram("kvfs_anti_entropy_repair_duration_seconds", "Anti-entropy repair wallclock", histBucketsSeconds),
 	}
 
 	if s.Elector != nil {
@@ -130,5 +146,29 @@ func (s *Server) recordThrottled() {
 func (s *Server) recordAutoRepairRun() {
 	if s.metrics != nil {
 		s.metrics.autoRepairRuns.Inc()
+	}
+}
+
+// recordSkipped (ADR-063): mode="skip" (DN unreachable) or "ec-deferred"
+// (EC chunk without ec=1 flag). Counts the outcome the operator chose to
+// defer — distinct from no-source / throttled which the system decided.
+func (s *Server) recordSkipped(mode string) {
+	if s.metrics != nil {
+		s.metrics.skipped.WithLabels(mode).Add(1)
+	}
+}
+
+// recordAuditDuration / recordRepairDuration (ADR-063): wallclock for the
+// two hot paths. Bucket ladder is fixed (histBucketsSeconds); operators
+// query rate(_bucket{le="..."}) for percentiles via histogram_quantile().
+func (s *Server) recordAuditDuration(d time.Duration) {
+	if s.metrics != nil {
+		s.metrics.auditDuration.Observe(d.Seconds())
+	}
+}
+
+func (s *Server) recordRepairDuration(d time.Duration) {
+	if s.metrics != nil {
+		s.metrics.repairDuration.Observe(d.Seconds())
 	}
 }

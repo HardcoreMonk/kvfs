@@ -2,7 +2,7 @@
 
 help:
 	@echo 'Targets:'
-	@echo '  build         Build all three binaries to ./bin'
+	@echo '  build         Build all four binaries to ./bin'
 	@echo '  test          Run unit tests'
 	@echo '  test-race     Run unit tests with race detector (requires CGO)'
 	@echo '  bench         Run all Go benchmarks'

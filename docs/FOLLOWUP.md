@@ -2,18 +2,18 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-27** · Season 5 close (Ep.1~7, ADR-015·038~042) + Season 6 Ep.1~7 (ADR-043~049) + 시즌 5/6 코멘트 refresh 까지 반영.
+문서 현행화 일자: **2026-04-28** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift 정리까지 반영.
 
 ## 우선순위 맵
 
 - **P0**: 차단·긴급 — 현재 **0건**
 - **P1**: 명확한 스펙, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
 - **P2**: 리뷰·개선 — 모두 완료
-- **P3**: 사용자 결정 필요 — 현재 **1건** (P3-02 OTel)
+- **P3**: 사용자 결정 필요 — 현재 **0건**
 - **P5**: post-Season-4 wave — 모두 완료
 - **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
-- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~15 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface), P8-05·07·16 (한계효용 polish, 저우선) 잔존
+- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~16 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface + observability completions), P8-05·07·17 (한계효용 polish, 저우선) 잔존
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -109,7 +109,7 @@
 - 평균 episode 길이 ~120 LOC, 합계 ~1700 LOC. 기존 28 episode 의 평균 (~120 LOC) 와 동일한 톤.
 - 본 작업 마감으로 **frame 1 (헌장 기준 100%)** 도달.
 
-### [P8-04] Season 7 — textbook primitives (in progress)
+### ~~[P8-04] Season 7 — textbook primitives~~
 - ~~**Ep.1 (ADR-051)**: Failure domain hierarchy~~ — **DONE 2026-04-27**. `placement.Node.Domain` + `PickByDomain` greedy walk + admin endpoint + cli `dns domain` + demo-samekh (3 racks × 2 DN, R=3 spread + EC 4+2 per-stripe spread). 3 unit tests + ADR-051 + blog Ep.43.
 - ~~**Ep.2 (ADR-052)**: Degraded read~~ — **DONE 2026-04-27**. `Server.parallelFetchShards` (K+M goroutine, first-K-wins, cancel + drain) + `kvfs_ec_degraded_read_total` metric (data shards missing 시) + demo-ayin (1MB EC 4+2, 2 DN kill, GET 정상). 3 unit tests + ADR-052 + blog Ep.44.
 - ~~**Ep.3 (ADR-053)**: Tunable consistency~~ — **DONE 2026-04-27**. `X-KVFS-W` + `X-KVFS-R` 헤더 + `WriteChunkToAddrsW` + `readChunkAgreement` (sha256 agreement = free integrity probe) + `kvfs_tunable_quorum_total{op,value}` metric + demo-pe (9 stages: default·invalid·strong·weak·R=3 agreement). 3 unit tests + ADR-053 + blog Ep.45. **부수 fix**: handleGet 의 phantom Content-Length 정정 (502 응답에 잘못된 CL 빼기).
@@ -189,15 +189,21 @@
   - 코드: ~130 LOC metrics.go + ~50 LOC ticker + ~30 LOC main wiring.
   - 운영 패턴 두 가지 가능: light (audit-only ticker) / continuous self-heal (둘 다 set).
 
-### [P8-16] Anti-entropy 한계효용 후속 polish (저우선)
+### ~~[P8-16] Anti-entropy observability completions~~
+- **DONE 2026-04-27**: ADR-063.
+  - **Histogram metrics**: `internal/metrics.Histogram` 추가. Prometheus cumulative bucket + `_sum` + `_count`. coord 에 `kvfs_anti_entropy_audit_duration_seconds`, `kvfs_anti_entropy_repair_duration_seconds` 연결.
+  - **Skipped counter**: `kvfs_anti_entropy_skipped_total{mode}` (`skip`, `ec-deferred`). 성공/불가/throttle 외 deferred outcome 도 Prometheus 에 남김.
+  - **Unrecoverable dedupe**: process-local `unrecoverableSeen` set. 같은 lost chunk 가 auto-repair tick 마다 재발견되어도 첫 발견만 `slog.Error` + `unrecoverable_total` 증가. 100k cap reset 으로 memory bound.
+  - demo-anti-entropy-observability 3 stage PASS: histogram dump → EC deferred counter → unrecoverable dedupe.
+  - blog Ep.55 작성.
+  - 신규 tests: `TestHistogram_CumulativeBucketsSumCount`, `TestHistogram_NegativeClampsToZero`, `TestMetrics_HistogramsAndSkippedRender`, `TestUnrecoverableDedupe_FirstSeenOnceThenSilent`.
+
+### [P8-17] Anti-entropy 남은 한계효용 polish (저우선)
 - per-shard 정확한 success/failure (repair package refactor — 현재는 per-stripe)
 - `repair.Run` 자체 multi-stripe parallelism 활용
 - Multi-tier hierarchical Merkle (256-bucket flat → depth ≥2)
 - Peer-to-peer DN self-heal
-- Histogram metrics (repair latency, audit duration)
-- `kvfs_anti_entropy_skipped_total{mode}` (skip / ec-deferred 카운트 보강)
 - Adaptive auto-repair (load 감지 시 burst cap 자동 축소)
-- Unrecoverable counter 의 chunk-level dedupe (첫 발견에만 알림)
 - Scrubber rate adaptive (load 감지 시 slowdown)
 - ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
 
@@ -289,16 +295,17 @@
 | 2026-04-26 | ADR-035 micro-opt bundle | WAL group commit (`EDGE_WAL_BATCH_INTERVAL=5ms`, ~15× write throughput) · 3-region FastCDC (`MaskBitsRelax > 0`, MaxSize cap 빈도 ↓) · chunker sync.Pool (alloc churn ↓). +/simplify pass: Truncate-during-wait deadlock fix · flushOnce mu-during-fsync release · pool oversize cap reject |
 | 2026-04-26 | Doc·CI 정리 | CLAUDE.md L4 (-28% 줄, drift 제거) · ADR README 번호 오름차순 정렬 + missing 4건 추가 (032/033/034/035) · 아키텍처 가이드 GUIDE.md + guide.html (13장 walkthrough, mermaid 다이어그램, 자체 포함 HTML) · doc-drift CI (`scripts/check-doc-drift.sh` + `.github/workflows/doc-drift.yml`, 월별 cron + path-trigger). FOLLOWUP.md 자체 갱신 (본 commit) |
 | 2026-04-26 | OSS 발행 | repo private→public + history rewrite + repo recreate (옛 SHA 영구 폐기) · LICENSE 헤더 23 .go 파일 · CONTRIBUTING + CODE_OF_CONDUCT · CI workflow (build/vet/test on Go 1.26, staticcheck, govulncheck) · benchmark suite 4 패키지 · chaos-dn-killer |
+| 2026-04-27 | P8 anti-entropy polish | P8-08~16: auto-repair · corrupt/dry-run · EC inline/corrupt · throttle · concurrent EC/replication · persistent scrubber · continuous self-heal · coord Prometheus surface · histogram/skipped/dedupe observability completions. ADR-055~063 · blog Ep.47~55 · anti-entropy special demos 9개 |
 
 ---
 
-## 현재 상태 요약 (2026-04-27)
+## 현재 상태 요약 (2026-04-28)
 
-- **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. 마지막 commit `69e88e7` (P8-14 resilience polishes)
-- **테스트**: **186 test funcs PASS** (P8-15 의 coord_test +1: TestMetrics_NilSafeAndRenderAfterSetup). `go vet` + staticcheck 클린
-- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~15 anti-entropy demos (8개) = **47개** 라이브 PASS
-- **ADR**: **58 Accepted** — ADR-001~062 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~062, S7: 051~054
-- **Blog**: Ep.1~54 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~15 (Ep.47~54)
+- **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. HEAD `93a0a8f` (P8-15 auto-repair scheduling + /metrics), 워킹트리 P8-16 observability completions + 문서 현행화 반영 완료(미커밋)
+- **테스트**: **190 unit test PASS target** (P8-16 +4). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
+- **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~16 anti-entropy demos (9개) = **48개**. 신규 `demo-anti-entropy-observability` PASS
+- **ADR**: **59 Accepted** — ADR-001~063 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054
+- **Blog**: Ep.1~55 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~16 (Ep.47~55)
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 

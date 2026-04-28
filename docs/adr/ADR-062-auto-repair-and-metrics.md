@@ -135,7 +135,7 @@ kvfs_anti_entropy_unrecoverable_total 6
 | `recordX` 에 sync.Once | atomic.Add 자체가 lock-free + counter 만 — 추가 lock 불필요 |
 | Counter 를 `out.Repairs` 길이로 set (gauge) | 시간 정보 손실. `_total` counter 가 Prometheus rate 함수와 호환 (표준) |
 | Counter 를 ec-summary outcomes 도 포함 | summary 는 synthetic per-call row — 청크 수 != counter 증가량 → operator 혼란. inline outcomes 만 카운트 |
-| `unrecoverable_total` 을 chunk_id 별로 dedupe | counter 가 발견 횟수 (frequency) 의미. dedupe 는 별도 dashboard query (`max_over_time`) 로 |
+| `unrecoverable_total` 을 chunk_id 별로 dedupe | ADR-062 시점에는 발견 횟수 (frequency) 로 채택. 이후 ADR-063 이 operator alert noise 감소를 위해 process-local first-seen dedupe 로 변경 |
 | edge 처럼 `/metrics` 를 flag 로 default on | 따랐음 (`COORD_METRICS=0` 으로만 off). edge 와 패턴 일관 |
 
 ## 결과
@@ -153,7 +153,7 @@ kvfs_anti_entropy_unrecoverable_total 6
   자연스럽게 처리하지만, 절대 count 를 "고유 손실 chunk" 로 잘못 읽으면
   inflate. ADR 본문 + metric HELP 에 명시.
 - **auto-repair 의 burst cap 이 max_repairs 절대값** — 클러스터 크기 비례
-  scaling 미지원. 운영자가 알아서 조정. 향후 adaptive 가 P8-16 후보.
+  scaling 미지원. 운영자가 알아서 조정. 향후 adaptive 가 P8-17 후보.
 - **/metrics public 노출 시 정보** — coord 의 객체 수 / election state 노출.
   민감 환경에서는 `--metrics=false` 로 off 또는 ingress 에서 차단.
 
@@ -173,11 +173,11 @@ kvfs_anti_entropy_unrecoverable_total 6
   ticker 발화 + counter 증가 + unrecoverable signal.
 - 전체 test suite **186 PASS** (P8-14: 185 → +1).
 
-## 후속 (P8-16 후보)
+## 후속 현황 (2026-04-28)
 
-- `_total` 외 histogram (repair latency, audit duration).
-- `kvfs_anti_entropy_skipped_total{mode}` (skip / ec-deferred 도 카운트).
+- `_total` 외 histogram (repair latency, audit duration) 은 ADR-063 으로 완료.
+- `kvfs_anti_entropy_skipped_total{mode}` (skip / ec-deferred 도 카운트) 는 ADR-063 으로 완료.
 - Adaptive auto-repair (load 감지 시 burst cap 자동 축소).
-- `unrecoverable` 의 chunk-level dedupe — 첫 발견에만 알림.
+- `unrecoverable` 의 chunk-level dedupe — 첫 발견에만 알림 — ADR-063 으로 완료.
 - per-shard 정확한 success / failure (repair package refactor).
 - Multi-tier hierarchical Merkle (256-bucket flat → depth ≥2).

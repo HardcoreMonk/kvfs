@@ -11,50 +11,54 @@
 // 매트릭스. 본 패키지는 그 daemon 의 HTTP handler 모음.
 //
 // Season 5 (메타 분리) — Ep.1~7
-//   Ep.1 ADR-015: skeleton + place/commit/lookup/delete RPC
-//   Ep.2 ADR-038-앞: edge → coord meta proxy (CoordClient, EDGE_COORD_URL)
-//   Ep.3 ADR-038: coord HA via Raft (election + leader redirect)
-//   Ep.4 ADR-039: coord-to-coord WAL replication (best-effort)
-//   Ep.5 ADR-040: transactional commit (replicate-then-commit, true strict)
-//   Ep.6 ADR-041: edge → coord placement RPC (single source of truth)
-//   Ep.7 ADR-042: cli direct coord admin (read-only inspect)
+//
+//	Ep.1 ADR-015: skeleton + place/commit/lookup/delete RPC
+//	Ep.2 ADR-038-앞: edge → coord meta proxy (CoordClient, EDGE_COORD_URL)
+//	Ep.3 ADR-038: coord HA via Raft (election + leader redirect)
+//	Ep.4 ADR-039: coord-to-coord WAL replication (best-effort)
+//	Ep.5 ADR-040: transactional commit (replicate-then-commit, true strict)
+//	Ep.6 ADR-041: edge → coord placement RPC (single source of truth)
+//	Ep.7 ADR-042: cli direct coord admin (read-only inspect)
 //
 // Season 6 (운영 분리) — Ep.1~7
-//   Ep.1 ADR-043: rebalance plan on coord (no DN I/O)
-//   Ep.2 ADR-044: rebalance apply (COORD_DN_IO=1 → coordinator embed)
-//   Ep.3 ADR-045: GC plan + apply
-//   Ep.4 ADR-046: EC repair (Reed-Solomon Reconstruct)
-//   Ep.5 ADR-047: DN registry mutation (add/remove/class)
-//   Ep.6 ADR-048: URLKey kid registry (rotate/list/remove)
-//   Ep.7 ADR-049: edge urlkey.Signer propagation (polling)
+//
+//	Ep.1 ADR-043: rebalance plan on coord (no DN I/O)
+//	Ep.2 ADR-044: rebalance apply (COORD_DN_IO=1 → coordinator embed)
+//	Ep.3 ADR-045: GC plan + apply
+//	Ep.4 ADR-046: EC repair (Reed-Solomon Reconstruct)
+//	Ep.5 ADR-047: DN registry mutation (add/remove/class)
+//	Ep.6 ADR-048: URLKey kid registry (rotate/list/remove)
+//	Ep.7 ADR-049: edge urlkey.Signer propagation (polling)
 //
 // HTTP route 카탈로그 (현재 코드의 Routes() 와 1:1 일치):
-//   POST /v1/coord/place                                  Ep.1 — placement
-//   POST /v1/coord/commit                                 Ep.1 — meta write
-//   GET  /v1/coord/lookup?bucket=&key=                    Ep.1 — meta read
-//   POST /v1/coord/delete                                 Ep.1 — meta delete
-//   GET  /v1/coord/healthz                                Ep.1 — liveness + role
-//   POST /v1/election/vote                                Ep.3 — Raft vote RPC
-//   POST /v1/election/heartbeat                           Ep.3 — Raft heartbeat
-//   POST /v1/election/append-wal                          Ep.4 — WAL push
-//   GET  /v1/coord/admin/objects                          Ep.7 — bulk meta dump
-//   GET  /v1/coord/admin/dns                              Ep.7 — DN list (read)
-//   POST /v1/coord/admin/rebalance/plan                   S6 Ep.1 — plan
-//   POST /v1/coord/admin/rebalance/apply?concurrency=N    S6 Ep.2 — apply (DN I/O)
-//   POST /v1/coord/admin/gc/{plan,apply}?min-age=         S6 Ep.3
-//   POST /v1/coord/admin/repair/{plan,apply}?concurrency= S6 Ep.4
-//   POST   /v1/coord/admin/dns?addr=                      S6 Ep.5 — leader-only
-//   DELETE /v1/coord/admin/dns?addr=                      S6 Ep.5 — leader-only
-//   PUT    /v1/coord/admin/dns/class?addr=&class=         S6 Ep.5 — leader-only
-//   GET    /v1/coord/admin/urlkey                         S6 Ep.6 — kid list
-//   POST   /v1/coord/admin/urlkey/rotate                  S6 Ep.6 — leader-only
-//   DELETE /v1/coord/admin/urlkey?kid=                    S6 Ep.6 — leader-only
+//
+//	POST /v1/coord/place                                  Ep.1 — placement
+//	POST /v1/coord/commit                                 Ep.1 — meta write
+//	GET  /v1/coord/lookup?bucket=&key=                    Ep.1 — meta read
+//	POST /v1/coord/delete                                 Ep.1 — meta delete
+//	GET  /v1/coord/healthz                                Ep.1 — liveness + role
+//	POST /v1/election/vote                                Ep.3 — Raft vote RPC
+//	POST /v1/election/heartbeat                           Ep.3 — Raft heartbeat
+//	POST /v1/election/append-wal                          Ep.4 — WAL push
+//	GET  /v1/coord/admin/objects                          Ep.7 — bulk meta dump
+//	GET  /v1/coord/admin/dns                              Ep.7 — DN list (read)
+//	POST /v1/coord/admin/rebalance/plan                   S6 Ep.1 — plan
+//	POST /v1/coord/admin/rebalance/apply?concurrency=N    S6 Ep.2 — apply (DN I/O)
+//	POST /v1/coord/admin/gc/{plan,apply}?min-age=         S6 Ep.3
+//	POST /v1/coord/admin/repair/{plan,apply}?concurrency= S6 Ep.4
+//	POST   /v1/coord/admin/dns?addr=                      S6 Ep.5 — leader-only
+//	DELETE /v1/coord/admin/dns?addr=                      S6 Ep.5 — leader-only
+//	PUT    /v1/coord/admin/dns/class?addr=&class=         S6 Ep.5 — leader-only
+//	GET    /v1/coord/admin/urlkey                         S6 Ep.6 — kid list
+//	POST   /v1/coord/admin/urlkey/rotate                  S6 Ep.6 — leader-only
+//	DELETE /v1/coord/admin/urlkey?kid=                    S6 Ep.6 — leader-only
 //
 // 두 가지 gate:
-//   requireLeader  — HA mode (Elector 활성) 의 mutating RPC 가 follower 에 오면
-//                    503 + X-COORD-LEADER 헤더로 리다이렉트
-//   requireDNIO    — apply 계열 (rebalance/gc/repair) 이 COORD_DN_IO 미설정 시
-//                    503 (coord 가 DN HTTP 클라이언트 없음)
+//
+//	requireLeader  — HA mode (Elector 활성) 의 mutating RPC 가 follower 에 오면
+//	                 503 + X-COORD-LEADER 헤더로 리다이렉트
+//	requireDNIO    — apply 계열 (rebalance/gc/repair) 이 COORD_DN_IO 미설정 시
+//	                 503 (coord 가 DN HTTP 클라이언트 없음)
 //
 // Coord field 는 옵셔널 (COORD_DN_IO=1 일 때만 wired). Plan 계열은 어댑터
 // (rebalancePlanCoord) 로 placer-only fallback. 자세한 거 Server 정의 + 각
@@ -121,7 +125,24 @@ type Server struct {
 	// recordX helpers no-op when this is unset, so unit tests that don't
 	// call SetupMetrics still work.
 	metrics *metricsHandle
+
+	// unrecoverableSeen (ADR-063, P8-16): chunk_ids already surfaced via
+	// slog.Error + recordUnrecoverable since this coord booted. Bounds the
+	// alert noise — auto-repair tick rediscovers the same lost chunk every
+	// cycle, but operators only need the first paging signal. Bounded:
+	// when len > unrecoverableSeenCap the map resets (next discovery
+	// re-alerts) — pathological "all replicas of millions of chunks lost"
+	// would otherwise grow without bound.
+	unrecoverableMu   sync.Mutex
+	unrecoverableSeen map[string]struct{}
 }
+
+// unrecoverableSeenCap caps the dedupe set so a pathological cluster
+// (millions of unrecoverable chunks) cannot consume unbounded RAM. When
+// reached, the map clears — operator gets re-alerted on the next pass,
+// which is the correct fail-safe behavior for an obviously-degraded
+// cluster.
+const unrecoverableSeenCap = 100_000
 
 // transactionalCommitTimeout caps each transactional commit's quorum wait.
 // Matches election.Config's default; not exposed as a field until a real
@@ -410,6 +431,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 //	{"status":"ok","role":"leader","leader_url":"..."}    — HA mode
 //	{"status":"ok","role":"follower","leader_url":"..."}
 //	{"status":"ok","role":"candidate","leader_url":""}
+//
 // handleAdminObjects returns every object's metadata. Same shape as
 // edge's GET /v1/admin/objects but served by coord (the owner). For
 // MVP no pagination; large clusters will need ?limit=&since= later.
@@ -518,8 +540,9 @@ func (s *Server) handleRebalanceApply(w http.ResponseWriter, r *http.Request) {
 // inventory (ListChunks) so both endpoints require Coord != nil.
 //
 // Query params:
-//   ?min-age=DURATION  default 5m (mirror of edge's EDGE_AUTO_GC_MIN_AGE)
-//   ?concurrency=N     apply only; default 4
+//
+//	?min-age=DURATION  default 5m
+//	?concurrency=N     apply only; default 4
 func (s *Server) handleGCPlan(w http.ResponseWriter, r *http.Request) {
 	if s.requireDNIO(w, "gc plan") {
 		return
@@ -870,4 +893,3 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // live in internal/httputil for cross-daemon reuse.
 func writeJSON(w http.ResponseWriter, status int, body any) { httputil.WriteJSON(w, status, body) }
 func writeErr(w http.ResponseWriter, status int, err error) { httputil.WriteErr(w, status, err) }
-

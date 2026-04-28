@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -301,7 +302,7 @@ func TestRebalancePlan_DetectsMisplacedChunk(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 	var plan struct {
-		Scanned    int  `json:"scanned"`
+		Scanned    int `json:"scanned"`
 		Migrations []struct {
 			Bucket  string   `json:"bucket"`
 			Key     string   `json:"key"`
@@ -704,6 +705,76 @@ func TestMetrics_NilSafeAndRenderAfterSetup(t *testing.T) {
 	for _, w := range wants {
 		if !bytes.Contains([]byte(out), []byte(w)) {
 			t.Errorf("missing %q in /metrics output:\n%s", w, out)
+		}
+	}
+}
+
+// ADR-063 (P8-16): unrecoverable dedupe — markUnrecoverableFirstSeen must
+// return true only the first time a chunk_id is observed, then false on
+// re-occurrence. Cap-induced reset is also exercised.
+func TestUnrecoverableDedupe_FirstSeenOnceThenSilent(t *testing.T) {
+	srv := &Server{}
+	if !srv.markUnrecoverableFirstSeen("aaa") {
+		t.Fatal("first call must return true")
+	}
+	if srv.markUnrecoverableFirstSeen("aaa") {
+		t.Error("second call for same id must return false")
+	}
+	if !srv.markUnrecoverableFirstSeen("bbb") {
+		t.Error("first call for different id must return true")
+	}
+	// Force the cap reset path: stuff cap-many unique entries then verify
+	// the map cleared and re-alerts on a previously-seen chunk_id. Uses
+	// fmt-formatted ids to guarantee uniqueness without rune-encoding traps.
+	for i := 0; i < unrecoverableSeenCap+1; i++ {
+		srv.markUnrecoverableFirstSeen(fmt.Sprintf("filler-%d", i))
+	}
+	if !srv.markUnrecoverableFirstSeen("aaa") {
+		t.Error("after cap reset, re-discovered chunks must re-alert")
+	}
+}
+
+// ADR-063: histograms + skipped counter render correctly via /metrics.
+// Ties together the new SetupMetrics counters/histograms and the recordX
+// helpers — confirms wiring + Prometheus shape.
+func TestMetrics_HistogramsAndSkippedRender(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	srv := &Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1:8080", Addr: "dn1:8080"}})}
+	srv.SetupMetrics()
+
+	srv.recordAuditDuration(150 * time.Millisecond)
+	srv.recordRepairDuration(2500 * time.Millisecond)
+	srv.recordSkipped("skip")
+	srv.recordSkipped("ec-deferred")
+	srv.recordSkipped("skip")
+
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+	resp, err := http.Get(hs.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body := make([]byte, 32*1024)
+	n, _ := resp.Body.Read(body)
+	out := string(body[:n])
+
+	wants := []string{
+		`kvfs_anti_entropy_skipped_total{mode="skip"} 2`,
+		`kvfs_anti_entropy_skipped_total{mode="ec-deferred"} 1`,
+		`kvfs_anti_entropy_audit_duration_seconds_bucket{le="0.25"} 1`,
+		`kvfs_anti_entropy_audit_duration_seconds_count 1`,
+		`kvfs_anti_entropy_repair_duration_seconds_bucket{le="2.5"} 1`,
+		`kvfs_anti_entropy_repair_duration_seconds_bucket{le="+Inf"} 1`,
+	}
+	for _, w := range wants {
+		if !bytes.Contains([]byte(out), []byte(w)) {
+			t.Errorf("missing %q in /metrics output", w)
 		}
 	}
 }

@@ -39,7 +39,7 @@ Client ─HTTP+UrlKey─▶ kvfs-edge ─RPC─▶ kvfs-coord × N (placement·m
 
 | 경로 | 의미 |
 |---|---|
-| `cmd/` | 3개 바이너리 엔트리포인트 (edge, dn, cli) |
+| `cmd/` | 4개 바이너리 엔트리포인트 (edge, dn, coord, cli) |
 | `internal/` | 패키지 경계. **외부 import 금지** (Go 표준 `internal/` 규칙). 패키지별 ADR / 시즌-에피소드 매핑은 `docs/adr/README.md` 단일 소스 |
 | `scripts/` | 클러스터 lifecycle + 데모 (bash, curl, docker, python3만) |
 | `docs/adr/` | 아키텍처 의사결정 기록 (불변). 시즌·에피소드·연결 코드 모두 여기 |
@@ -52,7 +52,7 @@ Client ─HTTP+UrlKey─▶ kvfs-edge ─RPC─▶ kvfs-coord × N (placement·m
 
 | 명령 | 용도 |
 |---|---|
-| `make build` | `./bin/` 에 3개 바이너리 |
+| `make build` | `./bin/` 에 4개 바이너리 |
 | `make test` | 단위 테스트 (CGO 없음) |
 | `make test-race` | race 감지 (CGO 필요 — 로컬 Go 있을 때만) |
 | `make fmt` / `make lint` | `gofmt -w .` / `go vet ./...` |

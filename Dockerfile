@@ -1,5 +1,5 @@
-# Multi-stage Dockerfile — builds all three binaries from a single context.
-# Use --target to pick one per service: kvfs-edge, kvfs-dn, kvfs-cli.
+# Multi-stage Dockerfile — builds all four binaries from a single context.
+# Use --target to pick one per service: kvfs-edge, kvfs-dn, kvfs-cli, kvfs-coord.
 
 FROM golang:1.26-alpine AS builder
 WORKDIR /src

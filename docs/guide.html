@@ -261,11 +261,11 @@ flowchart LR
 </div>
 
 <ul>
-  <li><strong>2 종류의 daemon</strong>: <code>kvfs-edge</code> (게이트웨이 + 인라인 coordinator) · <code>kvfs-dn</code> (스토리지 노드).</li>
+  <li><strong>2~3 종류의 daemon</strong>: 기본은 <code>kvfs-edge</code> + <code>kvfs-dn</code>, S5 이후 <code>kvfs-coord</code> 를 켜면 edge 는 thin gateway 가 된다.</li>
   <li><strong>객체 모델</strong>: replication (default 3-way) <strong>또는</strong> Reed-Solomon EC — <code>X-KVFS-EC: K+M</code> 헤더로 PUT 마다 선택.</li>
   <li><strong>메타데이터</strong>: <code>bbolt</code> 단일 파일. <code>objects</code> 버킷이 single source of truth.</li>
   <li><strong>HA</strong>: 멀티 edge — primary 1 + read-replica N (snapshot pull) 또는 Raft-style auto-elected leader.</li>
-  <li><strong>운영성</strong>: edge 가 자기 cluster 의 정렬·청소·복구·snapshot·heartbeat 를 <strong>스스로</strong> 한다.</li>
+  <li><strong>운영성</strong>: edge/coord 가 자기 cluster 의 정렬·청소·복구·snapshot·heartbeat·anti-entropy self-heal 을 <strong>스스로</strong> 한다.</li>
 </ul>
 
 <h2 id="s2"><span class="num">2</span>기본 구조</h2>
@@ -617,10 +617,11 @@ stateDiagram-v2
 <h3>8.7 Metrics (<code>/metrics</code>)</h3>
 <ul>
   <li>Prometheus text format, stdlib only (외부 client lib 없음).</li>
-  <li>Counter / Gauge 만. Histogram 은 없음 (overkill).</li>
+  <li>Counter / Gauge / Histogram. Histogram 은 ADR-063 에서 anti-entropy audit / repair duration 용으로 추가.</li>
   <li><code>EDGE_METRICS=1</code> (default on).</li>
   <li>WAL 운영 가시성 (ADR-036): <code>kvfs_wal_batch_size</code> + <code>kvfs_wal_durable_lag_seconds</code>. group commit 효과 외부 검증.</li>
   <li>메모리 가시성 (ADR-037): <code>kvfs_chunker_pool_bytes</code>. cgroup limit 친화 — <code>EDGE_CHUNKER_POOL_CAP_BYTES</code> 로 soft cap.</li>
+  <li>Coord anti-entropy 가시성 (ADR-062/063): audits / repairs / throttled / unrecoverable / skipped counters + audit / repair duration histograms.</li>
 </ul>
 
 <h2 id="s9"><span class="num">9</span>데이터 모델</h2>
@@ -676,31 +677,41 @@ type Stripe struct {
 <table>
 <thead><tr><th>변수</th><th>기본</th><th>영향</th></tr></thead>
 <tbody>
-<tr><td><code>EDGE_REPLICATION_FACTOR</code></td><td>3</td><td>replication 모드의 R</td></tr>
 <tr><td><code>EDGE_QUORUM_WRITE</code></td><td>⌊R/2⌋+1</td><td>write ack 임계 명시 override (보통 자동)</td></tr>
 <tr><td><code>EDGE_CHUNK_SIZE</code></td><td>4 MiB</td><td>fixed chunk size</td></tr>
 <tr><td><code>EDGE_CHUNK_MODE</code></td><td><code>fixed</code></td><td><code>cdc</code> 로 설정 시 FastCDC 활성</td></tr>
+<tr><td><code>EDGE_ADDR</code> / <code>EDGE_DNS</code> / <code>EDGE_DATA_DIR</code></td><td><code>:8000</code> / required / <code>./edge-data</code></td><td>edge bind / bootstrap DN list / bbolt dir</td></tr>
+<tr><td><code>EDGE_DNS_RESET</code></td><td>0</td><td>bbolt <code>dns_runtime</code> 을 <code>EDGE_DNS</code> 로 강제 재시드</td></tr>
+<tr><td><code>EDGE_URLKEY_SECRET</code> / <code>EDGE_URLKEY_PRIMARY_KID</code></td><td>required / (off)</td><td>HMAC seed / primary kid override</td></tr>
 <tr><td><code>EDGE_WAL_PATH</code></td><td>(off)</td><td>설정 시 WAL 활성</td></tr>
 <tr><td><code>EDGE_WAL_BATCH_INTERVAL</code></td><td>(off)</td><td>설정 시 group commit 활성</td></tr>
 <tr><td><code>EDGE_PEERS</code> / <code>EDGE_SELF_URL</code></td><td>(off)</td><td>설정 시 leader election 활성 (ADR-031)</td></tr>
+<tr><td><code>EDGE_ELECTION_HB_INTERVAL</code></td><td>500ms</td><td>leader heartbeat cadence</td></tr>
+<tr><td><code>EDGE_ELECTION_TIMEOUT_MIN</code> / <code>EDGE_ELECTION_TIMEOUT_MAX</code></td><td>1500ms / 3000ms</td><td>follower election timer jitter range</td></tr>
 <tr><td><code>EDGE_TRANSACTIONAL_RAFT</code></td><td>0</td><td>1 = ADR-034 commit-before-quorum</td></tr>
 <tr><td><code>EDGE_PLACEMENT_PREFER</code></td><td>(off)</td><td>DN class 라벨 bias</td></tr>
 <tr><td><code>EDGE_METRICS</code></td><td>1</td><td><code>/metrics</code> Prometheus endpoint</td></tr>
 <tr><td><code>EDGE_AUTO_REBALANCE_INTERVAL</code></td><td>(off)</td><td>auto-rebalance ticker</td></tr>
 <tr><td><code>EDGE_AUTO_GC_INTERVAL</code></td><td>(off)</td><td>auto-GC ticker</td></tr>
-<tr><td><code>EDGE_AUTO_GC_MIN_AGE</code></td><td>5m</td><td>GC 안전망 — 이보다 어린 chunk 보호</td></tr>
-<tr><td><code>EDGE_AUTO_CONCURRENCY</code></td><td>1</td><td>rebalance/GC worker 동시 실행 수</td></tr>
-<tr><td><code>EDGE_SNAPSHOT_DIR / INTERVAL / KEEP</code></td><td>(off)</td><td>auto-snapshot scheduler</td></tr>
-<tr><td><code>EDGE_HEARTBEAT_INTERVAL</code></td><td>(off)</td><td>DN heartbeat</td></tr>
+<tr><td><code>EDGE_AUTO_GC_MIN_AGE</code></td><td>60s</td><td>GC 안전망 — 이보다 어린 chunk 보호</td></tr>
+<tr><td><code>EDGE_AUTO_CONCURRENCY</code></td><td>4</td><td>rebalance/GC worker 동시 실행 수</td></tr>
+<tr><td><code>EDGE_SNAPSHOT_DIR</code> / <code>EDGE_SNAPSHOT_INTERVAL</code> / <code>EDGE_SNAPSHOT_KEEP</code></td><td>(off) / 1h / 7</td><td>auto-snapshot scheduler</td></tr>
+<tr><td><code>EDGE_HEARTBEAT_INTERVAL</code> / <code>EDGE_HEARTBEAT_FAIL_THRESHOLD</code></td><td>10s / 3</td><td>DN heartbeat interval / unhealthy threshold (<code>0s</code> disables)</td></tr>
 <tr><td><code>EDGE_ROLE</code> / <code>EDGE_PRIMARY_URL</code> / <code>EDGE_FOLLOWER_PULL_INTERVAL</code></td><td><code>primary</code> / — / 30s</td><td>follower 모드: read-only + snapshot pull (ADR-022)</td></tr>
 <tr><td><code>EDGE_TLS_CERT</code> / <code>EDGE_TLS_KEY</code></td><td>(off)</td><td>설정 시 HTTPS 활성 (ADR-029, <code>internal/tlsutil</code>)</td></tr>
+<tr><td><code>EDGE_DN_TLS_CA</code> / <code>EDGE_DN_TLS_CLIENT_CERT</code> / <code>EDGE_DN_TLS_CLIENT_KEY</code></td><td>(off)</td><td>edge → DN TLS / mTLS client config</td></tr>
+<tr><td><code>EDGE_SKIP_AUTH</code></td><td>0</td><td>demo 전용 UrlKey bypass</td></tr>
 <tr><td><code>EDGE_COORD_URL</code></td><td>(off)</td><td>Season 5 Ep.2: 설정 시 edge 가 메타 RPC 를 coord 로 위임 (proxy mode)</td></tr>
 <tr><td><code>COORD_PEERS</code> / <code>COORD_SELF_URL</code></td><td>(off)</td><td>Season 5 Ep.3 (ADR-038): coord-side election. 설정 시 coord 가 HA cluster 일원이 됨</td></tr>
 <tr><td><code>COORD_WAL_PATH</code></td><td>(off)</td><td>Season 5 Ep.4 (ADR-039): coord-to-coord WAL sync 활성. peer 들 간 메타 일관성 보장</td></tr>
 <tr><td><code>COORD_TRANSACTIONAL_RAFT</code></td><td>0</td><td>Season 5 Ep.5 (ADR-040): replicate-then-commit. quorum 실패 시 503 + leader bbolt 무변화</td></tr>
 <tr><td><code>COORD_DN_IO</code></td><td>0</td><td>Season 6 Ep.2 (ADR-044): coord 가 chunk I/O — rebalance/gc/repair apply on coord</td></tr>
+<tr><td><code>COORD_ANTI_ENTROPY_INTERVAL</code></td><td>(off)</td><td>ADR-055: leader-only scheduled audit</td></tr>
+<tr><td><code>COORD_AUTO_REPAIR_INTERVAL/MAX/CONCURRENCY</code></td><td>(off) / 100 / 4</td><td>ADR-062: leader-only scheduled repair + burst cap + worker pool</td></tr>
+<tr><td><code>COORD_METRICS</code></td><td>1</td><td>ADR-062/063: coord <code>/metrics</code></td></tr>
 <tr><td><code>EDGE_COORD_URLKEY_POLL_INTERVAL</code></td><td>30s</td><td>Season 6 Ep.7 (ADR-049): edge 가 coord 의 urlkey 변경 polling sync</td></tr>
 <tr><td><code>EDGE_COORD_LOOKUP_CACHE_TTL</code></td><td>(off)</td><td>P6-10 (opt-in): coord lookup 결과 per-(bucket,key) 캐싱. 권장 1-5s</td></tr>
+<tr><td><code>internal/cliutil</code> / <code>internal/httputil</code></td><td>—</td><td>env/flag parsing + JSON/error helpers. main.go / HTTP packages 의 drift 방지용 공통 helper</td></tr>
 </tbody>
 </table>
 <blockquote><p>운영 디테일 (election timing, DN-side TLS CA 등) 은 <code>README.md</code> § "환경 변수" 의 전체 표.</p></blockquote>
@@ -779,7 +790,7 @@ type Stripe struct {
   <li><strong>NFS / POSIX gateway</strong> — 한번 평가 후 deferred (ADR-032). FUSE 마운트는 메타데이터 모델이 안 맞고, NFS 서버를 박으면 kvfs 가 stateful filesystem 로 변질됨.</li>
 </ul>
 
-<h3>12.3 Season 5 — coord 분리 (in progress)</h3>
+<h3>12.3 Season 5 — coord 분리 (closed, Ep.1~7)</h3>
 <p>ADR-015 Accept (2026-04-26). <code>kvfs-coord</code> daemon 신설 — placement + 메타 ownership 이 edge 에서 떨어져 나간다. ADR-002 supersede.</p>
 <ul>
   <li>Ep.1: <code>cmd/kvfs-coord/</code> skeleton + 4 RPC (<code>/v1/coord/{place,commit,lookup,delete}</code>). 데모 <code>scripts/demo-aleph.sh</code>.</li>
@@ -792,8 +803,8 @@ type Stripe struct {
 </ul>
 <p>Season 5 closed: cluster 가 3-daemon (edge + coord + dn) — coord 가 placement·메타·일관성의 owner.</p>
 
-<h3>12.4 Season 6 — coord operational migration (in progress)</h3>
-<p>Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을 옮긴다.</p>
+<h3>12.4 Season 6 — coord operational migration (Ep.1~7 done)</h3>
+<p>Season 5 가 read-side 를 옮겼다면 Season 6 은 worker + mutating admin 을 옮긴다. Ep.7 까지 완료 — cli 가 모든 admin 을 coord 통해 함, edge 는 진짜 thin gateway + urlkey 자동 sync.</p>
 <ul>
   <li>Ep.1: rebalance plan on coord (ADR-043). 데모 demo-chet (ח).</li>
   <li>Ep.2: rebalance apply on coord (ADR-044). <code>COORD_DN_IO=1</code> → coord 가 DN HTTP I/O. 데모 demo-tet (ט).</li>
@@ -801,7 +812,16 @@ type Stripe struct {
   <li>Ep.4: EC repair on coord (ADR-046). K survivors → RS Reconstruct. cli <code>repair --coord</code>. 데모 demo-kaf (כ).</li>
   <li>Ep.5: DN registry mutation on coord (ADR-047). add/remove/class. cli <code>dns --coord</code>. 데모 demo-lamed (ל).</li>
   <li>Ep.6: URLKey kid registry on coord (ADR-048). cli <code>urlkey --coord</code>. 데모 demo-mem (מ).</li>
-  <li>Ep.7 (현재): Edge urlkey.Signer propagation from coord (ADR-049). polling (<code>EDGE_COORD_URLKEY_POLL_INTERVAL</code>, default 30s). edge 가 coord 의 새 kid 를 자동 반영. 데모 demo-nun (히브리 נ).</li>
+  <li>Ep.7: Edge urlkey.Signer propagation from coord (ADR-049). polling (<code>EDGE_COORD_URLKEY_POLL_INTERVAL</code>, default 30s). edge 가 coord 의 새 kid 를 자동 반영. 데모 demo-nun (히브리 נ).</li>
+</ul>
+
+<h3>12.5 P8 — Frame-1+2 close + anti-entropy self-heal</h3>
+<p>P8 은 chaos / textbook primitive / anti-entropy polish wave. frame 1 (헌장) + frame 2 (textbook primitives) 를 닫고, self-heal coverage 를 replication missing/corrupt + EC missing/corrupt 4채널로 완성했다.</p>
+<ul>
+  <li>Chaos hardening: Raft stale-log vote check + coord bootstrap snapshot pull (ADR-050).</li>
+  <li>Season 7 textbook primitives: failure domain hierarchy (ADR-051), degraded read (ADR-052), tunable consistency (ADR-053), anti-entropy Merkle + scrubber (ADR-054).</li>
+  <li>Self-heal loop: anti-entropy repair / scheduled audit (ADR-055), corrupt repair + dry-run (ADR-056), EC inline repair (ADR-057), EC corrupt repair (ADR-058).</li>
+  <li>Operational polish: throttle + precision (ADR-059), concurrent EC repair (ADR-060), resilience polishes (ADR-061), auto-repair scheduling + coord metrics (ADR-062), observability completions (ADR-063).</li>
 </ul>
 
 <h2 id="s13"><span class="num">13</span>다음에 읽을 것</h2>
@@ -821,13 +841,19 @@ type Stripe struct {
   <li>Ep.1~6 (Season 1~2): MVP 부터 EC 까지 — <code>blog/01..06</code>.</li>
   <li>Ep.7~13 (Season 3): 운영성 7개 — <code>blog/07..13</code>.</li>
   <li>Ep.14~17 (Season 4): 성능·효율 + Raft — <code>blog/14..17</code>.</li>
+  <li>Ep.18~22 (Season 4 follow-ups): EC streaming · CDC × EC · sync repl · transactional Raft · micro-opts — <code>blog/18..22</code>.</li>
+  <li>Ep.23~28 (P4-09 wave): metrics · SIMD-RS · hot/cold · NFS deferred · log compaction · strict-vs-txn — <code>blog/23..28</code>.</li>
+  <li>Ep.29~35 (Season 5): coord 분리 — <code>blog/29..35</code>.</li>
+  <li>Ep.36~42 (Season 6): coord operational migration — <code>blog/36..42</code>.</li>
+  <li>Ep.43~46 (Season 7): textbook primitives — <code>blog/43..46</code>.</li>
+  <li>Ep.47~55 (P8 anti-entropy wave): self-heal + polish — <code>blog/47..55</code>.</li>
 </ul>
 
 <h3>13.3 ADR</h3>
-<p><a href="adr/README.md"><code>docs/adr/README.md</code></a> — 35 ADR, 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.</p>
+<p><a href="adr/README.md"><code>docs/adr/README.md</code></a> — 59 ADR, 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.</p>
 
 <h3>13.4 라이브 데모</h3>
-<p><code>./scripts/demo-*.sh</code> — α 부터 ω 까지 21개. ADR README 의 시즌 표에서 episode → 데모 매핑 확인.</p>
+<p><code>./scripts/demo-*.sh</code> — 48개 = α~ω (S1~S4, 그리스 21자) + aleph~nun (S5~S6, 히브리 14자) + samekh~tsadi (S7, 4자) + P8-08~16 anti-entropy specials (9개). ADR README 의 시즌 표에서 episode → 데모 매핑 확인.</p>
 
 <hr>
 
