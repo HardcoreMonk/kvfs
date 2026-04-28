@@ -23,5 +23,6 @@ certs/
 # OS
 .DS_Store
 
-# Claude Code runtime metadata
+# Agent runtime metadata
 .claude/
+.codex

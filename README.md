@@ -59,6 +59,7 @@ cd kvfs
 
 - 처음 읽기: [`docs/GUIDE.md`](docs/GUIDE.md) (또는 브라우저용 [`docs/guide.html`](docs/guide.html)) — 13개 챕터 walkthrough
 - 짧은 reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- 에이전트 작업 규약: [`AGENTS.md`](AGENTS.md) — Codex 기준. `CLAUDE.md` 는 호환 shim
 
 ## 설계 결정 (ADR 전문)
 

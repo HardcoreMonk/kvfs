@@ -204,4 +204,5 @@ follower 의 PUT/DELETE → 503 + X-KVFS-Primary 헤더
 - 후속 작업: [`FOLLOWUP.md`](FOLLOWUP.md)
 - ADR 전체: [`adr/`](adr/)
 - 환경변수: `../README.md` § "환경 변수"
+- 에이전트 작업 규약: [`../AGENTS.md`](../AGENTS.md) (Codex 기준, `CLAUDE.md` 는 호환 shim)
 - Apache 2.0 라이선스

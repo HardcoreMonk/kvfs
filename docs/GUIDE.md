@@ -621,6 +621,12 @@ missing/corrupt + EC missing/corrupt 4채널로 완성했다.
 
 ## 13. 다음에 읽을 것
 
+### 13.0 Codex 작업 진입점
+
+- `AGENTS.md` — Codex 기준 프로젝트 작업 규약. `CLAUDE.md` 는 이를 import 하는 호환 shim.
+- `docs/FOLLOWUP.md` — pending 작업과 현재 상태의 단일 소스.
+- `./scripts/check-doc-drift.sh` — GUIDE/HTML/ADR/env/package drift 검사.
+
 ### 13.1 코드 진입점 (추천 순서)
 
 1. `cmd/kvfs-edge/main.go` — 모든 wiring 의 출발점.

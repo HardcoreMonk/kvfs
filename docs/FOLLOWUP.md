@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-28** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift 정리까지 반영.
+문서 현행화 일자: **2026-04-28** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리까지 반영.
 
 ## 우선순위 맵
 
@@ -11,7 +11,7 @@
 - **P2**: 리뷰·개선 — 모두 완료
 - **P3**: 사용자 결정 필요 — 현재 **0건**
 - **P5**: post-Season-4 wave — 모두 완료
-- **P6**: Season 5 (coord 분리) + helper extraction + meta cache — 모두 완료
+- **P6**: Season 5 (coord 분리) core — 완료. P6-08·P6-12 helper/cache polish 저우선 잔존
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
 - **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~16 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface + observability completions), P8-05·07·17 (한계효용 polish, 저우선) 잔존
 
@@ -293,20 +293,21 @@
 | 2026-04-26 | Season 4 Ep.1~8 (closed) | Streaming PUT/GET (ADR-017) · Content-defined chunking (ADR-018) · Auto leader election (ADR-031) · WAL (ADR-019) · Follower WAL auto-pull (Ep.5 follow-up) · EC streaming (Ep.6 follow-up) · EC+CDC combined (Ep.7 follow-up) · Synchronous Raft-style WAL replication (Ep.8 follow-up). demo-sigma/tau/upsilon/phi/chi/psi/omega |
 | 2026-04-26 | P4-09 wave (post-Season-4) | Prometheus /metrics · SIMD-style RS (mul-by-constant + 8-byte unroll, 2.3× ↑) · Hot/Cold tier (admin label + placement bias) · NFS gateway deferred (ADR-032) · WAL log compaction · Strict replication informational (ADR-033) · Transactional Raft commit-before-quorum (ADR-034) · S3-compatible API (HEAD + ListBucket) |
 | 2026-04-26 | ADR-035 micro-opt bundle | WAL group commit (`EDGE_WAL_BATCH_INTERVAL=5ms`, ~15× write throughput) · 3-region FastCDC (`MaskBitsRelax > 0`, MaxSize cap 빈도 ↓) · chunker sync.Pool (alloc churn ↓). +/simplify pass: Truncate-during-wait deadlock fix · flushOnce mu-during-fsync release · pool oversize cap reject |
-| 2026-04-26 | Doc·CI 정리 | CLAUDE.md L4 (-28% 줄, drift 제거) · ADR README 번호 오름차순 정렬 + missing 4건 추가 (032/033/034/035) · 아키텍처 가이드 GUIDE.md + guide.html (13장 walkthrough, mermaid 다이어그램, 자체 포함 HTML) · doc-drift CI (`scripts/check-doc-drift.sh` + `.github/workflows/doc-drift.yml`, 월별 cron + path-trigger). FOLLOWUP.md 자체 갱신 (본 commit) |
+| 2026-04-26 | Doc·CI 정리 | agent 작업 규약 정리(당시 `CLAUDE.md` L4, -28% 줄, drift 제거) · ADR README 번호 오름차순 정렬 + missing 4건 추가 (032/033/034/035) · 아키텍처 가이드 GUIDE.md + guide.html (13장 walkthrough, mermaid 다이어그램, 자체 포함 HTML) · doc-drift CI (`scripts/check-doc-drift.sh` + `.github/workflows/doc-drift.yml`, 월별 cron + path-trigger). FOLLOWUP.md 자체 갱신 |
 | 2026-04-26 | OSS 발행 | repo private→public + history rewrite + repo recreate (옛 SHA 영구 폐기) · LICENSE 헤더 23 .go 파일 · CONTRIBUTING + CODE_OF_CONDUCT · CI workflow (build/vet/test on Go 1.26, staticcheck, govulncheck) · benchmark suite 4 패키지 · chaos-dn-killer |
 | 2026-04-27 | P8 anti-entropy polish | P8-08~16: auto-repair · corrupt/dry-run · EC inline/corrupt · throttle · concurrent EC/replication · persistent scrubber · continuous self-heal · coord Prometheus surface · histogram/skipped/dedupe observability completions. ADR-055~063 · blog Ep.47~55 · anti-entropy special demos 9개 |
+| 2026-04-28 | Codex 문서 최적화 | `AGENTS.md` 를 Codex 기준 프로젝트 규약 단일 소스로 추가하고 `CLAUDE.md` 는 호환 shim 으로 축소. `CONTRIBUTING.md` 의 오래된 P4 후보 참조 제거, `README`/`GUIDE`/`ARCHITECTURE` 에 agent 진입점 추가, FOLLOWUP 상태 표현을 commit SHA·worktree 의존이 적은 형태로 정리 |
 
 ---
 
 ## 현재 상태 요약 (2026-04-28)
 
-- **Git**: main, GitHub `HardcoreMonk/kvfs` PUBLIC. HEAD `93a0a8f` (P8-15 auto-repair scheduling + /metrics), 워킹트리 P8-16 observability completions + 문서 현행화 반영 완료(미커밋)
+- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + 문서 현행화
 - **테스트**: **190 unit test PASS target** (P8-16 +4). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
 - **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~16 anti-entropy demos (9개) = **48개**. 신규 `demo-anti-entropy-observability` PASS
 - **ADR**: **59 Accepted** — ADR-001~063 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054
 - **Blog**: Ep.1~55 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~16 (Ep.47~55)
-- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done (P6-12 만 저우선 잔존)
+- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 
 ## 업데이트 규칙
@@ -315,4 +316,5 @@
 - 항목 완료: ✅ + 완료일 표기 후 "완료된 주요 작업 기록" 표에 1줄 이관 (시즌 단위 압축 OK)
 - 우선순위 변경: P 라벨만 교체, 번호 유지
 - 스펙 변경으로 작업 무의미해짐: `~~항목~~` 취소선 + 폐기 사유 한 줄
+- Codex/agent 규약 변경: `AGENTS.md` 를 수정하고 `CLAUDE.md` 는 shim 상태를 유지
 - **본 파일 자체 갱신은 commit 별 작은 diff** 로. 시즌 close · ADR landing 시 즉시.
