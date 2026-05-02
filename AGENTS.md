@@ -129,3 +129,18 @@ and `go vet ./...` or the Docker equivalent from the command table.
 - Do not commit real `EDGE_URLKEY_SECRET` values.
 - `chunk_id` is the sha256 content address. Changing that invariant requires a
   new superseding ADR.
+
+## Plan Grilling
+- `grill-me`는 원본 installer를 설치하지 않고 Codex zone의 `Plan Grilling` workflow로 사용한다.
+- 신규 기능/프로젝트 설계는 `superpowers:brainstorming` 뒤, `superpowers:writing-plans` 전에 `grill-me 방식으로 검토해줘`라고 호출한다.
+- 질문은 한 번에 하나만 하고, 각 질문에는 Codex의 추천 답을 함께 제시한다.
+- 코드/문서로 확인 가능한 내용은 사용자에게 묻지 않고 직접 확인한다.
+- `CONTEXT.md`, `CONTEXT-MAP.md`, `docs/adr/`가 있으면 용어 충돌과 ADR 후보를 함께 검토한다.
+- `npx skills@latest add mattpocock/skills`, `scripts/link-skills.sh`, Claude hook installer는 실행하지 않는다.
+
+## Lifecycle Control Plane
+- 표준 lifecycle contract는 zone 상대 경로 `codex-project-mgmt/docs/codex-lifecycle-control-plane.md`를 따른다.
+- 기본 순서: `intake -> superpowers:brainstorming -> grill-me -> plan-design-review -> superpowers:writing-plans -> plan-eng-review -> implement -> code-review -> release -> operate`.
+- 실제 spec, grill-me 기록, plan, handoff는 해당 project root의 project-local 산출물로 둔다.
+- 새 기능, behavior change, workflow contract change, multi-file change는 lightweight path를 사용하지 않는다.
+- `release` 이후에는 `docs/operations/YYYY-MM-DD-<topic>-handoff.md` 또는 project-equivalent handoff로 운영 진입 상태를 기록한다.
