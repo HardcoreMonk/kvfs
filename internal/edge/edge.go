@@ -473,15 +473,6 @@ func (s *Server) s3Region() string {
 
 func (s *Server) handleS3Foundation(w http.ResponseWriter, r *http.Request) {
 	info := s3api.Classify(r)
-	if info.Operation == s3api.OperationUnsupported {
-		s3api.WriteError(w, r, s3api.NewError(
-			http.StatusNotImplemented,
-			s3api.CodeNotImplemented,
-			"unsupported S3 operation",
-			info.Resource,
-		))
-		return
-	}
 	auth, err := s3api.VerifyRequest(r, s.S3Credentials, time.Now())
 	if err != nil {
 		if s3err, ok := err.(*s3api.Error); ok {
@@ -496,6 +487,15 @@ func (s *Server) handleS3Foundation(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadRequest,
 			s3api.CodeAuthorizationHeaderMalformed,
 			"credential scope must use region "+s.s3Region()+" and service s3",
+			info.Resource,
+		))
+		return
+	}
+	if info.Operation == s3api.OperationUnsupported {
+		s3api.WriteError(w, r, s3api.NewError(
+			http.StatusNotImplemented,
+			s3api.CodeNotImplemented,
+			"unsupported S3 operation",
 			info.Resource,
 		))
 		return
@@ -551,6 +551,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /{bucket}", s.handleS3Foundation)
 	mux.HandleFunc("DELETE /{bucket}", s.handleS3Foundation)
 	mux.HandleFunc("GET /{bucket}", s.handleS3Foundation)
+	mux.HandleFunc("POST /{bucket}", s.handleS3Foundation)
 	mux.HandleFunc("PUT /{bucket}/{key...}", s.handleS3Foundation)
 	mux.HandleFunc("GET /{bucket}/{key...}", s.handleS3Foundation)
 	mux.HandleFunc("DELETE /{bucket}/{key...}", s.handleS3Foundation)
