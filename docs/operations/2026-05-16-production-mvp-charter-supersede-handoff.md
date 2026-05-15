@@ -16,11 +16,15 @@ changed in this release.
 
 ## Verification
 
-- `./scripts/check-doc-drift.sh` — pending execution.
-- `git diff --check` — pending execution.
-- P9 wording scan — pending execution.
-- stale marker scan from `AGENTS.md` — pending execution.
-- `git status --short --branch` — pending execution.
+- `./scripts/check-doc-drift.sh` — PASS, no drift detected.
+- `git diff --check` — PASS.
+- P9 wording scan — PASS, production MVP track / ADR-064 / P9 surface present
+  across public docs, ADR docs, lifecycle artifacts, and handoff.
+- production overclaim scan — PASS, matches are explicit non-production-ready or
+  full-production non-goal guardrails.
+- stale marker scan from `AGENTS.md` — PASS, no matches.
+- `git status --short --branch` — PASS, clean worktree; branch ahead of
+  `origin/main`.
 
 Go tests are not required for this release because the diff is documentation-only.
 
@@ -34,7 +38,7 @@ Go tests are not required for this release because the diff is documentation-onl
 
 ## Blockers
 
-None once verification passes.
+None.
 
 ## Warnings
 
@@ -51,8 +55,7 @@ None once verification passes.
 
 ## Current Lifecycle Stage
 
-Operate is pending for the P9-01 production MVP charter supersede until final
-verification passes and this handoff is updated with PASS results.
+Operate has been entered for the P9-01 production MVP charter supersede.
 
 ## Next Action
 
