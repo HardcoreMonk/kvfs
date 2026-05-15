@@ -55,6 +55,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/election"
 	"github.com/HardcoreMonk/kvfs/internal/heartbeat"
 	"github.com/HardcoreMonk/kvfs/internal/placement"
+	"github.com/HardcoreMonk/kvfs/internal/s3api"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 	"github.com/HardcoreMonk/kvfs/internal/tlsutil"
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
@@ -62,42 +63,45 @@ import (
 
 func main() {
 	var (
-		flagAddr    = flag.String("addr", envOr("EDGE_ADDR", ":8000"), "HTTP bind address")
-		flagDNs     = flag.String("dns", envOr("EDGE_DNS", ""), "comma-separated DN addresses")
-		flagDataDir = flag.String("data-dir", envOr("EDGE_DATA_DIR", "./edge-data"), "dir for bbolt file")
-		flagSecret  = flag.String("secret", envOr("EDGE_URLKEY_SECRET", ""), "HMAC-SHA256 secret")
-		flagQuorum  = flag.Int("quorum", atoiOr(envOr("EDGE_QUORUM_WRITE", "0"), 0), "write quorum; 0 = auto")
-		flagChunk   = flag.Int("chunk-size", atoiOr(envOr("EDGE_CHUNK_SIZE", "0"), 0), "bytes per chunk (ADR-011); 0 = default 4 MiB")
-		flagAuto    = flag.Bool("auto", envOr("EDGE_AUTO", "") == "1", "enable auto rebalance + GC loops (ADR-013)")
-		flagAutoRb  = flag.String("auto-rebalance-interval", envOr("EDGE_AUTO_REBALANCE_INTERVAL", "5m"), "auto rebalance ticker interval")
-		flagAutoGC  = flag.String("auto-gc-interval", envOr("EDGE_AUTO_GC_INTERVAL", "15m"), "auto GC ticker interval")
-		flagAutoMin = flag.String("auto-gc-min-age", envOr("EDGE_AUTO_GC_MIN_AGE", "60s"), "min chunk age for auto GC")
-		flagAutoCnc = flag.Int("auto-concurrency", atoiOr(envOr("EDGE_AUTO_CONCURRENCY", "4"), 4), "parallel ops per auto cycle")
-		flagSkip    = flag.Bool("skip-auth", envOr("EDGE_SKIP_AUTH", "") == "1", "DEMO ONLY: skip UrlKey verify")
-		flagHB      = flag.String("heartbeat-interval", envOr("EDGE_HEARTBEAT_INTERVAL", "10s"), "DN heartbeat probe interval (ADR-030); 0s disables")
-		flagHBFail  = flag.Int("heartbeat-fail-threshold", atoiOr(envOr("EDGE_HEARTBEAT_FAIL_THRESHOLD", "3"), 3), "consecutive probe failures before DN marked unhealthy")
-		flagSnapDir = flag.String("snapshot-dir", envOr("EDGE_SNAPSHOT_DIR", ""), "auto-snapshot output directory (ADR-016); empty disables")
-		flagSnapInt = flag.String("snapshot-interval", envOr("EDGE_SNAPSHOT_INTERVAL", "1h"), "auto-snapshot ticker interval")
-		flagSnapKp  = flag.Int("snapshot-keep", atoiOr(envOr("EDGE_SNAPSHOT_KEEP", "7"), 7), "how many recent snapshots to retain")
-		flagChunkMd  = flag.String("chunk-mode", envOr("EDGE_CHUNK_MODE", "fixed"), "PUT chunker mode (ADR-018): fixed | cdc")
-		flagPoolCap  = flag.Int64("chunker-pool-cap-bytes", int64(atoiOr(envOr("EDGE_CHUNKER_POOL_CAP_BYTES", "0"), 0)), "ADR-037 chunker scratch-pool soft cap in bytes (0 = unlimited)")
-		flagPeers    = flag.String("peers", envOr("EDGE_PEERS", ""), "ADR-031 election: comma-sep peer URLs (incl. self), e.g. 'http://edge1:8000,http://edge2:8000'; empty disables election")
-		flagSelfURL  = flag.String("self-url", envOr("EDGE_SELF_URL", ""), "ADR-031 election: this edge's own peer URL; required when -peers set")
-		flagElectHB  = flag.String("election-heartbeat-interval", envOr("EDGE_ELECTION_HB_INTERVAL", "500ms"), "leader heartbeat cadence (election mode)")
-		flagElectMin = flag.String("election-timeout-min", envOr("EDGE_ELECTION_TIMEOUT_MIN", "1500ms"), "follower → candidate timeout (min)")
-		flagElectMax = flag.String("election-timeout-max", envOr("EDGE_ELECTION_TIMEOUT_MAX", "3000ms"), "follower → candidate timeout (max)")
-		flagWALPath  = flag.String("wal-path", envOr("EDGE_WAL_PATH", ""), "ADR-019 WAL file path (empty disables WAL)")
-		flagWALBatch = flag.String("wal-batch-interval", envOr("EDGE_WAL_BATCH_INTERVAL", ""), "ADR-035 WAL group commit: batch fsync interval (e.g. 5ms). Empty = inline fsync per Append (default).")
-		flagMetrics  = flag.Bool("metrics", envOr("EDGE_METRICS", "1") == "1", "expose /metrics Prometheus endpoint (default on)")
-		flagStrict   = flag.Bool("strict-repl", envOr("EDGE_STRICT_REPL", "") == "1", "ADR-033: surface quorum-replication failure as 503 to client (informational; bbolt commits regardless)")
-		flagTxnRaft  = flag.Bool("transactional-raft", envOr("EDGE_TRANSACTIONAL_RAFT", "") == "1", "ADR-034: replicate-then-commit semantics for PutObject (true Raft-style; rejects writes when quorum unavailable)")
-		flagPrefer   = flag.String("placement-prefer-class", envOr("EDGE_PLACEMENT_PREFER", ""), "Hot/Cold tier (ADR-035 follow-up): bias new writes toward DNs with this class label (empty = no bias)")
+		flagAddr        = flag.String("addr", envOr("EDGE_ADDR", ":8000"), "HTTP bind address")
+		flagDNs         = flag.String("dns", envOr("EDGE_DNS", ""), "comma-separated DN addresses")
+		flagDataDir     = flag.String("data-dir", envOr("EDGE_DATA_DIR", "./edge-data"), "dir for bbolt file")
+		flagSecret      = flag.String("secret", envOr("EDGE_URLKEY_SECRET", ""), "HMAC-SHA256 secret")
+		flagS3AccessKey = flag.String("s3-access-key", envOr("EDGE_S3_ACCESS_KEY", ""), "S3 SigV4 access key for the P9 S3 front door")
+		flagS3SecretKey = flag.String("s3-secret-key", envOr("EDGE_S3_SECRET_KEY", ""), "S3 SigV4 secret key for the P9 S3 front door")
+		flagS3Region    = flag.String("s3-region", envOr("EDGE_S3_REGION", "us-east-1"), "S3 SigV4 region for the P9 S3 front door")
+		flagQuorum      = flag.Int("quorum", atoiOr(envOr("EDGE_QUORUM_WRITE", "0"), 0), "write quorum; 0 = auto")
+		flagChunk       = flag.Int("chunk-size", atoiOr(envOr("EDGE_CHUNK_SIZE", "0"), 0), "bytes per chunk (ADR-011); 0 = default 4 MiB")
+		flagAuto        = flag.Bool("auto", envOr("EDGE_AUTO", "") == "1", "enable auto rebalance + GC loops (ADR-013)")
+		flagAutoRb      = flag.String("auto-rebalance-interval", envOr("EDGE_AUTO_REBALANCE_INTERVAL", "5m"), "auto rebalance ticker interval")
+		flagAutoGC      = flag.String("auto-gc-interval", envOr("EDGE_AUTO_GC_INTERVAL", "15m"), "auto GC ticker interval")
+		flagAutoMin     = flag.String("auto-gc-min-age", envOr("EDGE_AUTO_GC_MIN_AGE", "60s"), "min chunk age for auto GC")
+		flagAutoCnc     = flag.Int("auto-concurrency", atoiOr(envOr("EDGE_AUTO_CONCURRENCY", "4"), 4), "parallel ops per auto cycle")
+		flagSkip        = flag.Bool("skip-auth", envOr("EDGE_SKIP_AUTH", "") == "1", "DEMO ONLY: skip UrlKey verify")
+		flagHB          = flag.String("heartbeat-interval", envOr("EDGE_HEARTBEAT_INTERVAL", "10s"), "DN heartbeat probe interval (ADR-030); 0s disables")
+		flagHBFail      = flag.Int("heartbeat-fail-threshold", atoiOr(envOr("EDGE_HEARTBEAT_FAIL_THRESHOLD", "3"), 3), "consecutive probe failures before DN marked unhealthy")
+		flagSnapDir     = flag.String("snapshot-dir", envOr("EDGE_SNAPSHOT_DIR", ""), "auto-snapshot output directory (ADR-016); empty disables")
+		flagSnapInt     = flag.String("snapshot-interval", envOr("EDGE_SNAPSHOT_INTERVAL", "1h"), "auto-snapshot ticker interval")
+		flagSnapKp      = flag.Int("snapshot-keep", atoiOr(envOr("EDGE_SNAPSHOT_KEEP", "7"), 7), "how many recent snapshots to retain")
+		flagChunkMd     = flag.String("chunk-mode", envOr("EDGE_CHUNK_MODE", "fixed"), "PUT chunker mode (ADR-018): fixed | cdc")
+		flagPoolCap     = flag.Int64("chunker-pool-cap-bytes", int64(atoiOr(envOr("EDGE_CHUNKER_POOL_CAP_BYTES", "0"), 0)), "ADR-037 chunker scratch-pool soft cap in bytes (0 = unlimited)")
+		flagPeers       = flag.String("peers", envOr("EDGE_PEERS", ""), "ADR-031 election: comma-sep peer URLs (incl. self), e.g. 'http://edge1:8000,http://edge2:8000'; empty disables election")
+		flagSelfURL     = flag.String("self-url", envOr("EDGE_SELF_URL", ""), "ADR-031 election: this edge's own peer URL; required when -peers set")
+		flagElectHB     = flag.String("election-heartbeat-interval", envOr("EDGE_ELECTION_HB_INTERVAL", "500ms"), "leader heartbeat cadence (election mode)")
+		flagElectMin    = flag.String("election-timeout-min", envOr("EDGE_ELECTION_TIMEOUT_MIN", "1500ms"), "follower → candidate timeout (min)")
+		flagElectMax    = flag.String("election-timeout-max", envOr("EDGE_ELECTION_TIMEOUT_MAX", "3000ms"), "follower → candidate timeout (max)")
+		flagWALPath     = flag.String("wal-path", envOr("EDGE_WAL_PATH", ""), "ADR-019 WAL file path (empty disables WAL)")
+		flagWALBatch    = flag.String("wal-batch-interval", envOr("EDGE_WAL_BATCH_INTERVAL", ""), "ADR-035 WAL group commit: batch fsync interval (e.g. 5ms). Empty = inline fsync per Append (default).")
+		flagMetrics     = flag.Bool("metrics", envOr("EDGE_METRICS", "1") == "1", "expose /metrics Prometheus endpoint (default on)")
+		flagStrict      = flag.Bool("strict-repl", envOr("EDGE_STRICT_REPL", "") == "1", "ADR-033: surface quorum-replication failure as 503 to client (informational; bbolt commits regardless)")
+		flagTxnRaft     = flag.Bool("transactional-raft", envOr("EDGE_TRANSACTIONAL_RAFT", "") == "1", "ADR-034: replicate-then-commit semantics for PutObject (true Raft-style; rejects writes when quorum unavailable)")
+		flagPrefer      = flag.String("placement-prefer-class", envOr("EDGE_PLACEMENT_PREFER", ""), "Hot/Cold tier (ADR-035 follow-up): bias new writes toward DNs with this class label (empty = no bias)")
 		flagCoordURL    = flag.String("coord-url", envOr("EDGE_COORD_URL", ""), "ADR-015 Season 5 Ep.2: kvfs-coord base URL (e.g. http://coord:9000). Empty = inline meta mode (legacy default).")
 		flagURLKeyPoll  = flag.String("urlkey-poll-interval", envOr("EDGE_COORD_URLKEY_POLL_INTERVAL", "30s"), "ADR-049 Season 6 Ep.7: how often to refresh urlkey.Signer from coord (only when --coord-url set).")
 		flagLookupCache = flag.String("coord-lookup-cache-ttl", envOr("EDGE_COORD_LOOKUP_CACHE_TTL", ""), "P6-10 (opt-in): TTL for per-(bucket,key) lookup cache on CoordClient. Empty = disabled. Recommended 1-5s.")
-		flagRole    = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
-		flagPrim    = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
-		flagPullInt = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
+		flagRole        = flag.String("role", envOr("EDGE_ROLE", "primary"), "edge role (ADR-022): primary | follower")
+		flagPrim        = flag.String("primary-url", envOr("EDGE_PRIMARY_URL", ""), "follower-only: primary edge base URL (e.g. http://primary:8000)")
+		flagPullInt     = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
 	)
 	flag.Parse()
 
@@ -230,6 +234,15 @@ func main() {
 			fatal("build signer: " + err.Error())
 		}
 		log.Info("urlkey signer ready", "kids", len(entries), "primary", primary)
+	}
+
+	var s3Creds s3api.CredentialProvider
+	if (*flagS3AccessKey == "") != (*flagS3SecretKey == "") {
+		fatal("EDGE_S3_ACCESS_KEY and EDGE_S3_SECRET_KEY must be set together")
+	}
+	if *flagS3AccessKey != "" {
+		s3Creds = s3api.StaticCredentials{*flagS3AccessKey: *flagS3SecretKey}
+		log.Info("s3 front door foundation enabled", "region", *flagS3Region)
 	}
 
 	chunkSize := *flagChunk
@@ -380,16 +393,18 @@ func main() {
 	}
 
 	srv := &edge.Server{
-		Store:             ms,
-		Coord:             coord,
-		Signer:            signer,
-		Log:               log,
-		ChunkSize:         chunkSize,
-		AutoCfg:           autoCfg,
-		SkipAuth:          *flagSkip,
-		Heartbeat:         hbMon,
-		SnapshotScheduler: snapSched,
-		CDCEnabled:        cdcEnabled,
+		Store:                ms,
+		Coord:                coord,
+		Signer:               signer,
+		S3Credentials:        s3Creds,
+		S3Region:             *flagS3Region,
+		Log:                  log,
+		ChunkSize:            chunkSize,
+		AutoCfg:              autoCfg,
+		SkipAuth:             *flagSkip,
+		Heartbeat:            hbMon,
+		SnapshotScheduler:    snapSched,
+		CDCEnabled:           cdcEnabled,
 		Elector:              elector,
 		StrictReplication:    *flagTxnRaft,
 		PlacementPreferClass: *flagPrefer,
@@ -513,7 +528,7 @@ func main() {
 
 // Local thin shims so existing callsites stay tight; helpers in
 // internal/cliutil for cross-binary reuse (P6-09).
-func envOr(k, def string) string  { return cliutil.EnvOr(k, def) }
+func envOr(k, def string) string   { return cliutil.EnvOr(k, def) }
 func atoiOr(s string, def int) int { return cliutil.AtoiOr(s, def) }
 func splitTrim(s string) []string  { return cliutil.SplitCSV(s) }
 func fatal(msg string)             { cliutil.Fatal("kvfs-edge: " + msg) }
