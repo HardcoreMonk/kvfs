@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-05-15** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) 까지 반영.
+문서 현행화 일자: **2026-05-16** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) + P9 production MVP charter supersede (ADR-064, production MVP track) 까지 반영.
 
 ## 우선순위 맵
 
@@ -14,6 +14,8 @@
 - **P6**: Season 5 (coord 분리) core — 완료. P6-08·P6-12 helper/cache polish 저우선 잔존
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
 - **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~16 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface + observability completions), P8-05·07·17 (한계효용 polish, 저우선) 잔존
+- **P9**: production MVP track — P9-01 charter supersede done; P9-02+
+  implementation slices follow ADR-064.
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -70,6 +72,58 @@
 
 ### ~~[P6-07] coord transactional commit (ADR-034 port)~~
 - **DONE 2026-04-27**: ADR-040 작성 + 구현. `coord.Server.{TransactionalCommit, ReplicateTimeout}` field, `commit()` helper 가 분기. `COORD_TRANSACTIONAL_RAFT=1` env (Elector + WAL 둘 다 필수, mismatch 시 startup fatal). 2 unit tests: quorum failure → bbolt 무변화 + WAL.LastSeq 무변화, prerequisite 누락 시 fallback. 데모 demo-he.sh (히브리 ה) — 2/3 coord kill 후 PUT 503 + lookup 404 + 복구 후 PUT 200. 148 tests PASS.
+
+---
+
+## P9 — Production MVP track
+
+목표: 내부 single-region MinIO/S3-compatible replacement MVP. 첫 envelope 는
+6-12 DN, 10-100 TB, internal network deployment, AWS SDK/`aws s3`/`mc` core
+object workflow.
+
+### ~~[P9-01] Charter supersede + production MVP profile~~
+
+- **DONE 2026-05-16**: ADR-064 로 project identity 를
+  "educational core + production MVP track" 으로 확장. 현재 revision 을
+  production-ready 라고 claim 하지 않고, production claim 의 gate 를
+  compatibility, chaos, backup/restore, readiness 로 정의.
+
+### [P9-02] S3 compatibility foundation
+
+- `internal/s3api`
+- SigV4 canonical request verification
+- S3 XML response and error shape
+- route mapping
+- `aws s3` / `mc` smoke suite skeleton
+
+### [P9-03] Bucket + object API
+
+- CreateBucket, ListBuckets, DeleteBucket
+- PutObject, GetObject, HeadObject, DeleteObject
+- ListObjectsV2
+
+### [P9-04] Multipart upload
+
+- CreateMultipartUpload
+- UploadPart
+- ListParts
+- CompleteMultipartUpload
+- AbortMultipartUpload
+- incomplete upload cleanup worker
+
+### [P9-05] Production profile enforcement
+
+- `KVFS_PROFILE=production`
+- startup validation
+- admin auth
+- readiness checks
+
+### [P9-06] Operational release gate
+
+- compatibility smoke suite
+- chaos expansion
+- backup/restore rehearsal
+- release-to-operate handoff
 
 ---
 
@@ -298,17 +352,18 @@
 | 2026-04-27 | P8 anti-entropy polish | P8-08~16: auto-repair · corrupt/dry-run · EC inline/corrupt · throttle · concurrent EC/replication · persistent scrubber · continuous self-heal · coord Prometheus surface · histogram/skipped/dedupe observability completions. ADR-055~063 · blog Ep.47~55 · anti-entropy special demos 9개 |
 | 2026-04-28 | Codex 문서 최적화 | `AGENTS.md` 를 Codex 기준 프로젝트 규약 단일 소스로 추가하고 `CLAUDE.md` 는 호환 shim 으로 축소. `CONTRIBUTING.md` 의 오래된 P4 후보 참조 제거, `README`/`GUIDE`/`ARCHITECTURE` 에 agent 진입점 추가, FOLLOWUP 상태 표현을 commit SHA·worktree 의존이 적은 형태로 정리 |
 | 2026-05-15 | Lifecycle governance alignment | `AGENTS.md` 기본 lifecycle 순서에 `domain-architecture` gate 반영. ADR-015 제목/섹션과 ADR-032 상태 라인의 stale wording 정규화. `docs/superpowers/` spec·grill-me·plan 및 `docs/operations/2026-05-15-project-design-governance-handoff.md` 로 release→operate 증거 추가 |
+| 2026-05-16 | P9 production MVP charter | ADR-064 로 internal single-region MinIO/S3-compatible replacement MVP envelope 와 production claim gate 정의. README/GUIDE/ARCHITECTURE/AGENTS/FOLLOWUP 가 educational core + production MVP track 로 정렬됨. |
 
 ---
 
-## 현재 상태 요약 (2026-05-15)
+## 현재 상태 요약 (2026-05-16)
 
-- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + Codex/lifecycle governance 문서 현행화
+- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + Codex/lifecycle governance 문서 현행화 + P9 production MVP charter supersede
 - **테스트**: **190 unit test PASS target** (P8-16 +4). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
 - **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~16 anti-entropy demos (9개) = **48개**. 신규 `demo-anti-entropy-observability` PASS
-- **ADR**: **59 Accepted** — ADR-001~063 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054
+- **ADR**: **60 Accepted** — ADR-001~064 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054, P9: 064
 - **Blog**: Ep.1~55 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~16 (Ep.47~55)
-- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
+- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. P9 production MVP track opened with ADR-064. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 
 ## 업데이트 규칙
