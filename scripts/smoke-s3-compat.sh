@@ -16,8 +16,14 @@ if ! command -v aws >/dev/null 2>&1; then
   exit 0
 fi
 
+if ! command -v mc >/dev/null 2>&1; then
+  echo "SKIP: mc not installed" >&2
+  exit 0
+fi
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+mkdir -p "$tmpdir/mc"
 
 echo "[aws] list-buckets against ${endpoint}"
 set +e
@@ -44,15 +50,10 @@ else
   echo "PASS: aws list-buckets succeeded"
 fi
 
-if ! command -v mc >/dev/null 2>&1; then
-  echo "SKIP: mc not installed" >&2
-  exit 0
-fi
-
 echo "[mc] alias + ls against ${endpoint}"
-mc alias set kvfs-smoke "$endpoint" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null
+mc --config-dir "$tmpdir/mc" alias set kvfs-smoke "$endpoint" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null
 set +e
-mc ls kvfs-smoke/"$bucket" >"$tmpdir/mc.out" 2>"$tmpdir/mc.err"
+mc --config-dir "$tmpdir/mc" ls kvfs-smoke/"$bucket" >"$tmpdir/mc.out" 2>"$tmpdir/mc.err"
 mc_status=$?
 set -e
 
