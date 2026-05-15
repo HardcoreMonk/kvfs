@@ -33,4 +33,4 @@ profile ADR is accepted.
 
 The P9-01 docs may create a stronger production promise than the current code can
 honor. The wording must say "production MVP track" and "first target" rather than
-claiming the current HEAD is already production-ready.
+claiming the current revision is already production-ready.

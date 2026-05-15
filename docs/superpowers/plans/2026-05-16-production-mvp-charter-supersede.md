@@ -179,7 +179,7 @@ insert this section:
 ```markdown
 ## P9 — Production MVP track
 
-P9 opens the production replacement track. It does not claim the current HEAD is
+P9 opens the production replacement track. It does not claim the current revision is
 already production-ready; it defines the first internal MinIO/S3-compatible
 replacement target and the gates required to earn that claim.
 
@@ -349,7 +349,7 @@ In `AGENTS.md` Safety Notes, keep the existing `EDGE_SKIP_AUTH=1` warning and
 add:
 
 ```markdown
-- Do not describe current HEAD as production-ready. Use "production MVP track"
+- Do not describe the current revision as production-ready. Use "production MVP track"
   until ADR-064 gates are implemented and verified.
 - Production-profile work must not weaken S3 SigV4, admin auth, TLS, WAL,
   transactional commit, readiness, or chaos/compatibility gates without a new
@@ -508,7 +508,7 @@ Go tests are not required for this release because the diff is documentation-onl
 ## Audit
 
 - ADR-064 is a new decision and does not rewrite accepted historical ADRs.
-- The production claim is scoped to a production MVP track and not current HEAD.
+- The production claim is scoped to a production MVP track and not the current revision.
 - No secrets, generated local state, binary artifacts, or runtime databases were
   introduced.
 
@@ -601,7 +601,7 @@ Expected: exit 0 with no output.
 Run:
 
 ```bash
-rg -n "P4-01|미커밋|HEAD [0-9a-f]|claude-zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
+rg -n "P4[-]01|미커[밋]|HEAD[ ][0-9a-f]|claude[-]zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
 ```
 
 Expected: exit 1 with no matches.
@@ -611,7 +611,7 @@ Expected: exit 1 with no matches.
 Run:
 
 ```bash
-rg -n "current HEAD.*production-ready|곧바로 production-ready|production replacement for S3/MinIO/Ceph" README.md docs AGENTS.md -g '*.md' -g '*.html'
+rg -n "current revision.*production-ready|곧바로 production-ready|production replacement for S3/MinIO/Ceph" README.md docs AGENTS.md -g '*.md' -g '*.html'
 ```
 
 Expected: only wording that explicitly negates the overclaim is present.
@@ -663,7 +663,7 @@ Expected: commit includes only the P9-01 charter supersede files.
 ## Self-Review Checklist
 
 - The plan implements only P9-01 and leaves S3 protocol code to P9-02.
-- ADR-064 explicitly says current HEAD is not automatically production-ready.
+- ADR-064 explicitly says the current revision is not automatically production-ready.
 - Public docs gain the production MVP target without claiming full AWS S3,
   MinIO, Ceph, NFS, or POSIX parity.
 - The plan avoids adding live env vars to README before Go wiring exists.
