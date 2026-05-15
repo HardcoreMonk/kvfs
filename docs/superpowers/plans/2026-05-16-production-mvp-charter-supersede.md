@@ -1,6 +1,6 @@
 # Production MVP Charter Supersede Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add the P9-01 charter supersede that defines kvfs as an educational core with a production MVP track for internal MinIO/S3-compatible replacement.
 
@@ -51,7 +51,7 @@ foundation after ADR-064 is accepted.
 - Create: `docs/adr/ADR-064-production-mvp-profile.md`
 - Modify: `docs/adr/README.md`
 
-- [ ] **Step 1: Create ADR-064**
+- [x] **Step 1: Create ADR-064**
 
 Create `docs/adr/ADR-064-production-mvp-profile.md` with this content:
 
@@ -171,7 +171,7 @@ Unsupported operations return S3-shaped errors instead of native JSON errors.
 - full S3 parity 를 기대하는 사용자는 명시적 비범위를 읽어야 한다.
 ```
 
-- [ ] **Step 2: Update ADR index with P9**
+- [x] **Step 2: Update ADR index with P9**
 
 In `docs/adr/README.md`, after the P8 table and before "다음 시즌 / 미작성",
 insert this section:
@@ -188,7 +188,7 @@ replacement target and the gates required to earn that claim.
 | [064](ADR-064-production-mvp-profile.md) | Production MVP profile | P9-01 | `docs/superpowers/specs/2026-05-16-production-mvp-replacement-design.md` · production MVP charter supersede |
 ```
 
-- [ ] **Step 3: Update ADR summary line**
+- [x] **Step 3: Update ADR summary line**
 
 In `docs/adr/README.md`, update the final sentence that currently says the next
 season candidates live in `docs/FOLLOWUP.md` so it includes P9:
@@ -198,7 +198,7 @@ season candidates live in `docs/FOLLOWUP.md` so it includes P9:
   [`docs/FOLLOWUP.md`](../FOLLOWUP.md).
 ```
 
-- [ ] **Step 4: Verify ADR links**
+- [x] **Step 4: Verify ADR links**
 
 Run:
 
@@ -215,7 +215,7 @@ Expected: matches in the new ADR and ADR index.
 - Modify: `docs/GUIDE.md`
 - Modify: `docs/guide.html`
 
-- [ ] **Step 1: Update README headline**
+- [x] **Step 1: Update README headline**
 
 In `README.md`, update the opening quote and count line to:
 
@@ -225,7 +225,7 @@ In `README.md`, update the opening quote and count line to:
 > **Go 1.26 · Apache 2.0 · 60 ADR · 55 blog episode · 48 라이브 데모 · 190 unit test**
 ```
 
-- [ ] **Step 2: Update README identity paragraph**
+- [x] **Step 2: Update README identity paragraph**
 
 Replace the paragraph that says the goal is not production with:
 
@@ -239,7 +239,7 @@ ADR-064 의 envelope 와 compatibility·chaos·backup·readiness gate 를 통과
 release 에만 붙인다.
 ```
 
-- [ ] **Step 3: Add P9 row to README season table**
+- [x] **Step 3: Add P9 row to README season table**
 
 Add this row after P8:
 
@@ -247,7 +247,7 @@ Add this row after P8:
 | **P9** | production MVP track | 🚧 P9-01 charter | ADR-064. internal single-region MinIO/S3-compatible replacement MVP profile |
 ```
 
-- [ ] **Step 4: Add README production scope section**
+- [x] **Step 4: Add README production scope section**
 
 After the architecture overview in `README.md`, add:
 
@@ -270,7 +270,7 @@ object lock, cross-region replication, POSIX/NFS/FUSE, Ceph-like storage
 platform. 자세한 기준은 ADR-064.
 ```
 
-- [ ] **Step 5: Update GUIDE audience and non-goals**
+- [x] **Step 5: Update GUIDE audience and non-goals**
 
 In `docs/GUIDE.md`, update the audience section so it includes operators who
 want to understand the production MVP track:
@@ -288,12 +288,12 @@ bullet with:
   parity 나 Ceph-like platform 을 목표로 하지 않는다.
 ```
 
-- [ ] **Step 6: Mirror GUIDE changes in guide.html**
+- [x] **Step 6: Mirror GUIDE changes in guide.html**
 
 Update `docs/guide.html` so the visible text mirrors Step 5. Search for the same
 Korean phrases from `docs/GUIDE.md` and apply the equivalent HTML text.
 
-- [ ] **Step 7: Verify public identity wording**
+- [x] **Step 7: Verify public identity wording**
 
 Run:
 
@@ -310,7 +310,7 @@ and no longer say kvfs is only non-production.
 - Modify: `docs/ARCHITECTURE.md`
 - Modify: `AGENTS.md`
 
-- [ ] **Step 1: Add architecture production topology note**
+- [x] **Step 1: Add architecture production topology note**
 
 In `docs/ARCHITECTURE.md`, after the "모드 선택" list, add:
 
@@ -321,7 +321,7 @@ In `docs/ARCHITECTURE.md`, after the "모드 선택" list, add:
   S3 front door 가 제공하고, metadata/control-plane ownership 은 coord 에 둔다.
 ```
 
-- [ ] **Step 2: Add architecture API boundary note**
+- [x] **Step 2: Add architecture API boundary note**
 
 In `docs/ARCHITECTURE.md`, after the edge data endpoint list, add:
 
@@ -331,7 +331,7 @@ P9 에서 S3-compatible surface 는 production customer contract 가 된다. 기
 legacy/internal surface 로 유지한다.
 ```
 
-- [ ] **Step 3: Update AGENTS project goal**
+- [x] **Step 3: Update AGENTS project goal**
 
 In `AGENTS.md`, replace the current goal bullet with:
 
@@ -343,7 +343,7 @@ In `AGENTS.md`, replace the current goal bullet with:
   readiness gates.
 ```
 
-- [ ] **Step 4: Add AGENTS production safety rule**
+- [x] **Step 4: Add AGENTS production safety rule**
 
 In `AGENTS.md` Safety Notes, keep the existing `EDGE_SKIP_AUTH=1` warning and
 add:
@@ -356,7 +356,7 @@ add:
   superseding ADR.
 ```
 
-- [ ] **Step 5: Verify guidance wording**
+- [x] **Step 5: Verify guidance wording**
 
 Run:
 
@@ -372,7 +372,7 @@ limits.
 **Files:**
 - Modify: `docs/FOLLOWUP.md`
 
-- [ ] **Step 1: Update follow-up summary line**
+- [x] **Step 1: Update follow-up summary line**
 
 In `docs/FOLLOWUP.md`, update the document status line near the top so it ends
 with:
@@ -384,16 +384,16 @@ with:
 Keep the existing 2026-05-15 governance text and append the P9 phrase instead of
 removing prior status.
 
-- [ ] **Step 2: Add P9 priority summary**
+- [x] **Step 2: Add P9 priority summary**
 
 In the priority map, add:
 
 ```markdown
-- **P9**: production MVP track — P9-01 charter supersede in progress; P9-02+
+- **P9**: production MVP track — P9-01 charter supersede done; P9-02+
   implementation slices follow ADR-064.
 ```
 
-- [ ] **Step 3: Add P9 section**
+- [x] **Step 3: Add P9 section**
 
 Add this section before the current P8 section:
 
@@ -404,9 +404,9 @@ Add this section before the current P8 section:
 6-12 DN, 10-100 TB, internal network deployment, AWS SDK/`aws s3`/`mc` core
 object workflow.
 
-### [P9-01] Charter supersede + production MVP profile
+### ~~[P9-01] Charter supersede + production MVP profile~~
 
-- **IN PROGRESS 2026-05-16**: ADR-064 로 project identity 를
+- **DONE 2026-05-16**: ADR-064 로 project identity 를
   "educational core + production MVP track" 으로 확장. 현재 revision 을
   production-ready 라고 claim 하지 않고, production claim 의 gate 를
   compatibility, chaos, backup/restore, readiness 로 정의.
@@ -449,7 +449,7 @@ object workflow.
 - release-to-operate handoff
 ```
 
-- [ ] **Step 4: Update current summary**
+- [x] **Step 4: Update current summary**
 
 In the current summary near the bottom, update:
 
@@ -457,7 +457,7 @@ In the current summary near the bottom, update:
 - **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. P9 production MVP track opened with ADR-064. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
 ```
 
-- [ ] **Step 5: Verify follow-up state**
+- [x] **Step 5: Verify follow-up state**
 
 Run:
 
@@ -473,7 +473,7 @@ present.
 **Files:**
 - Create: `docs/operations/2026-05-16-production-mvp-charter-supersede-handoff.md`
 
-- [ ] **Step 1: Create operation handoff**
+- [x] **Step 1: Create operation handoff**
 
 Create `docs/operations/2026-05-16-production-mvp-charter-supersede-handoff.md`
 with this content:
@@ -489,7 +489,7 @@ Documentation and governance change for P9-01:
 - Public docs describe kvfs as educational core plus production MVP track.
 - Architecture docs define 3-daemon coord-proxy topology as the production
   baseline.
-- AGENTS guidance prevents current-HEAD production overclaiming.
+- AGENTS guidance prevents current-revision production overclaiming.
 - FOLLOWUP records P9 implementation slices.
 
 No Go behavior, runtime API, wire protocol, data format, dependency, or demo
@@ -497,11 +497,15 @@ changed in this release.
 
 ## Verification
 
-- `./scripts/check-doc-drift.sh` — pending execution.
-- `git diff --check` — pending execution.
-- P9 wording scan — pending execution.
-- stale marker scan from `AGENTS.md` — pending execution.
-- `git status --short --branch` — pending execution.
+- `./scripts/check-doc-drift.sh` — PASS, no drift detected.
+- `git diff --check` — PASS.
+- P9 wording scan — PASS, production MVP track / ADR-064 / P9 surface present
+  across public docs, ADR docs, lifecycle artifacts, and handoff.
+- production overclaim scan — PASS, matches are explicit non-production-ready or
+  full-production non-goal guardrails.
+- stale marker scan from `AGENTS.md` — PASS, no matches.
+- `git status --short --branch` — PASS, clean worktree; branch ahead of
+  `origin/main`.
 
 Go tests are not required for this release because the diff is documentation-only.
 
@@ -514,13 +518,10 @@ Go tests are not required for this release because the diff is documentation-onl
 
 ## Blockers
 
-None once verification passes.
+None.
 
 ## Warnings
 
-- The repository has unrelated pre-existing dirty documentation work from the
-  lifecycle governance rollout. Stage only files from this P9-01 scope when
-  committing.
 - P9-01 creates a production target before production code exists. This is
   intentional; wording must keep "track" and "gate" language.
 
@@ -534,8 +535,7 @@ None once verification passes.
 
 ## Current Lifecycle Stage
 
-Operate has been entered for the P9-01 production MVP charter supersede only
-after verification passes.
+Operate has been entered for the P9-01 production MVP charter supersede.
 
 ## Next Action
 
@@ -551,7 +551,7 @@ and committed.
 - P9-06: operational release gate.
 ```
 
-- [ ] **Step 2: Replace pending verification markers after running checks**
+- [x] **Step 2: Replace pending verification markers after running checks**
 
 After Task 6 verification passes, edit the handoff `Verification` section so
 each pending line becomes a PASS line with the actual command result.
@@ -562,9 +562,9 @@ Example final shape:
 - `./scripts/check-doc-drift.sh` — PASS, no drift detected.
 - `git diff --check` — PASS.
 - P9 wording scan — PASS, production MVP track wording present.
+- production overclaim scan — PASS, matches are explicit guardrail wording.
 - stale marker scan from `AGENTS.md` — PASS, no matches.
-- `git status --short --branch` — PASS, only intentional P9-01 docs plus
-  pre-existing unrelated dirty work listed.
+- `git status --short --branch` — PASS, clean worktree.
 ```
 
 ### Task 6: Verification And Commit
@@ -572,7 +572,7 @@ Example final shape:
 **Files:**
 - No new source files beyond Tasks 1-5.
 
-- [ ] **Step 1: Run doc drift check**
+- [x] **Step 1: Run doc drift check**
 
 Run:
 
@@ -586,7 +586,7 @@ Expected:
 OK — no drift detected.
 ```
 
-- [ ] **Step 2: Run whitespace check**
+- [x] **Step 2: Run whitespace check**
 
 Run:
 
@@ -596,17 +596,17 @@ git diff --check
 
 Expected: exit 0 with no output.
 
-- [ ] **Step 3: Run stale marker scan**
+- [x] **Step 3: Run stale marker scan**
 
 Run:
 
 ```bash
-rg -n "P4[-]01|미커[밋]|HEAD[ ][0-9a-f]|claude[-]zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
+rg -n "P4[-]01|미커[밋]|HEAD[[:space:]][0-9a-f]|claude[-]zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
 ```
 
 Expected: exit 1 with no matches.
 
-- [ ] **Step 4: Run production overclaim scan**
+- [x] **Step 4: Run production overclaim scan**
 
 Run:
 
@@ -616,7 +616,7 @@ rg -n "current revision.*production-ready|곧바로 production-ready|production 
 
 Expected: only wording that explicitly negates the overclaim is present.
 
-- [ ] **Step 5: Run P9 surface scan**
+- [x] **Step 5: Run P9 surface scan**
 
 Run:
 
@@ -627,7 +627,7 @@ rg -n "ADR-064|P9|production MVP track|MinIO/S3-compatible replacement|internal/
 Expected: matches in ADR-064, README, GUIDE, guide.html, ARCHITECTURE,
 FOLLOWUP, AGENTS, the design spec, and this plan.
 
-- [ ] **Step 6: Check worktree**
+- [x] **Step 6: Check worktree**
 
 Run:
 
@@ -639,7 +639,7 @@ Expected: current branch is ahead by the previously committed design spec, and
 the P9-01 files are listed as intentional docs changes. Existing unrelated dirty
 work from 2026-05-15 governance may still be listed.
 
-- [ ] **Step 7: Stage only P9-01 files**
+- [x] **Step 7: Stage only P9-01 files**
 
 Run:
 
@@ -650,7 +650,7 @@ git add docs/adr/ADR-064-production-mvp-profile.md docs/adr/README.md README.md 
 Do not stage unrelated governance artifacts unless the user explicitly chooses
 to fold them into the same commit.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 Run:
 
