@@ -38,15 +38,16 @@ type RequestInfo struct {
 }
 
 func Classify(r *http.Request) RequestInfo {
-	bucket, key := splitS3Path(r.URL.Path)
+	resource := r.URL.EscapedPath()
+	if resource == "" {
+		resource = "/"
+	}
+	bucket, key := splitS3Path(resource)
 	info := RequestInfo{
 		Operation: OperationUnsupported,
 		Bucket:    bucket,
 		Key:       key,
-		Resource:  r.URL.EscapedPath(),
-	}
-	if info.Resource == "" {
-		info.Resource = "/"
+		Resource:  resource,
 	}
 	q := r.URL.Query()
 
@@ -102,15 +103,14 @@ func Classify(r *http.Request) RequestInfo {
 	return info
 }
 
-func splitS3Path(rawPath string) (bucket, key string) {
-	trimmed := strings.TrimPrefix(rawPath, "/")
-	trimmed = strings.TrimSuffix(trimmed, "/")
+func splitS3Path(escapedPath string) (bucket, key string) {
+	trimmed := strings.TrimPrefix(escapedPath, "/")
 	if trimmed == "" {
 		return "", ""
 	}
 	head, tail, hasTail := strings.Cut(trimmed, "/")
 	bucket, _ = url.PathUnescape(head)
-	if !hasTail {
+	if !hasTail || tail == "" {
 		return bucket, ""
 	}
 	key, _ = url.PathUnescape(tail)

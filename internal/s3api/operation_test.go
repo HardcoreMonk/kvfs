@@ -22,8 +22,12 @@ func TestClassifyOperation(t *testing.T) {
 		{"create bucket", http.MethodPut, "/photos", OperationCreateBucket, "photos", ""},
 		{"delete bucket", http.MethodDelete, "/photos", OperationDeleteBucket, "photos", ""},
 		{"list objects v2", http.MethodGet, "/photos?list-type=2&prefix=raw/", OperationListObjectsV2, "photos", ""},
+		{"list objects v2 bucket slash", http.MethodGet, "/photos/?list-type=2", OperationListObjectsV2, "photos", ""},
 		{"put object", http.MethodPut, "/photos/raw/a.jpg", OperationPutObject, "photos", "raw/a.jpg"},
+		{"put object trailing slash", http.MethodPut, "/photos/raw/", OperationPutObject, "photos", "raw/"},
 		{"get object", http.MethodGet, "/photos/raw/a.jpg", OperationGetObject, "photos", "raw/a.jpg"},
+		{"get object with space", http.MethodGet, "/photos/a%20b", OperationGetObject, "photos", "a b"},
+		{"get object with encoded percent slash", http.MethodGet, "/photos/a%252Fb", OperationGetObject, "photos", "a%2Fb"},
 		{"head object", http.MethodHead, "/photos/raw/a.jpg", OperationHeadObject, "photos", "raw/a.jpg"},
 		{"delete object", http.MethodDelete, "/photos/raw/a.jpg", OperationDeleteObject, "photos", "raw/a.jpg"},
 		{"create multipart upload", http.MethodPost, "/photos/raw/a.jpg?uploads", OperationCreateMultipartUpload, "photos", "raw/a.jpg"},
@@ -44,6 +48,16 @@ func TestClassifyOperation(t *testing.T) {
 				t.Fatalf("Bucket/Key = %q/%q, want %q/%q", got.Bucket, got.Key, tt.bucket, tt.key)
 			}
 		})
+	}
+}
+
+func TestClassifyResourcePreservesEscapedPath(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/photos/a%252Fb", nil)
+
+	got := Classify(req)
+
+	if got.Resource != "/photos/a%252Fb" {
+		t.Fatalf("Resource = %q, want %q", got.Resource, "/photos/a%252Fb")
 	}
 }
 
