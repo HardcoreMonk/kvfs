@@ -52,6 +52,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/reedsolomon"
 	"github.com/HardcoreMonk/kvfs/internal/repair"
+	"github.com/HardcoreMonk/kvfs/internal/s3api"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
 )
@@ -97,7 +98,16 @@ type Server struct {
 	Store  *store.MetaStore
 	Coord  *coordinator.Coordinator
 	Signer *urlkey.Signer
-	Log    *slog.Logger
+
+	// S3Credentials enables the P9 S3-compatible front door. nil means the
+	// S3 route surface exists but fails closed with S3-shaped AccessDenied.
+	S3Credentials s3api.CredentialProvider
+
+	// S3Region is the SigV4 region advertised/accepted for the first MVP.
+	// Empty falls back to us-east-1.
+	S3Region string
+
+	Log *slog.Logger
 
 	// ChunkSize is bytes-per-chunk for fixed-mode PUT splitting (ADR-011).
 	// Zero / negative falls back to chunker.DefaultChunkSize.
@@ -140,10 +150,10 @@ type Server struct {
 	// autoMu protects autoRuns + lastCheck timestamps.
 	// Empty cycles update lastCheck only (not autoRuns) so the ring buffer
 	// keeps actionable history; lastCheck still proves the loop is alive.
-	autoMu                  sync.Mutex
-	autoRuns                []AutoRun
-	autoLastCheckRebalance  time.Time
-	autoLastCheckGC         time.Time
+	autoMu                 sync.Mutex
+	autoRuns               []AutoRun
+	autoLastCheckRebalance time.Time
+	autoLastCheckGC        time.Time
 
 	// Heartbeat is the per-DN liveness monitor (ADR-030). nil disables it.
 	// StartHeartbeat wires up the periodic probe loop.
@@ -454,6 +464,50 @@ func (s *Server) newPutReader(src io.Reader) pieceReader {
 	return chunker.NewReader(src, s.chunkSize())
 }
 
+func (s *Server) s3Region() string {
+	if s.S3Region == "" {
+		return "us-east-1"
+	}
+	return s.S3Region
+}
+
+func (s *Server) handleS3Foundation(w http.ResponseWriter, r *http.Request) {
+	info := s3api.Classify(r)
+	if info.Operation == s3api.OperationUnsupported {
+		s3api.WriteError(w, r, s3api.NewError(
+			http.StatusNotImplemented,
+			s3api.CodeNotImplemented,
+			"unsupported S3 operation",
+			info.Resource,
+		))
+		return
+	}
+	auth, err := s3api.VerifyRequest(r, s.S3Credentials, time.Now())
+	if err != nil {
+		if s3err, ok := err.(*s3api.Error); ok {
+			s3api.WriteError(w, r, s3err)
+			return
+		}
+		s3api.WriteError(w, r, s3api.NewError(http.StatusForbidden, s3api.CodeAccessDenied, err.Error(), info.Resource))
+		return
+	}
+	if auth.Service != "s3" || auth.Region != s.s3Region() {
+		s3api.WriteError(w, r, s3api.NewError(
+			http.StatusBadRequest,
+			s3api.CodeAuthorizationHeaderMalformed,
+			"credential scope must use region "+s.s3Region()+" and service s3",
+			info.Resource,
+		))
+		return
+	}
+	s3api.WriteError(w, r, s3api.NewError(
+		http.StatusNotImplemented,
+		s3api.CodeNotImplemented,
+		info.Operation.String()+" is not implemented in P9-02",
+		info.Resource,
+	))
+}
+
 // Routes builds the HTTP mux.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
@@ -492,6 +546,15 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("POST /v1/election/append-wal", s.Elector.HandleAppendWAL)
 	}
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+
+	mux.HandleFunc("GET /", s.handleS3Foundation)
+	mux.HandleFunc("PUT /{bucket}", s.handleS3Foundation)
+	mux.HandleFunc("DELETE /{bucket}", s.handleS3Foundation)
+	mux.HandleFunc("GET /{bucket}", s.handleS3Foundation)
+	mux.HandleFunc("PUT /{bucket}/{key...}", s.handleS3Foundation)
+	mux.HandleFunc("GET /{bucket}/{key...}", s.handleS3Foundation)
+	mux.HandleFunc("DELETE /{bucket}/{key...}", s.handleS3Foundation)
+	mux.HandleFunc("POST /{bucket}/{key...}", s.handleS3Foundation)
 	return logRequests(mux)
 }
 
@@ -1247,9 +1310,13 @@ func parseMinAge(r *http.Request) time.Duration {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	var dns []string
+	if s.Coord != nil {
+		dns = s.Coord.DNs()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
-		"dns":    s.Coord.DNs(),
+		"dns":    dns,
 	})
 }
 
@@ -1635,6 +1702,7 @@ func parseEC(hdr string) (k, m int, err error) {
 //     desired DNs = Pick(stripe_id, K+M) → K+M distinct DN addresses,
 //     PUT each shard to its assigned DN
 //  5. Persist ObjectMeta with EC params + Stripes
+//
 // handlePutECStream is the streaming EC PUT (ADR-017 follow-up to ADR-008).
 // Reads stripeBytes (= K × shardSize) at a time from r.Body, encodes to
 // K+M shards, fans out, and appends one stripe per iteration. Memory bound
