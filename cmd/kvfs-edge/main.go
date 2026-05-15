@@ -68,7 +68,7 @@ func main() {
 		flagDataDir     = flag.String("data-dir", envOr("EDGE_DATA_DIR", "./edge-data"), "dir for bbolt file")
 		flagSecret      = flag.String("secret", envOr("EDGE_URLKEY_SECRET", ""), "HMAC-SHA256 secret")
 		flagS3AccessKey = flag.String("s3-access-key", envOr("EDGE_S3_ACCESS_KEY", ""), "S3 SigV4 access key for the P9 S3 front door")
-		flagS3SecretKey = flag.String("s3-secret-key", envOr("EDGE_S3_SECRET_KEY", ""), "S3 SigV4 secret key for the P9 S3 front door")
+		flagS3SecretKey = flag.String("s3-secret-key", "", "S3 SigV4 secret key for the P9 S3 front door")
 		flagS3Region    = flag.String("s3-region", envOr("EDGE_S3_REGION", "us-east-1"), "S3 SigV4 region for the P9 S3 front door")
 		flagQuorum      = flag.Int("quorum", atoiOr(envOr("EDGE_QUORUM_WRITE", "0"), 0), "write quorum; 0 = auto")
 		flagChunk       = flag.Int("chunk-size", atoiOr(envOr("EDGE_CHUNK_SIZE", "0"), 0), "bytes per chunk (ADR-011); 0 = default 4 MiB")
@@ -104,6 +104,16 @@ func main() {
 		flagPullInt     = flag.String("follower-pull-interval", envOr("EDGE_FOLLOWER_PULL_INTERVAL", "30s"), "follower-only: snapshot pull interval")
 	)
 	flag.Parse()
+
+	s3SecretKeySet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "s3-secret-key" {
+			s3SecretKeySet = true
+		}
+	})
+	if !s3SecretKeySet {
+		*flagS3SecretKey = envOr("EDGE_S3_SECRET_KEY", "")
+	}
 
 	if *flagDNs == "" {
 		fatal("EDGE_DNS / -dns required")
