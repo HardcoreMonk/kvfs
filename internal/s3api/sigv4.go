@@ -78,12 +78,21 @@ func VerifyRequest(r *http.Request, provider CredentialProvider, now time.Time) 
 	if err != nil {
 		return nil, NewError(http.StatusBadRequest, CodeAuthorizationHeaderMalformed, "invalid X-Amz-Date header", r.URL.Path)
 	}
+	if !validScopeDate(parsed.scope[0]) {
+		return nil, NewError(http.StatusBadRequest, CodeAuthorizationHeaderMalformed, "credential scope date must be YYYYMMDD", r.URL.Path)
+	}
+	if parsed.scope[0] != reqTime.Format("20060102") {
+		return nil, NewError(http.StatusBadRequest, CodeAuthorizationHeaderMalformed, "credential scope date must match X-Amz-Date", r.URL.Path)
+	}
 	if reqTime.Before(now.Add(-maxClockSkew)) || reqTime.After(now.Add(maxClockSkew)) {
 		return nil, NewError(http.StatusForbidden, CodeAccessDenied, "request time is outside the allowed clock skew", r.URL.Path)
 	}
 	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
 	if payloadHash == "" {
 		return nil, NewError(http.StatusBadRequest, CodeMissingSecurityHeader, "missing X-Amz-Content-Sha256 header", r.URL.Path)
+	}
+	if err := validateSignedHeaders(r, parsed.signedHeaders); err != nil {
+		return nil, err
 	}
 	creq, err := canonicalRequest(r, parsed.signedHeaders, payloadHash)
 	if err != nil {
@@ -110,6 +119,33 @@ func VerifyRequest(r *http.Request, provider CredentialProvider, now time.Time) 
 func verifyOnly(r *http.Request, provider CredentialProvider, now time.Time) error {
 	_, err := VerifyRequest(r, provider, now)
 	return err
+}
+
+func validScopeDate(scopeDate string) bool {
+	if len(scopeDate) != len("20060102") {
+		return false
+	}
+	t, err := time.Parse("20060102", scopeDate)
+	return err == nil && t.Format("20060102") == scopeDate
+}
+
+func validateSignedHeaders(r *http.Request, signedHeaders []string) error {
+	signed := make(map[string]bool, len(signedHeaders))
+	for _, name := range signedHeaders {
+		signed[name] = true
+	}
+	for _, required := range []string{"host", "x-amz-content-sha256", "x-amz-date"} {
+		if !signed[required] {
+			return NewError(http.StatusBadRequest, CodeAuthorizationHeaderMalformed, "SignedHeaders must include "+required, r.URL.Path)
+		}
+	}
+	for name := range r.Header {
+		name = strings.ToLower(name)
+		if strings.HasPrefix(name, "x-amz-") && !signed[name] {
+			return NewError(http.StatusForbidden, CodeAccessDenied, "x-amz headers must be signed", r.URL.Path)
+		}
+	}
+	return nil
 }
 
 type parsedAuthorization struct {
@@ -157,7 +193,7 @@ func canonicalRequest(r *http.Request, signedHeaders []string, payloadHash strin
 	return strings.Join([]string{
 		r.Method,
 		canonicalURI(r.URL.EscapedPath()),
-		canonicalQuery(r.URL.Query()),
+		canonicalQuery(r.URL.RawQuery),
 		headers,
 		signed,
 		payloadHash,
@@ -179,13 +215,18 @@ func canonicalURI(escapedPath string) string {
 	return strings.Join(parts, "/")
 }
 
-func canonicalQuery(q url.Values) string {
+func canonicalQuery(rawQuery string) string {
 	type pair struct{ key, value string }
 	var pairs []pair
-	for key, values := range q {
-		for _, value := range values {
-			pairs = append(pairs, pair{sigv4Escape(key), sigv4Escape(value)})
+	if rawQuery == "" {
+		return ""
+	}
+	for _, part := range strings.Split(rawQuery, "&") {
+		if part == "" {
+			continue
 		}
+		key, value, _ := strings.Cut(part, "=")
+		pairs = append(pairs, pair{sigv4Escape(pathUnescape(key)), sigv4Escape(pathUnescape(value))})
 	}
 	sort.Slice(pairs, func(i, j int) bool {
 		if pairs[i].key == pairs[j].key {
@@ -198,6 +239,14 @@ func canonicalQuery(q url.Values) string {
 		out = append(out, p.key+"="+p.value)
 	}
 	return strings.Join(out, "&")
+}
+
+func pathUnescape(s string) string {
+	decoded, err := url.PathUnescape(s)
+	if err != nil {
+		return s
+	}
+	return decoded
 }
 
 func canonicalHeaders(r *http.Request, signedHeaders []string) (string, string, error) {
@@ -213,7 +262,7 @@ func canonicalHeaders(r *http.Request, signedHeaders []string) (string, string, 
 		if name == "host" {
 			value = r.Host
 		} else {
-			value = r.Header.Get(name)
+			value = canonicalHeaderValue(r.Header.Values(name))
 		}
 		if value == "" {
 			return "", "", NewError(http.StatusBadRequest, CodeMissingSecurityHeader, "missing signed header "+name, r.URL.Path)
@@ -221,6 +270,14 @@ func canonicalHeaders(r *http.Request, signedHeaders []string) (string, string, 
 		lines = append(lines, name+":"+strings.Join(strings.Fields(value), " "))
 	}
 	return strings.Join(lines, "\n") + "\n", strings.Join(headers, ";"), nil
+}
+
+func canonicalHeaderValue(values []string) string {
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized = append(normalized, strings.Join(strings.Fields(value), " "))
+	}
+	return strings.Join(normalized, ",")
 }
 
 func sigv4Escape(s string) string {
