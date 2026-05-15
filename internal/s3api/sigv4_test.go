@@ -19,8 +19,9 @@ func TestCanonicalRequest_SortsQueryAndHeaders(t *testing.T) {
 	req.Host = "example.com"
 	req.Header.Set("X-Amz-Date", "20260516T010203Z")
 	req.Header.Set("X-Amz-Content-Sha256", emptyPayloadSHA256)
+	signedHeaders := []string{"x-amz-date", "host", "x-amz-content-sha256"}
 
-	got, err := canonicalRequest(req, []string{"host", "x-amz-content-sha256", "x-amz-date"}, emptyPayloadSHA256)
+	got, err := canonicalRequest(req, signedHeaders, emptyPayloadSHA256)
 	if err != nil {
 		t.Fatalf("canonicalRequest: %v", err)
 	}
