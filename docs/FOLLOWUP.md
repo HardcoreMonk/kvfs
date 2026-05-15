@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-05-16** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) + P9 production MVP charter supersede (ADR-064, production MVP track) 까지 반영.
+문서 현행화 일자: **2026-05-16** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) + P9 production MVP charter supersede (ADR-064, production MVP track) + P9-02 S3 compatibility foundation 까지 반영.
 
 ## 우선순위 맵
 
@@ -14,8 +14,8 @@
 - **P6**: Season 5 (coord 분리) core — 완료. P6-08·P6-12 helper/cache polish 저우선 잔존
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
 - **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~16 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface + observability completions), P8-05·07·17 (한계효용 polish, 저우선) 잔존
-- **P9**: production MVP track — P9-01 charter supersede done; P9-02+
-  implementation slices follow ADR-064.
+- **P9**: production MVP track — P9-01 charter supersede and P9-02 S3
+  compatibility foundation done; P9-03+ implementation slices follow ADR-064.
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -88,13 +88,13 @@ object workflow.
   production-ready 라고 claim 하지 않고, production claim 의 gate 를
   compatibility, chaos, backup/restore, readiness 로 정의.
 
-### [P9-02] S3 compatibility foundation
+### ~~[P9-02] S3 compatibility foundation~~
 
-- `internal/s3api`
-- SigV4 canonical request verification
-- S3 XML response and error shape
-- route mapping
-- `aws s3` / `mc` smoke suite skeleton
+- **DONE 2026-05-16**: `internal/s3api` added for SigV4 header verification,
+  S3 XML errors, and operation classification. edge wires S3 route patterns and
+  returns authenticated S3-shaped `NotImplemented` until P9-03 maps operations
+  to bucket/object behavior. `scripts/smoke-s3-compat.sh` added as the
+  foundation-mode `aws`/`mc` smoke skeleton.
 
 ### [P9-03] Bucket + object API
 

@@ -85,6 +85,12 @@ P9 의 첫 target 은 내부 single-region MinIO/S3-compatible replacement MVP �
 object lock, cross-region replication, POSIX/NFS/FUSE, Ceph-like storage
 platform. 자세한 기준은 ADR-064.
 
+P9-02 adds the S3 protocol foundation only: SigV4 header verification,
+S3-shaped XML errors, operation classification, route mapping, and the
+`scripts/smoke-s3-compat.sh` skeleton. Bucket/object success paths start in
+P9-03, so P9-02 may intentionally return S3 `NotImplemented` for recognized
+operations after authentication succeeds.
+
 ## 설계 결정 (ADR 전문)
 
 각 결정은 [`docs/adr/`](docs/adr/) 의 독립 문서로 박힘 — 불변 기록.
@@ -212,6 +218,8 @@ EC streaming = Ep.6 follow-up (demo-χ). EC+CDC = Ep.7 follow-up (demo-ψ). Sync
 | `EDGE_DATA_DIR` | `./edge-data` | 004 | bbolt 디렉토리 |
 | `EDGE_URLKEY_SECRET` | required | 007 | HMAC 시크릿 |
 | `EDGE_URLKEY_PRIMARY_KID` | (off) | 028 | primary URLKey kid override |
+| `EDGE_S3_ACCESS_KEY` / `EDGE_S3_SECRET_KEY` | (off) | — | P9-02 S3 SigV4 foundation credentials. Set together to enable authenticated S3 front-door probes. |
+| `EDGE_S3_REGION` | `us-east-1` | — | P9-02 S3 SigV4 credential-scope region. |
 | `EDGE_QUORUM_WRITE` | auto | 002 | write quorum (0=auto) |
 | `EDGE_CHUNK_SIZE` | 4 MiB | 011 | bytes per chunk (fixed mode) |
 | `EDGE_CHUNK_MODE` | `fixed` | 018 | `fixed` \| `cdc` (FastCDC, replication only) |
