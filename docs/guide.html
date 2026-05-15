@@ -242,6 +242,7 @@ tr:nth-child(even) td { background: var(--table-stripe); }
   <li>분산 storage 가 어떻게 만들어지는지 <strong>코드를 읽으며</strong> 이해하고 싶은 개발자</li>
   <li>Ceph · MinIO · S3 의 동작을 작은 모델로 <strong>재현</strong>해보고 싶은 학생</li>
   <li>오너십·일관성·운영성의 트레이드오프를 <strong>체감</strong>하고 싶은 SRE</li>
+  <li>내부 MinIO/S3-compatible replacement 를 단계적으로 검토하는 운영자</li>
 </ul>
 <p>전제 지식: HTTP, hash 함수, goroutine, <code>bbolt</code>/SQLite 같은 KV 저장소가 무엇인지.<br>
 필요 없는 것: Ceph CRUSH, Raft 논문 정독, Reed-Solomon 수학.</p>
@@ -783,7 +784,7 @@ type Stripe struct {
 
 <h3>12.2 명시적 비목표</h3>
 <ul>
-  <li><strong>production replacement</strong> for S3/MinIO/Ceph. kvfs 는 reference, 그쪽은 운영.</li>
+  <li><strong>full production replacement for S3/MinIO/Ceph</strong>. P9 는 내부 single-region MinIO/S3-compatible replacement MVP track 이며, AWS S3 전체 parity 나 Ceph-like platform 을 목표로 하지 않는다. Production claim 은 ADR-064 의 envelope 와 gate 를 통과한 release 에만 붙인다.</li>
   <li><strong>multi-region</strong>. 단일 cluster 만.</li>
   <li><strong>encryption at rest</strong>. dn 디스크는 평문 (운영자가 LUKS 등으로 처리).</li>
   <li><strong>versioning, MFA delete, lifecycle policy</strong>. S3 의 그 features 들은 없음.</li>
@@ -824,6 +825,10 @@ type Stripe struct {
   <li>Operational polish: throttle + precision (ADR-059), concurrent EC repair (ADR-060), resilience polishes (ADR-061), auto-repair scheduling + coord metrics (ADR-062), observability completions (ADR-063).</li>
 </ul>
 
+<h3>12.6 P9 — production MVP track</h3>
+<p>P9 는 educational core 위에 내부 single-region MinIO/S3-compatible replacement MVP track 을 추가한다. ADR-064 는 첫 envelope 를 6-12 DN, 10-100 TB, internal network deployment, AWS SDK/<code>aws s3</code>/<code>mc</code> core workflow 로 제한한다.</p>
+<p>P9 의 구현 순서: S3 compatibility foundation → bucket/object API → multipart upload → production profile enforcement → operational release gate. 현재 HEAD 를 production-ready 라고 claim 하지 않는다.</p>
+
 <h2 id="s13"><span class="num">13</span>다음에 읽을 것</h2>
 
 <h3>13.0 Codex 작업 진입점</h3>
@@ -857,7 +862,7 @@ type Stripe struct {
 </ul>
 
 <h3>13.3 ADR</h3>
-<p><a href="adr/README.md"><code>docs/adr/README.md</code></a> — 59 ADR, 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.</p>
+<p><a href="adr/README.md"><code>docs/adr/README.md</code></a> — 60 ADR (S1~S6 + P8 + S7 close + P8-08~16 self-heal + P9/ADR-064 production MVP profile), 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.</p>
 
 <h3>13.4 라이브 데모</h3>
 <p><code>./scripts/demo-*.sh</code> — 48개 = α~ω (S1~S4, 그리스 21자) + aleph~nun (S5~S6, 히브리 14자) + samekh~tsadi (S7, 4자) + P8-08~16 anti-entropy specials (9개). ADR README 의 시즌 표에서 episode → 데모 매핑 확인.</p>

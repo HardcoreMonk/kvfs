@@ -1,7 +1,8 @@
 # kvfs — Key-Value File System
 
-> **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스.
-> **Go 1.26 · Apache 2.0 · 59 ADR · 55 blog episode · 48 라이브 데모 · 190 unit test**
+> **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스,
+> 그리고 내부 MinIO/S3-compatible replacement 를 향한 production MVP track.
+> **Go 1.26 · Apache 2.0 · 60 ADR · 55 blog episode · 48 라이브 데모 · 190 unit test**
 
 ## 이것은 무엇인가
 
@@ -18,9 +19,15 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **6** | coord operational migration | ✅ Ep.1~7 done | ADR-043~049. rebalance · GC · repair · DN registry · URLKey rotation/propagation — all on coord |
 | **7** | textbook primitives | ✅ closed (Ep.1~4) | ADR-051~054. failure domain · degraded read · tunable consistency · anti-entropy/Merkle |
 | **P8** | self-heal polish | ✅ P8-16 done | ADR-050·055~063. chaos hardening · 4채널 self-heal · continuous repair · Prometheus observability |
+| **P9** | production MVP track | 🚧 P9-01 charter | ADR-064. internal single-region MinIO/S3-compatible replacement MVP profile |
 
-이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 목표는 production 이 아니라
-**이해 가능한 레퍼런스**.
+이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 기존 목표는
+**이해 가능한 레퍼런스**였고, P9 부터는 그 educational core 위에
+**내부 single-region MinIO/S3-compatible replacement MVP** track 을 추가한다.
+
+현재 HEAD 가 곧바로 production-ready 라는 뜻은 아니다. Production claim 은
+ADR-064 의 envelope 와 compatibility·chaos·backup·readiness gate 를 통과한
+release 에만 붙인다.
 
 ## 5분 데모
 
@@ -60,6 +67,23 @@ cd kvfs
 - 처음 읽기: [`docs/GUIDE.md`](docs/GUIDE.md) (또는 브라우저용 [`docs/guide.html`](docs/guide.html)) — 13개 챕터 walkthrough
 - 짧은 reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - 에이전트 작업 규약: [`AGENTS.md`](AGENTS.md) — Codex 기준. `CLAUDE.md` 는 호환 shim
+
+## Production MVP track
+
+P9 의 첫 target 은 내부 single-region MinIO/S3-compatible replacement MVP 다.
+
+1차 envelope:
+
+- 6-12 DN
+- 10-100 TB
+- internal network deployment
+- AWS SDK, `aws s3`, `mc` core object workflow
+- S3 SigV4, bucket/object API, multipart upload
+- admin auth, readiness, metrics, compatibility, chaos, backup/restore gate
+
+비범위: full AWS IAM parity, external customer multi-tenancy, lifecycle policy,
+object lock, cross-region replication, POSIX/NFS/FUSE, Ceph-like storage
+platform. 자세한 기준은 ADR-064.
 
 ## 설계 결정 (ADR 전문)
 
@@ -171,6 +195,12 @@ EC streaming = Ep.6 follow-up (demo-χ). EC+CDC = Ep.7 follow-up (demo-ψ). Sync
 | [061](docs/adr/ADR-061-resilience-polishes.md) | Resilience polishes | anti-entropy-resilience | [53](blog/53-resilience-polishes.md) |
 | [062](docs/adr/ADR-062-auto-repair-and-metrics.md) | Auto-repair scheduling + coord metrics | anti-entropy-auto-metrics | [54](blog/54-auto-repair-and-metrics.md) |
 | [063](docs/adr/ADR-063-anti-entropy-observability-completions.md) | Anti-entropy observability completions | anti-entropy-observability | [55](blog/55-anti-entropy-observability.md) |
+
+### P9 (production MVP track)
+
+| ADR | 주제 |
+|---|---|
+| [064](docs/adr/ADR-064-production-mvp-profile.md) | Production MVP profile — internal single-region MinIO/S3-compatible replacement MVP envelope |
 
 ## 환경 변수
 
