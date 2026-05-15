@@ -140,7 +140,7 @@ and `go vet ./...` or the Docker equivalent from the command table.
 
 ## Lifecycle Control Plane
 - 표준 lifecycle contract는 zone 상대 경로 `codex-project-mgmt/docs/codex-lifecycle-control-plane.md`를 따른다.
-- 기본 순서: `intake -> superpowers:brainstorming -> grill-me -> plan-design-review -> superpowers:writing-plans -> plan-eng-review -> implement -> code-review -> release -> operate`.
+- 기본 순서: `intake -> superpowers:brainstorming -> domain-architecture -> grill-me -> plan-design-review -> superpowers:writing-plans -> plan-eng-review -> implement -> code-review -> release -> operate`.
 - 실제 spec, grill-me 기록, plan, handoff는 해당 project root의 project-local 산출물로 둔다.
 - 새 기능, behavior change, workflow contract change, multi-file change는 lightweight path를 사용하지 않는다.
 - `release` 이후에는 `docs/operations/YYYY-MM-DD-<topic>-handoff.md` 또는 project-equivalent handoff로 운영 진입 상태를 기록한다.

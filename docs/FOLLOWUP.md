@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-28** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리까지 반영.
+문서 현행화 일자: **2026-05-15** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) 까지 반영.
 
 ## 우선순위 맵
 
@@ -297,12 +297,13 @@
 | 2026-04-26 | OSS 발행 | repo private→public + history rewrite + repo recreate (옛 SHA 영구 폐기) · LICENSE 헤더 23 .go 파일 · CONTRIBUTING + CODE_OF_CONDUCT · CI workflow (build/vet/test on Go 1.26, staticcheck, govulncheck) · benchmark suite 4 패키지 · chaos-dn-killer |
 | 2026-04-27 | P8 anti-entropy polish | P8-08~16: auto-repair · corrupt/dry-run · EC inline/corrupt · throttle · concurrent EC/replication · persistent scrubber · continuous self-heal · coord Prometheus surface · histogram/skipped/dedupe observability completions. ADR-055~063 · blog Ep.47~55 · anti-entropy special demos 9개 |
 | 2026-04-28 | Codex 문서 최적화 | `AGENTS.md` 를 Codex 기준 프로젝트 규약 단일 소스로 추가하고 `CLAUDE.md` 는 호환 shim 으로 축소. `CONTRIBUTING.md` 의 오래된 P4 후보 참조 제거, `README`/`GUIDE`/`ARCHITECTURE` 에 agent 진입점 추가, FOLLOWUP 상태 표현을 commit SHA·worktree 의존이 적은 형태로 정리 |
+| 2026-05-15 | Lifecycle governance alignment | `AGENTS.md` 기본 lifecycle 순서에 `domain-architecture` gate 반영. ADR-015 제목/섹션과 ADR-032 상태 라인의 stale wording 정규화. `docs/superpowers/` spec·grill-me·plan 및 `docs/operations/2026-05-15-project-design-governance-handoff.md` 로 release→operate 증거 추가 |
 
 ---
 
-## 현재 상태 요약 (2026-04-28)
+## 현재 상태 요약 (2026-05-15)
 
-- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + 문서 현행화
+- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + Codex/lifecycle governance 문서 현행화
 - **테스트**: **190 unit test PASS target** (P8-16 +4). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
 - **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~16 anti-entropy demos (9개) = **48개**. 신규 `demo-anti-entropy-observability` PASS
 - **ADR**: **59 Accepted** — ADR-001~063 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054
