@@ -25,7 +25,7 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 **이해 가능한 레퍼런스**였고, P9 부터는 그 educational core 위에
 **내부 single-region MinIO/S3-compatible replacement MVP** track 을 추가한다.
 
-현재 HEAD 가 곧바로 production-ready 라는 뜻은 아니다. Production claim 은
+현재 revision 이 곧바로 production-ready 라는 뜻은 아니다. Production claim 은
 ADR-064 의 envelope 와 compatibility·chaos·backup·readiness gate 를 통과한
 release 에만 붙인다.
 

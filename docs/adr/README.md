@@ -141,7 +141,7 @@ P8-01·02·03·04·06·08~16 done — frame 1 (헌장) + frame 2 (textbook primi
 
 ## P9 — Production MVP track
 
-P9 opens the production replacement track. It does not claim the current HEAD is
+P9 opens the production replacement track. It does not claim the current revision is
 already production-ready; it defines the first internal MinIO/S3-compatible
 replacement target and the gates required to earn that claim.
 

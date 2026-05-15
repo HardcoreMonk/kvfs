@@ -26,7 +26,7 @@ kvfs 의 정체성을 "educational reference only" 에서
 "educational core + production MVP track" 으로 확장한다.
 
 첫 production target 은 내부 single-region MinIO/S3-compatible replacement
-MVP 다. Production MVP 는 별도 track 이며, 현재 HEAD 가 곧바로
+MVP 다. Production MVP 는 별도 track 이며, 현재 revision 이 곧바로
 production-ready 라는 뜻이 아니다.
 
 Production MVP track 의 필수 방향:

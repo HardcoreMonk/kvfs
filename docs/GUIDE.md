@@ -631,7 +631,7 @@ replacement MVP track 을 추가한다. ADR-064 는 첫 envelope 를 6-12 DN,
 제한한다.
 
 P9 의 구현 순서: S3 compatibility foundation → bucket/object API → multipart
-upload → production profile enforcement → operational release gate. 현재 HEAD 를
+upload → production profile enforcement → operational release gate. 현재 revision 을
 production-ready 라고 claim 하지 않는다.
 
 ## 13. 다음에 읽을 것

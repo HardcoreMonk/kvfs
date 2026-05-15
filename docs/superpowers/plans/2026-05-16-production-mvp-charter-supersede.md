@@ -84,7 +84,7 @@ kvfs 의 정체성을 "educational reference only" 에서
 "educational core + production MVP track" 으로 확장한다.
 
 첫 production target 은 내부 single-region MinIO/S3-compatible replacement
-MVP 다. Production MVP 는 별도 track 이며, 현재 HEAD 가 곧바로
+MVP 다. Production MVP 는 별도 track 이며, 현재 revision 이 곧바로
 production-ready 라는 뜻이 아니다.
 
 Production MVP track 의 필수 방향:
@@ -234,7 +234,7 @@ Replace the paragraph that says the goal is not production with:
 **이해 가능한 레퍼런스**였고, P9 부터는 그 educational core 위에
 **내부 single-region MinIO/S3-compatible replacement MVP** track 을 추가한다.
 
-현재 HEAD 가 곧바로 production-ready 라는 뜻은 아니다. Production claim 은
+현재 revision 이 곧바로 production-ready 라는 뜻은 아니다. Production claim 은
 ADR-064 의 envelope 와 compatibility·chaos·backup·readiness gate 를 통과한
 release 에만 붙인다.
 ```
@@ -407,7 +407,7 @@ object workflow.
 ### [P9-01] Charter supersede + production MVP profile
 
 - **IN PROGRESS 2026-05-16**: ADR-064 로 project identity 를
-  "educational core + production MVP track" 으로 확장. 현재 HEAD 를
+  "educational core + production MVP track" 으로 확장. 현재 revision 을
   production-ready 라고 claim 하지 않고, production claim 의 gate 를
   compatibility, chaos, backup/restore, readiness 로 정의.
 
