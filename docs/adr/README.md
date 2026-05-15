@@ -139,7 +139,18 @@ P8-01·02·03·04·06·08~16 done — frame 1 (헌장) + frame 2 (textbook primi
 
 > 데모 letter — S1~S4 = α~ω (그리스 21) · S5~S6 = aleph~nun (히브리 14) · S7 = samekh~tsadi (히브리 4). letter demos 39. P8 anti-entropy specials 9 → 합 **48**.
 
+## P9 — Production MVP track
+
+P9 opens the production replacement track. It does not claim the current HEAD is
+already production-ready; it defines the first internal MinIO/S3-compatible
+replacement target and the gates required to earn that claim.
+
+| # | 제목 | wave 번호 | 연결 |
+|---|---|---|---|
+| [064](ADR-064-production-mvp-profile.md) | Production MVP profile | P9-01 | `docs/superpowers/specs/2026-05-16-production-mvp-replacement-design.md` · production MVP charter supersede |
+
 ## 다음 시즌 / 미작성
 
-- 차기 polish / 새 시즌 후보는 [`docs/FOLLOWUP.md`](../FOLLOWUP.md) 의 P8-05·07·17 참조.
+- P9 execution status and remaining polish candidates live in
+  [`docs/FOLLOWUP.md`](../FOLLOWUP.md).
 - ADR 결번 (020/021/023/026): 작성 시점에 별도 결정 부재 (예: Season 5 Ep.2 의 `EDGE_COORD_URL` wiring — env 외 결정 없음).
