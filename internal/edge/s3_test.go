@@ -183,6 +183,77 @@ func TestS3Foundation_NativeRoutesKeepPrecedence(t *testing.T) {
 	}
 }
 
+func TestS3Foundation_NativeV1UnknownPathDoesNotRouteToS3(t *testing.T) {
+	srv := &Server{S3Credentials: s3api.StaticCredentials{"AKIA_TEST": "test-secret"}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/nope", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<Code>MissingSecurityHeader</Code>") {
+		t.Fatalf("body should not contain S3 MissingSecurityHeader XML: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<Code>NotImplemented</Code>") {
+		t.Fatalf("body should not contain S3 NotImplemented XML: %s", rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); strings.HasPrefix(ct, "application/xml") {
+		t.Fatalf("Content-Type = %q, should not be S3 XML", ct)
+	}
+}
+
+func TestS3Foundation_UnsupportedObjectMethodMissingAuthReturnsS3XML(t *testing.T) {
+	srv := &Server{S3Credentials: s3api.StaticCredentials{"AKIA_TEST": "test-secret"}}
+	req := httptest.NewRequest(http.MethodPatch, "/photos/raw/a.jpg", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>MissingSecurityHeader</Code>") {
+		t.Fatalf("body should contain S3 MissingSecurityHeader XML: %s", rec.Body.String())
+	}
+}
+
+func TestS3Foundation_UnsupportedObjectMethodWithAuthReturnsXMLNotImplemented(t *testing.T) {
+	srv := &Server{S3Credentials: s3api.StaticCredentials{"AKIA_TEST": "test-secret"}}
+	req := httptest.NewRequest(http.MethodPatch, "/photos/raw/a.jpg", nil)
+	req.Host = "kvfs.local"
+	signS3TestRequest(t, req, "AKIA_TEST", "test-secret", "us-east-1")
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/xml") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>NotImplemented</Code>") {
+		t.Fatalf("body should contain S3 NotImplemented XML: %s", rec.Body.String())
+	}
+}
+
+func TestS3Foundation_UnsupportedBucketMethodMissingAuthReturnsS3XML(t *testing.T) {
+	srv := &Server{S3Credentials: s3api.StaticCredentials{"AKIA_TEST": "test-secret"}}
+	req := httptest.NewRequest(http.MethodOptions, "/photos", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>MissingSecurityHeader</Code>") {
+		t.Fatalf("body should contain S3 MissingSecurityHeader XML: %s", rec.Body.String())
+	}
+}
+
 func signS3TestRequest(t *testing.T, req *http.Request, accessKey, secret, region string) {
 	t.Helper()
 	signS3TestRequestWithService(t, req, accessKey, secret, region, "s3")
