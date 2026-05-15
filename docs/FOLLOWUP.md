@@ -353,17 +353,18 @@ object workflow.
 | 2026-04-28 | Codex 문서 최적화 | `AGENTS.md` 를 Codex 기준 프로젝트 규약 단일 소스로 추가하고 `CLAUDE.md` 는 호환 shim 으로 축소. `CONTRIBUTING.md` 의 오래된 P4 후보 참조 제거, `README`/`GUIDE`/`ARCHITECTURE` 에 agent 진입점 추가, FOLLOWUP 상태 표현을 commit SHA·worktree 의존이 적은 형태로 정리 |
 | 2026-05-15 | Lifecycle governance alignment | `AGENTS.md` 기본 lifecycle 순서에 `domain-architecture` gate 반영. ADR-015 제목/섹션과 ADR-032 상태 라인의 stale wording 정규화. `docs/superpowers/` spec·grill-me·plan 및 `docs/operations/2026-05-15-project-design-governance-handoff.md` 로 release→operate 증거 추가 |
 | 2026-05-16 | P9 production MVP charter | ADR-064 로 internal single-region MinIO/S3-compatible replacement MVP envelope 와 production claim gate 정의. README/GUIDE/ARCHITECTURE/AGENTS/FOLLOWUP 가 educational core + production MVP track 로 정렬됨. |
+| 2026-05-16 | P9-02 S3 compatibility foundation | `internal/s3api`, edge S3 route mapping, `EDGE_S3_ACCESS_KEY`/`EDGE_S3_SECRET_KEY`/`EDGE_S3_REGION`, and `scripts/smoke-s3-compat.sh` added. Authenticated recognized S3 operations intentionally return S3-shaped `NotImplemented` until P9-03 maps bucket/object success paths. |
 
 ---
 
 ## 현재 상태 요약 (2026-05-16)
 
-- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + Codex/lifecycle governance 문서 현행화 + P9 production MVP charter supersede
-- **테스트**: **190 unit test PASS target** (P8-16 +4). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
+- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + Codex/lifecycle governance 문서 현행화 + P9 production MVP charter supersede + P9-02 S3 compatibility foundation
+- **테스트**: **205 unit test PASS target** (`rg --count-matches '^func Test' --glob '*_test.go'` 합계). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
 - **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~16 anti-entropy demos (9개) = **48개**. 신규 `demo-anti-entropy-observability` PASS
 - **ADR**: **60 Accepted** — ADR-001~064 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054, P9: 064
 - **Blog**: Ep.1~55 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~16 (Ep.47~55)
-- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. P9 production MVP track opened with ADR-064. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
+- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. P9 production MVP track opened with ADR-064; P9-02 S3 compatibility foundation done, P9-03 bucket/object API next. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 
 ## 업데이트 규칙

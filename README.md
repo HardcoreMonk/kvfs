@@ -2,7 +2,7 @@
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스,
 > 그리고 내부 MinIO/S3-compatible replacement 를 향한 production MVP track.
-> **Go 1.26 · Apache 2.0 · 60 ADR · 55 blog episode · 48 라이브 데모 · 190 unit test**
+> **Go 1.26 · Apache 2.0 · 60 ADR · 55 blog episode · 48 라이브 데모 · 205 unit test**
 
 ## 이것은 무엇인가
 
@@ -19,7 +19,7 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **6** | coord operational migration | ✅ Ep.1~7 done | ADR-043~049. rebalance · GC · repair · DN registry · URLKey rotation/propagation — all on coord |
 | **7** | textbook primitives | ✅ closed (Ep.1~4) | ADR-051~054. failure domain · degraded read · tunable consistency · anti-entropy/Merkle |
 | **P8** | self-heal polish | ✅ P8-16 done | ADR-050·055~063. chaos hardening · 4채널 self-heal · continuous repair · Prometheus observability |
-| **P9** | production MVP track | 🚧 P9-01 charter | ADR-064. internal single-region MinIO/S3-compatible replacement MVP profile |
+| **P9** | production MVP track | 🚧 P9-02 foundation done | ADR-064 + S3 SigV4 foundation. bucket/object success starts in P9-03 |
 
 이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 기존 목표는
 **이해 가능한 레퍼런스**였고, P9 부터는 그 educational core 위에

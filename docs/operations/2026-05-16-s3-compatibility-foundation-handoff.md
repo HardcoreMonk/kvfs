@@ -27,7 +27,10 @@ to P9-03.
 - `go test ./...`
 - `go vet ./...`
 - `bash -n scripts/smoke-s3-compat.sh`
-- `./scripts/smoke-s3-compat.sh`
+- `./scripts/smoke-s3-compat.sh` — current skip-safe execution returned
+  `SKIP: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for SigV4 smoke`.
+  `aws` and `mc` were also absent in this review environment, so this is not a
+  live compatibility pass.
 - `./scripts/check-doc-drift.sh`
 - `git diff --check`
 
