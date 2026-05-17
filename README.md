@@ -245,6 +245,7 @@ EC streaming = Ep.6 follow-up (demo-χ). EC+CDC = Ep.7 follow-up (demo-ψ). Sync
 | `EDGE_COORD_URL` | (off) | 015 | coord proxy mode 활성 (메타·placement 위임) |
 | `EDGE_COORD_URLKEY_POLL_INTERVAL` | 30s | 049 | coord urlkey 변경 polling 주기 |
 | `EDGE_COORD_LOOKUP_CACHE_TTL` | (off) | — | opt-in coord lookup 결과 캐시 TTL (e.g. `2s`) |
+| `EDGE_COORD_LOOKUP_CACHE_MAX_ENTRIES` | 0 | — | P6-12 cache cap. `0` = unbounded; only applies when `EDGE_COORD_LOOKUP_CACHE_TTL` enables cache |
 | `COORD_ADDR` | `:9000` | 015 | coord HTTP bind |
 | `COORD_DATA_DIR` | `./coord-data` | 015 | coord bbolt 디렉토리 |
 | `COORD_DNS` | required | 015 | coord 가 알 DN addrs (comma-sep) |

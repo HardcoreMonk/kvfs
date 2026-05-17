@@ -509,6 +509,7 @@ type Stripe struct {
 | `COORD_METRICS` | 1 | ADR-062/063: coord `/metrics` |
 | `EDGE_COORD_URLKEY_POLL_INTERVAL` | 30s | Season 6 Ep.7 (ADR-049): edge 가 coord 의 urlkey 변경을 polling 주기로 sync |
 | `EDGE_COORD_LOOKUP_CACHE_TTL` | (off) | P6-10 (opt-in): coord lookup 결과 per-(bucket,key) 캐싱. 권장 1-5s. CommitObject/DeleteObject 가 invalidate |
+| `EDGE_COORD_LOOKUP_CACHE_MAX_ENTRIES` | 0 | P6-12: coord lookup cache entry cap. `0` = unbounded; TTL 이 켜졌을 때만 적용 |
 | `internal/cliutil` / `internal/httputil` | — | env/flag parsing + JSON/error helpers. main.go / HTTP packages 의 drift 방지용 공통 helper |
 
 > 운영 디테일 (election timing, DN-side TLS CA 등) 은 `README.md` § "환경 변수" 의 전체 표.

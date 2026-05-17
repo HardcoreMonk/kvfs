@@ -595,14 +595,13 @@ Run:
 ```bash
 ./scripts/check-doc-drift.sh
 git diff --check
-rg -n "P4-01|미커밋|HEAD [0-9a-f]|claude-zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
 ```
 
 Expected:
 
 - doc drift exits 0;
 - diff check exits 0;
-- stale-marker scan exits 1 with no matches.
+- the stale-marker scan from `AGENTS.md` exits 1 with no matches.
 
 - [ ] **Step 6: Commit docs**
 
@@ -656,7 +655,6 @@ Run:
 ```bash
 ./scripts/check-doc-drift.sh
 git diff --check
-rg -n "P4-01|미커밋|HEAD [0-9a-f]|claude-zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
 git status --short --branch
 ```
 
@@ -664,7 +662,7 @@ Expected:
 
 - doc drift exits 0;
 - diff check exits 0;
-- stale-marker scan exits 1 with no matches;
+- the stale-marker scan from `AGENTS.md` exits 1 with no matches;
 - status shows only expected local changes, or clean if all commits were made.
 
 - [ ] **Step 5: Consider full chaos execution**
