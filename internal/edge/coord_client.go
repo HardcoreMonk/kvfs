@@ -4,12 +4,13 @@
 // Edge → coord HTTP client (Season 5 Ep.2, ADR-015 follow-up).
 //
 // 누적 capabilities (이 파일이 다루는 것 전부):
-//   Ep.2  CommitObject / LookupObject / DeleteObject / Healthz   — 메타 RPC
-//   Ep.3  do() 의 leader-redirect (503 + X-COORD-LEADER, ADR-038)
-//   Ep.6  PlaceN                                                  — placement RPC
-//   Ep.7  ListURLKeys                                             — kid registry sync source
-//   P6-10 cache (cacheTTL/cache + SetLookupCache)                 — opt-in lookup cache
-//   P7-08 do() 의 CANDIDATE 503-empty backoff                     — election 중 transparent retry
+//
+//	Ep.2  CommitObject / LookupObject / DeleteObject / Healthz   — 메타 RPC
+//	Ep.3  do() 의 leader-redirect (503 + X-COORD-LEADER, ADR-038)
+//	Ep.6  PlaceN                                                  — placement RPC
+//	Ep.7  ListURLKeys                                             — kid registry sync source
+//	P6-10 cache (cacheTTL/cache + SetLookupCache)                 — opt-in lookup cache
+//	P7-08 do() 의 CANDIDATE 503-empty backoff                     — election 중 transparent retry
 //
 // 비전공자용 해설
 // ──────────────
@@ -74,14 +75,17 @@ type CoordClient struct {
 	// Disabled when cacheTTL == 0. CommitObject + DeleteObject invalidate
 	// by key on the SAME client; mutations from other edges wait out the
 	// TTL (so default short — 1-5s).
-	cacheTTL time.Duration
-	cache    map[string]cachedMeta
+	cacheTTL        time.Duration
+	cacheMaxEntries int
+	cacheTick       uint64
+	cache           map[string]cachedMeta
 }
 
 // cachedMeta is one entry of CoordClient's optional read-through cache.
 type cachedMeta struct {
-	meta   *store.ObjectMeta
-	expiry time.Time
+	meta     *store.ObjectMeta
+	expiry   time.Time
+	lastUsed uint64
 }
 
 // BaseURL returns the current target URL (the one that subsequent calls
@@ -102,17 +106,24 @@ func NewCoordClient(baseURL string) *CoordClient {
 }
 
 // SetLookupCache enables/disables the per-(bucket,key) read-through cache
-// (P6-10). ttl > 0 enables; 0 disables and frees the map. Recommended:
-// 1-5s. Multi-edge mutations from other clients won't invalidate this
-// edge's cache, so don't set TTL beyond your tolerance for stale reads.
+// with no size cap, preserving the P6-10 compatibility behavior.
 func (c *CoordClient) SetLookupCache(ttl time.Duration) {
+	c.SetLookupCacheWithLimit(ttl, 0)
+}
+
+// SetLookupCacheWithLimit enables/disables the per-(bucket,key) read-through
+// cache and optionally bounds it. maxEntries <= 0 means unbounded.
+func (c *CoordClient) SetLookupCacheWithLimit(ttl time.Duration, maxEntries int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cacheTTL = ttl
+	c.cacheMaxEntries = maxEntries
+	c.cacheTick = 0
 	if ttl > 0 {
 		c.cache = make(map[string]cachedMeta)
 	} else {
 		c.cache = nil
+		c.cacheMaxEntries = 0
 	}
 }
 
@@ -120,16 +131,29 @@ func (c *CoordClient) cacheKey(bucket, key string) string {
 	return bucket + "\x00" + key
 }
 
+func (c *CoordClient) nextCacheTickLocked() uint64 {
+	c.cacheTick++
+	return c.cacheTick
+}
+
 func (c *CoordClient) cacheGet(bucket, key string) (*store.ObjectMeta, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.cache == nil {
 		return nil, false
 	}
-	if e, ok := c.cache[c.cacheKey(bucket, key)]; ok && time.Now().Before(e.expiry) {
-		return e.meta, true
+	ck := c.cacheKey(bucket, key)
+	e, ok := c.cache[ck]
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	if !time.Now().Before(e.expiry) {
+		delete(c.cache, ck)
+		return nil, false
+	}
+	e.lastUsed = c.nextCacheTickLocked()
+	c.cache[ck] = e
+	return e.meta, true
 }
 
 func (c *CoordClient) cachePut(bucket, key string, meta *store.ObjectMeta) {
@@ -138,7 +162,44 @@ func (c *CoordClient) cachePut(bucket, key string, meta *store.ObjectMeta) {
 	if c.cache == nil {
 		return
 	}
-	c.cache[c.cacheKey(bucket, key)] = cachedMeta{meta: meta, expiry: time.Now().Add(c.cacheTTL)}
+	now := time.Now()
+	c.cacheRemoveExpiredLocked(now)
+	c.cache[c.cacheKey(bucket, key)] = cachedMeta{
+		meta:     meta,
+		expiry:   now.Add(c.cacheTTL),
+		lastUsed: c.nextCacheTickLocked(),
+	}
+	c.cacheEnforceLimitLocked()
+}
+
+func (c *CoordClient) cacheRemoveExpiredLocked(now time.Time) {
+	for k, e := range c.cache {
+		if !now.Before(e.expiry) {
+			delete(c.cache, k)
+		}
+	}
+}
+
+func (c *CoordClient) cacheEnforceLimitLocked() {
+	if c.cacheMaxEntries <= 0 {
+		return
+	}
+	for len(c.cache) > c.cacheMaxEntries {
+		var evictKey string
+		var evictTick uint64
+		first := true
+		for k, e := range c.cache {
+			if first || e.lastUsed < evictTick {
+				first = false
+				evictKey = k
+				evictTick = e.lastUsed
+			}
+		}
+		if evictKey == "" {
+			return
+		}
+		delete(c.cache, evictKey)
+	}
 }
 
 func (c *CoordClient) cacheInvalidate(bucket, key string) {

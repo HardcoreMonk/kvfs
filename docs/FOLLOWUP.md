@@ -2,18 +2,20 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-04-28** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리까지 반영.
+문서 현행화 일자: **2026-05-17** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) + P9 production MVP charter supersede (ADR-064, production MVP track) + Docker Compose v2 로컬 충족 확인 + P6-12 cache cap/LRU + P8-05 quorum-loss drift precision 까지 반영.
 
 ## 우선순위 맵
 
 - **P0**: 차단·긴급 — 현재 **0건**
-- **P1**: 명확한 스펙, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
+- **P1**: 명확한 스펙, 실행 대기 — 현재 **0건**
 - **P2**: 리뷰·개선 — 모두 완료
 - **P3**: 사용자 결정 필요 — 현재 **0건**
 - **P5**: post-Season-4 wave — 모두 완료
-- **P6**: Season 5 (coord 분리) core — 완료. P6-08·P6-12 helper/cache polish 저우선 잔존
+- **P6**: Season 5 (coord 분리) core — 완료. P6-08 helper polish 저우선 잔존
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
-- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~16 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface + observability completions), P8-05·07·17 (한계효용 polish, 저우선) 잔존
+- **P8**: Frame-1+2 100% wave — P8-01·02·03·04·05·06·08~16 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface + observability completions + quorum-loss drift precision), P8-07·17 (한계효용 polish, 저우선) 잔존
+- **P9**: production MVP track — P9-01 charter supersede done; P9-02+
+  implementation slices follow ADR-064.
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -21,10 +23,13 @@
 
 ## P1 — 실행 대기 (사용자 직접)
 
-### [P1-02] Docker Compose plugin 설치
-- **배경**: `./scripts/up.sh` 가 plain `docker run` 으로 우회 구현됨. `docker-compose.yml` 은 있으나 `docker compose` 명령 사용 불가
-- **해결**: `sudo apt install docker-compose-plugin`
-- **효과**: README 의 `docker compose up -d` 표준 명령 동작
+### ~~[P1-02] Docker Compose plugin 설치~~
+- **DONE 2026-05-16**: Ubuntu 24.04 환경에서 `docker-compose-plugin`
+  패키지는 현재 apt sources 에 없지만, Ubuntu 패키지
+  `docker-compose-v2` 가 이미 설치되어 `docker compose` 를 제공함을 확인.
+  `docker compose version` = `2.40.3+ds1-0ubuntu1~24.04.1`.
+- **검증**: `docker compose config -q` PASS. README 의
+  `docker compose up -d` 표준 명령 사용 전제 충족.
 
 ---
 
@@ -70,6 +75,58 @@
 
 ### ~~[P6-07] coord transactional commit (ADR-034 port)~~
 - **DONE 2026-04-27**: ADR-040 작성 + 구현. `coord.Server.{TransactionalCommit, ReplicateTimeout}` field, `commit()` helper 가 분기. `COORD_TRANSACTIONAL_RAFT=1` env (Elector + WAL 둘 다 필수, mismatch 시 startup fatal). 2 unit tests: quorum failure → bbolt 무변화 + WAL.LastSeq 무변화, prerequisite 누락 시 fallback. 데모 demo-he.sh (히브리 ה) — 2/3 coord kill 후 PUT 503 + lookup 404 + 복구 후 PUT 200. 148 tests PASS.
+
+---
+
+## P9 — Production MVP track
+
+목표: 내부 single-region MinIO/S3-compatible replacement MVP. 첫 envelope 는
+6-12 DN, 10-100 TB, internal network deployment, AWS SDK/`aws s3`/`mc` core
+object workflow.
+
+### ~~[P9-01] Charter supersede + production MVP profile~~
+
+- **DONE 2026-05-16**: ADR-064 로 project identity 를
+  "educational core + production MVP track" 으로 확장. 현재 revision 을
+  production-ready 라고 claim 하지 않고, production claim 의 gate 를
+  compatibility, chaos, backup/restore, readiness 로 정의.
+
+### [P9-02] S3 compatibility foundation
+
+- `internal/s3api`
+- SigV4 canonical request verification
+- S3 XML response and error shape
+- route mapping
+- `aws s3` / `mc` smoke suite skeleton
+
+### [P9-03] Bucket + object API
+
+- CreateBucket, ListBuckets, DeleteBucket
+- PutObject, GetObject, HeadObject, DeleteObject
+- ListObjectsV2
+
+### [P9-04] Multipart upload
+
+- CreateMultipartUpload
+- UploadPart
+- ListParts
+- CompleteMultipartUpload
+- AbortMultipartUpload
+- incomplete upload cleanup worker
+
+### [P9-05] Production profile enforcement
+
+- `KVFS_PROFILE=production`
+- startup validation
+- admin auth
+- readiness checks
+
+### [P9-06] Operational release gate
+
+- compatibility smoke suite
+- chaos expansion
+- backup/restore rehearsal
+- release-to-operate handoff
 
 ---
 
@@ -207,9 +264,10 @@
 - Scrubber rate adaptive (load 감지 시 slowdown)
 - ADR 번호: 본래 050~053 예정이었으나 P8-06 (ADR-050) 가 ADR-050 을 가져가 → S7 은 **051~054** 사용.
 
-### [P8-05] Phase 1 chaos test 의 Phase D drift check 정확도 개선
-- **현황**: `coord_object_count` 가 admin/objects 응답 (raw JSON array) 의 length 를 jq 로 read. P8-01 에서 fix 됨.
-- **잔여 보강**: 단순 length 가 아니라 specific phase-A 키 존재 / phase-C 키 부재까지 검증하면 더 강력. 우선순위 낮음 — Phase F 가 이미 phantom 검증을 cover 하므로 중복.
+### ~~[P8-05] Phase 1 chaos test 의 Phase D drift check 정확도 개선~~
+- **DONE 2026-05-17**: `chaos-coord-quorum-loss.sh` Phase D 가
+  count-only drift check 에서 survivor admin object JSON 기반 identity check
+  로 확장됨. Quorum-loss 중 Phase-A key 존재와 Phase-C key 부재를 직접 검증.
 
 ---
 
@@ -247,10 +305,12 @@
 ### ~~[P6-10] Edge-side meta cache (per-bucket-key, short-TTL)~~
 - **DONE 2026-04-27**: opt-in `EDGE_COORD_LOOKUP_CACHE_TTL`. CoordClient 에 `cache map[bucket\x00key]cachedMeta` + RWMutex. CommitObject + DeleteObject 가 같은 client 의 entry invalidate (다른 edge 의 mutation 은 TTL 만료 대기 — 짧은 TTL 권장). 1 unit test. 측정 후 default 결정.
 
-### [P6-12] CoordClient 캐시 size cap / LRU eviction (저우선)
-- **배경**: P6-10 의 `cache map` 은 unbounded — TTL 만료 후 read 까지는 메모리 유지. 수백만 unique key workload 에서 monotonic growth. /simplify (2026-04-27) 발견.
-- **스펙**: max-entries cap (e.g. 10k) 또는 주기적 sweeper (cheap — TTL 초 단위). 측정 후 결정.
-- **우선순위**: 저우선 (현재 demo / 운영 규모에서 안 보임).
+### ~~[P6-12] CoordClient 캐시 size cap / LRU eviction (저우선)~~
+- **DONE 2026-05-17**: `CoordClient` lookup cache 에 optional
+  max-entry cap + LRU eviction 추가. `SetLookupCacheWithLimit(ttl, maxEntries)`
+  로 test/daemon wiring 이 cap 을 줄 수 있고, 기존 `SetLookupCache(ttl)` 는
+  unbounded compatibility 동작 유지. `EDGE_COORD_LOOKUP_CACHE_MAX_ENTRIES`
+  env/flag 추가 (`0` = unbounded).
 
 ### ~~[P6-11] up.sh → lib/cluster.sh source~~
 - **DONE 2026-04-27**: up.sh 가 `start_dns 3` + `start_edge edge 8000` + `wait_healthz` 사용. ~25 LOC 절약. up-tls.sh 는 TLS env 가 lib 의 surface 를 확장시켜서 그대로 보존 (별도 작업).
@@ -297,17 +357,21 @@
 | 2026-04-26 | OSS 발행 | repo private→public + history rewrite + repo recreate (옛 SHA 영구 폐기) · LICENSE 헤더 23 .go 파일 · CONTRIBUTING + CODE_OF_CONDUCT · CI workflow (build/vet/test on Go 1.26, staticcheck, govulncheck) · benchmark suite 4 패키지 · chaos-dn-killer |
 | 2026-04-27 | P8 anti-entropy polish | P8-08~16: auto-repair · corrupt/dry-run · EC inline/corrupt · throttle · concurrent EC/replication · persistent scrubber · continuous self-heal · coord Prometheus surface · histogram/skipped/dedupe observability completions. ADR-055~063 · blog Ep.47~55 · anti-entropy special demos 9개 |
 | 2026-04-28 | Codex 문서 최적화 | `AGENTS.md` 를 Codex 기준 프로젝트 규약 단일 소스로 추가하고 `CLAUDE.md` 는 호환 shim 으로 축소. `CONTRIBUTING.md` 의 오래된 P4 후보 참조 제거, `README`/`GUIDE`/`ARCHITECTURE` 에 agent 진입점 추가, FOLLOWUP 상태 표현을 commit SHA·worktree 의존이 적은 형태로 정리 |
+| 2026-05-15 | Lifecycle governance alignment | `AGENTS.md` 기본 lifecycle 순서에 `domain-architecture` gate 반영. ADR-015 제목/섹션과 ADR-032 상태 라인의 stale wording 정규화. `docs/superpowers/` spec·grill-me·plan 및 `docs/operations/2026-05-15-project-design-governance-handoff.md` 로 release→operate 증거 추가 |
+| 2026-05-16 | P9 production MVP charter | ADR-064 로 internal single-region MinIO/S3-compatible replacement MVP envelope 와 production claim gate 정의. README/GUIDE/ARCHITECTURE/AGENTS/FOLLOWUP 가 educational core + production MVP track 로 정렬됨. |
+| 2026-05-16 | Docker Compose v2 확인 | P1-02 close. Ubuntu 24.04 의 `docker-compose-v2` 패키지가 `/usr/libexec/docker/cli-plugins/docker-compose` 를 제공하고 `docker compose config -q` 가 PASS 하므로 compose 후속 작업을 완료 처리. |
+| 2026-05-17 | Low-priority polish close | P6-12 CoordClient lookup cache cap/LRU + P8-05 quorum-loss Phase D identity drift check 완료. |
 
 ---
 
-## 현재 상태 요약 (2026-04-28)
+## 현재 상태 요약 (2026-05-17)
 
-- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + 문서 현행화
+- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + Codex/lifecycle governance 문서 현행화 + P9 production MVP charter supersede
 - **테스트**: **190 unit test PASS target** (P8-16 +4). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
 - **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~16 anti-entropy demos (9개) = **48개**. 신규 `demo-anti-entropy-observability` PASS
-- **ADR**: **59 Accepted** — ADR-001~063 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054
+- **ADR**: **60 Accepted** — ADR-001~064 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054, P9: 064
 - **Blog**: Ep.1~55 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~16 (Ep.47~55)
-- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
+- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. P9 production MVP track opened with ADR-064. 저우선 잔존: P6-08, P8-07, P8-17
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 
 ## 업데이트 규칙

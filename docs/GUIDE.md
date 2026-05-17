@@ -10,6 +10,7 @@
 - 분산 storage 가 어떻게 만들어지는지 **코드를 읽으며** 이해하고 싶은 개발자
 - Ceph · MinIO · S3 의 동작을 작은 모델로 **재현**해보고 싶은 학생
 - 오너십·일관성·운영성의 트레이드오프를 **체감**하고 싶은 SRE
+- 내부 MinIO/S3-compatible replacement 를 단계적으로 검토하는 운영자
 
 전제 지식: HTTP, hash 함수, goroutine, `bbolt`/SQLite 같은 KV 저장소가 무엇인지.
 필요 없는 것: Ceph CRUSH, Raft 논문 정독, Reed-Solomon 수학.
@@ -508,6 +509,7 @@ type Stripe struct {
 | `COORD_METRICS` | 1 | ADR-062/063: coord `/metrics` |
 | `EDGE_COORD_URLKEY_POLL_INTERVAL` | 30s | Season 6 Ep.7 (ADR-049): edge 가 coord 의 urlkey 변경을 polling 주기로 sync |
 | `EDGE_COORD_LOOKUP_CACHE_TTL` | (off) | P6-10 (opt-in): coord lookup 결과 per-(bucket,key) 캐싱. 권장 1-5s. CommitObject/DeleteObject 가 invalidate |
+| `EDGE_COORD_LOOKUP_CACHE_MAX_ENTRIES` | 0 | P6-12: coord lookup cache entry cap. `0` = unbounded; TTL 이 켜졌을 때만 적용 |
 | `internal/cliutil` / `internal/httputil` | — | env/flag parsing + JSON/error helpers. main.go / HTTP packages 의 drift 방지용 공통 helper |
 
 > 운영 디테일 (election timing, DN-side TLS CA 등) 은 `README.md` § "환경 변수" 의 전체 표.
@@ -574,7 +576,10 @@ type Stripe struct {
 
 ### 12.2 명시적 비목표
 
-- **production replacement** for S3/MinIO/Ceph. kvfs 는 reference, 그쪽은 운영.
+- **full production replacement for S3/MinIO/Ceph**. P9 는 내부
+  single-region MinIO/S3-compatible replacement MVP track 이며, AWS S3 전체
+  parity 나 Ceph-like platform 을 목표로 하지 않는다. Production claim 은
+  ADR-064 의 envelope 와 gate 를 통과한 release 에만 붙인다.
 - **multi-region**. 단일 cluster 만.
 - **encryption at rest**. dn 디스크는 평문 (운영자가 LUKS 등으로 처리).
 - **versioning, MFA delete, lifecycle policy**. S3 의 그 features 들은 없음.
@@ -619,6 +624,17 @@ missing/corrupt + EC missing/corrupt 4채널로 완성했다.
 - Self-heal loop: anti-entropy repair / scheduled audit (ADR-055), corrupt repair + dry-run (ADR-056), EC inline repair (ADR-057), EC corrupt repair (ADR-058).
 - Operational polish: throttle + precision (ADR-059), concurrent EC repair (ADR-060), resilience polishes (ADR-061), auto-repair scheduling + coord metrics (ADR-062), observability completions (ADR-063).
 
+### 12.6 P9 — production MVP track
+
+P9 는 educational core 위에 내부 single-region MinIO/S3-compatible
+replacement MVP track 을 추가한다. ADR-064 는 첫 envelope 를 6-12 DN,
+10-100 TB, internal network deployment, AWS SDK/`aws s3`/`mc` core workflow 로
+제한한다.
+
+P9 의 구현 순서: S3 compatibility foundation → bucket/object API → multipart
+upload → production profile enforcement → operational release gate. 현재 revision 을
+production-ready 라고 claim 하지 않는다.
+
 ## 13. 다음에 읽을 것
 
 ### 13.0 Codex 작업 진입점
@@ -650,7 +666,7 @@ missing/corrupt + EC missing/corrupt 4채널로 완성했다.
 
 ### 13.3 ADR
 
-[`docs/adr/README.md`](adr/README.md) — **59 ADR** (S1~S6 + P8 + S7 close + P8-08~16 self-heal + concurrent + resilience polishes + auto-repair/metrics/observability), 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.
+[`docs/adr/README.md`](adr/README.md) — **60 ADR** (S1~S6 + P8 + S7 close + P8-08~16 self-heal + P9/ADR-064 production MVP profile), 시즌별 표, 번호 오름차순. 결정의 근거가 모두 여기.
 
 ### 13.4 라이브 데모
 

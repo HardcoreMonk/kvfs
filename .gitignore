@@ -26,3 +26,4 @@ certs/
 # Agent runtime metadata
 .claude/
 .codex
+.worktrees/

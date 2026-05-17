@@ -7,8 +7,11 @@ file, so keep project-specific rules here.
 ## Project Identity
 
 - **Name**: kvfs — Key-Value File System
-- **Goal**: a living, executable reference for distributed object storage
-  design. This is not a production replacement for S3, MinIO, or Ceph.
+- **Goal**: a living, executable reference for distributed object storage design,
+  plus a P9 production MVP track for an internal single-region
+  MinIO/S3-compatible replacement. The production claim applies only to releases
+  that satisfy ADR-064 and the required compatibility, chaos, backup, and
+  readiness gates.
 - **Success criteria**: clarity, reproducibility, and educational value.
 - **License**: Apache 2.0.
 
@@ -126,6 +129,11 @@ and `go vet ./...` or the Docker equivalent from the command table.
 ## Safety Notes
 
 - Do not present `EDGE_SKIP_AUTH=1` as production-safe. It is demo-only.
+- Do not describe the current revision as production-ready. Use "production MVP
+  track" until ADR-064 gates are implemented and verified.
+- Production-profile work must not weaken S3 SigV4, admin auth, TLS, WAL,
+  transactional commit, readiness, or chaos/compatibility gates without a new
+  superseding ADR.
 - Do not commit real `EDGE_URLKEY_SECRET` values.
 - `chunk_id` is the sha256 content address. Changing that invariant requires a
   new superseding ADR.
@@ -140,7 +148,7 @@ and `go vet ./...` or the Docker equivalent from the command table.
 
 ## Lifecycle Control Plane
 - 표준 lifecycle contract는 zone 상대 경로 `codex-project-mgmt/docs/codex-lifecycle-control-plane.md`를 따른다.
-- 기본 순서: `intake -> superpowers:brainstorming -> grill-me -> plan-design-review -> superpowers:writing-plans -> plan-eng-review -> implement -> code-review -> release -> operate`.
+- 기본 순서: `intake -> superpowers:brainstorming -> domain-architecture -> grill-me -> plan-design-review -> superpowers:writing-plans -> plan-eng-review -> implement -> code-review -> release -> operate`.
 - 실제 spec, grill-me 기록, plan, handoff는 해당 project root의 project-local 산출물로 둔다.
 - 새 기능, behavior change, workflow contract change, multi-file change는 lightweight path를 사용하지 않는다.
 - `release` 이후에는 `docs/operations/YYYY-MM-DD-<topic>-handoff.md` 또는 project-equivalent handoff로 운영 진입 상태를 기록한다.

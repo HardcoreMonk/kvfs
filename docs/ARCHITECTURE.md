@@ -24,6 +24,10 @@ Client ─HTTP+UrlKey─► kvfs-edge ──────┴─ HTTP REST ──�
 - **모드 선택**:
   - **2-daemon (S1~S4 호환)**: `EDGE_COORD_URL` unset. edge 안에 coordinator 인라인 — placement·rebalance·GC·repair·heartbeat 모두 edge 가 처리. 단순함.
   - **3-daemon (S5~)**: `EDGE_COORD_URL=http://coord:9000` 으로 coord 모드 활성. edge 는 thin gateway, coord 가 메타·placement·일관성 owner. cli admin 도 `--coord URL` 로 직접. HA 는 coord-side Raft (`COORD_PEERS`) + WAL replication (`COORD_WAL_PATH`) + transactional commit (`COORD_TRANSACTIONAL_RAFT`).
+- **Production MVP profile (P9 production MVP track)**: production claim 은 3-daemon coord-proxy
+  topology 를 기준으로 한다. `EDGE_COORD_URL` unset inline mode 는 legacy/demo
+  compatibility mode 로 유지한다. S3-compatible client contract 는 edge 의
+  S3 front door 가 제공하고, metadata/control-plane ownership 은 coord 에 둔다.
 - **객체 모델**: replication (default 3-way) **또는** Reed-Solomon EC (per-PUT `X-KVFS-EC: K+M` 헤더)
 - **Placement**: chunkID/stripeID → top-R DN (Rendezvous Hashing). DN 추가·제거 시 약 R/N 만 이동
 - **Quorum write/read**: 기본 `R/2+1`, 요청별 `X-KVFS-W` / `X-KVFS-R` 로 튜닝 가능 (ADR-053)
@@ -42,6 +46,11 @@ Client ─HTTP+UrlKey─► kvfs-edge ──────┴─ HTTP REST ──�
   - `PUT /v1/o/{bucket}/{key...}?sig=...&exp=...` `X-KVFS-EC: K+M` (EC, ADR-008)
   - `GET /v1/o/{bucket}/{key...}?sig=...&exp=...`
   - `DELETE /v1/o/{bucket}/{key...}?sig=...&exp=...`
+
+P9 에서 S3-compatible surface 는 production customer contract 가 된다. 기존
+`/v1/o` native API 는 demos, internal tooling, and compatibility tests 를 위한
+legacy/internal surface 로 유지한다.
+
 - **관리 엔드포인트** (auth 없음 — admin 망 가정):
   - `GET /v1/admin/objects` · `GET /v1/admin/dns` · `GET /v1/admin/auto/status`
   - `POST /v1/admin/{rebalance,gc,repair}/{plan,apply}` (ADR-010/012/025)

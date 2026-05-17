@@ -1,7 +1,7 @@
 # ADR-032 — NFS gateway (scope evaluation, deferred)
 
 ## 상태
-Proposed (deferred — out of scope for current educational reference) · 2026-04-26
+Accepted · 2026-04-26 — deferred, out of scope for current educational reference
 
 ## 맥락
 
