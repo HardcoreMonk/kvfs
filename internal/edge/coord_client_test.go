@@ -100,7 +100,7 @@ func TestCoordClient_PlaceN_ReturnsCoordsView(t *testing.T) {
 	// Coord knows only dn1, dn2, dn3. Edge calling PlaceN through this
 	// client must NEVER receive any other addr.
 	cs := &coord.Server{
-		Store:  st,
+		Store: st,
 		Placer: placement.New([]placement.Node{
 			{ID: "dn1:8080", Addr: "dn1:8080"},
 			{ID: "dn2:8080", Addr: "dn2:8080"},
@@ -232,6 +232,116 @@ func TestCoordClient_LookupCache_HitInvalidate(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&lookupHits); got != 4 {
 		t.Errorf("after disable + 2 lookups, coord hits = %d, want 4 (no caching)", got)
+	}
+}
+
+func TestCoordClient_LookupCache_MaxEntriesEvictsLeastRecentlyUsed(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	for _, key := range []string{"k1", "k2", "k3"} {
+		if err := st.PutObject(&store.ObjectMeta{Bucket: "b", Key: key, Size: 1}); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+
+	var lookupHits int32
+	cs := &coord.Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}})}
+	mux := cs.Routes()
+	wrapped := http.NewServeMux()
+	wrapped.HandleFunc("GET /v1/coord/lookup", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&lookupHits, 1)
+		mux.ServeHTTP(w, r)
+	})
+	wrapped.HandleFunc("POST /v1/coord/commit", func(w http.ResponseWriter, r *http.Request) { mux.ServeHTTP(w, r) })
+	wrapped.HandleFunc("POST /v1/coord/delete", func(w http.ResponseWriter, r *http.Request) { mux.ServeHTTP(w, r) })
+	wrapped.HandleFunc("GET /v1/coord/healthz", func(w http.ResponseWriter, r *http.Request) { mux.ServeHTTP(w, r) })
+	ts := httptest.NewServer(wrapped)
+	defer ts.Close()
+
+	cc := NewCoordClient(ts.URL)
+	cc.SetLookupCacheWithLimit(10*time.Second, 2)
+	ctx := context.Background()
+
+	for _, key := range []string{"k1", "k2"} {
+		if _, err := cc.LookupObject(ctx, "b", key); err != nil {
+			t.Fatalf("lookup %s: %v", key, err)
+		}
+	}
+	if got := atomic.LoadInt32(&lookupHits); got != 2 {
+		t.Fatalf("initial coord hits = %d, want 2", got)
+	}
+
+	if _, err := cc.LookupObject(ctx, "b", "k1"); err != nil {
+		t.Fatalf("lookup k1 cached: %v", err)
+	}
+	if got := atomic.LoadInt32(&lookupHits); got != 2 {
+		t.Fatalf("k1 cache hit should not call coord, hits = %d", got)
+	}
+
+	if _, err := cc.LookupObject(ctx, "b", "k3"); err != nil {
+		t.Fatalf("lookup k3: %v", err)
+	}
+	if got := atomic.LoadInt32(&lookupHits); got != 3 {
+		t.Fatalf("k3 miss should call coord once, hits = %d", got)
+	}
+
+	if _, err := cc.LookupObject(ctx, "b", "k1"); err != nil {
+		t.Fatalf("lookup k1 after eviction: %v", err)
+	}
+	if got := atomic.LoadInt32(&lookupHits); got != 3 {
+		t.Fatalf("recent k1 should remain cached, hits = %d", got)
+	}
+
+	if _, err := cc.LookupObject(ctx, "b", "k2"); err != nil {
+		t.Fatalf("lookup k2 after eviction: %v", err)
+	}
+	if got := atomic.LoadInt32(&lookupHits); got != 4 {
+		t.Fatalf("least-recent k2 should be evicted and fetched, hits = %d", got)
+	}
+}
+
+func TestCoordClient_LookupCache_ExpiredEntriesPurgedBeforeCap(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	for _, key := range []string{"old1", "old2", "fresh"} {
+		if err := st.PutObject(&store.ObjectMeta{Bucket: "b", Key: key, Size: 1}); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+
+	cs := &coord.Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}})}
+	ts := httptest.NewServer(cs.Routes())
+	defer ts.Close()
+
+	cc := NewCoordClient(ts.URL)
+	cc.SetLookupCacheWithLimit(30*time.Millisecond, 2)
+	ctx := context.Background()
+	if _, err := cc.LookupObject(ctx, "b", "old1"); err != nil {
+		t.Fatalf("lookup old1: %v", err)
+	}
+	if _, err := cc.LookupObject(ctx, "b", "old2"); err != nil {
+		t.Fatalf("lookup old2: %v", err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if _, err := cc.LookupObject(ctx, "b", "fresh"); err != nil {
+		t.Fatalf("lookup fresh: %v", err)
+	}
+
+	cc.mu.RLock()
+	defer cc.mu.RUnlock()
+	if got := len(cc.cache); got != 1 {
+		t.Fatalf("cache entries after expiry purge = %d, want 1", got)
+	}
+	if _, ok := cc.cache[cc.cacheKey("b", "fresh")]; !ok {
+		t.Fatalf("fresh entry missing after expiry purge: %#v", cc.cache)
 	}
 }
 
