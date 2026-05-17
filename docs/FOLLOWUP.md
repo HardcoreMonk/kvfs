@@ -2,12 +2,12 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-05-16** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) + P9 production MVP charter supersede (ADR-064, production MVP track) 까지 반영.
+문서 현행화 일자: **2026-05-16** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) + P9 production MVP charter supersede (ADR-064, production MVP track) + Docker Compose v2 로컬 충족 확인까지 반영.
 
 ## 우선순위 맵
 
 - **P0**: 차단·긴급 — 현재 **0건**
-- **P1**: 명확한 스펙, 실행 대기 — 현재 **1건** (P1-02 사용자 직접)
+- **P1**: 명확한 스펙, 실행 대기 — 현재 **0건**
 - **P2**: 리뷰·개선 — 모두 완료
 - **P3**: 사용자 결정 필요 — 현재 **0건**
 - **P5**: post-Season-4 wave — 모두 완료
@@ -23,10 +23,13 @@
 
 ## P1 — 실행 대기 (사용자 직접)
 
-### [P1-02] Docker Compose plugin 설치
-- **배경**: `./scripts/up.sh` 가 plain `docker run` 으로 우회 구현됨. `docker-compose.yml` 은 있으나 `docker compose` 명령 사용 불가
-- **해결**: `sudo apt install docker-compose-plugin`
-- **효과**: README 의 `docker compose up -d` 표준 명령 동작
+### ~~[P1-02] Docker Compose plugin 설치~~
+- **DONE 2026-05-16**: Ubuntu 24.04 환경에서 `docker-compose-plugin`
+  패키지는 현재 apt sources 에 없지만, Ubuntu 패키지
+  `docker-compose-v2` 가 이미 설치되어 `docker compose` 를 제공함을 확인.
+  `docker compose version` = `2.40.3+ds1-0ubuntu1~24.04.1`.
+- **검증**: `docker compose config -q` PASS. README 의
+  `docker compose up -d` 표준 명령 사용 전제 충족.
 
 ---
 
@@ -353,6 +356,7 @@ object workflow.
 | 2026-04-28 | Codex 문서 최적화 | `AGENTS.md` 를 Codex 기준 프로젝트 규약 단일 소스로 추가하고 `CLAUDE.md` 는 호환 shim 으로 축소. `CONTRIBUTING.md` 의 오래된 P4 후보 참조 제거, `README`/`GUIDE`/`ARCHITECTURE` 에 agent 진입점 추가, FOLLOWUP 상태 표현을 commit SHA·worktree 의존이 적은 형태로 정리 |
 | 2026-05-15 | Lifecycle governance alignment | `AGENTS.md` 기본 lifecycle 순서에 `domain-architecture` gate 반영. ADR-015 제목/섹션과 ADR-032 상태 라인의 stale wording 정규화. `docs/superpowers/` spec·grill-me·plan 및 `docs/operations/2026-05-15-project-design-governance-handoff.md` 로 release→operate 증거 추가 |
 | 2026-05-16 | P9 production MVP charter | ADR-064 로 internal single-region MinIO/S3-compatible replacement MVP envelope 와 production claim gate 정의. README/GUIDE/ARCHITECTURE/AGENTS/FOLLOWUP 가 educational core + production MVP track 로 정렬됨. |
+| 2026-05-16 | Docker Compose v2 확인 | P1-02 close. Ubuntu 24.04 의 `docker-compose-v2` 패키지가 `/usr/libexec/docker/cli-plugins/docker-compose` 를 제공하고 `docker compose config -q` 가 PASS 하므로 compose 후속 작업을 완료 처리. |
 
 ---
 
