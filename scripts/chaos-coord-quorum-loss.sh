@@ -100,15 +100,27 @@ trap '
   ./scripts/down.sh >/dev/null 2>&1 || true
 ' EXIT INT TERM
 
-# Helper: count objects via coord admin (read-only — works on any coord
-# that has metadata, leader or follower). The endpoint returns a JSON
-# array directly (writeJSON of []ObjectMeta), so we count length on the
-# root, not on a `.objects` key.
+# Helper: fetch/count objects via coord admin (read-only — works on any coord
+# that has metadata, leader or follower). The endpoint returns a JSON array
+# directly (writeJSON of []ObjectMeta), so count length on the root, not on a
+# `.objects` key.
+coord_objects_json() {
+  local coord_port="$1"
+  curl -fsS --max-time 5 "http://localhost:${coord_port}/v1/coord/admin/objects"
+}
+
 coord_object_count() {
   local coord_port="$1"
-  curl -fsS --max-time 5 "http://localhost:${coord_port}/v1/coord/admin/objects" 2>/dev/null \
+  coord_objects_json "$coord_port" 2>/dev/null \
     | jq -r 'length' 2>/dev/null \
     || echo "ERROR"
+}
+
+object_json_has_key() {
+  local json="$1" bucket="$2" key="$3"
+  jq -e --arg bucket "$bucket" --arg key "$key" \
+    'any(.[]; .bucket == $bucket and .key == $key)' \
+    >/dev/null <<<"$json"
 }
 
 # Pick the surviving coord (first one that's NOT the leader).
@@ -197,12 +209,39 @@ echo "    PUT during quorum loss: ${C_OK} unexpected-OK / ${C_FAIL} expected-fai
 # === Phase D: survivor object count must be unchanged ======================
 echo
 echo "[phase D] survivor ${SURVIVOR} object count must equal Phase A baseline"
-DURING=$(coord_object_count "$SURVIVOR_PORT")
+DURING_JSON=$(coord_objects_json "$SURVIVOR_PORT" 2>/dev/null || true)
+DURING=$(jq -r 'length' <<<"$DURING_JSON" 2>/dev/null || echo "ERROR")
 echo "    survivor count: baseline=${BASELINE} during=${DURING}"
 DRIFT_FAIL=0
+IDENTITY_FAIL=0
 if [ "$DURING" != "$BASELINE" ]; then
   DRIFT_FAIL=1
   echo "    ❌ DRIFT: survivor bbolt mutated during quorum loss → phantom commit"
+fi
+if [ "$DURING" = "ERROR" ] || [ -z "$DURING_JSON" ]; then
+  IDENTITY_FAIL=1
+  echo "    ❌ IDENTITY: could not read survivor object JSON"
+else
+  A_MISSING=0
+  for entry in "${PHASE_A_KEYS[@]}"; do
+    K="${entry%%|*}"
+    if ! object_json_has_key "$DURING_JSON" "quorum" "$K"; then
+      A_MISSING=$((A_MISSING + 1))
+      [ "$A_MISSING" -le 3 ] && echo "    ❌ missing phase-A key on survivor: ${K}"
+    fi
+  done
+  C_PRESENT=0
+  for entry in "${PHASE_C_KEYS[@]}"; do
+    K="${entry%%|*}"
+    if object_json_has_key "$DURING_JSON" "quorum" "$K"; then
+      C_PRESENT=$((C_PRESENT + 1))
+      [ "$C_PRESENT" -le 3 ] && echo "    ❌ phase-C key present during quorum loss: ${K}"
+    fi
+  done
+  if [ "$A_MISSING" -gt 0 ] || [ "$C_PRESENT" -gt 0 ]; then
+    IDENTITY_FAIL=1
+  fi
+  echo "    identity: phase-A missing=${A_MISSING}, phase-C present=${C_PRESENT}"
 fi
 
 # === Phase E: restore + new writes ==========================================
@@ -274,6 +313,7 @@ echo "[summary]"
 echo "   phase A (seed):                ${#PHASE_A_KEYS[@]}/${PHASE_KEYS} OK, recover ${A_RECOVER_FAIL} FAIL"
 echo "   phase C (during quorum loss):  ${C_OK} unexpected-OK / ${C_FAIL} expected-fail"
 echo "   phase D (survivor drift):      $([ "$DRIFT_FAIL" -eq 0 ] && echo 'no drift' || echo 'DRIFT DETECTED')"
+echo "   phase D (survivor identity):   $([ "$IDENTITY_FAIL" -eq 0 ] && echo 'phase-A present, phase-C absent' || echo 'IDENTITY DRIFT')"
 echo "   phase E (post-restore):        ${#PHASE_E_KEYS[@]}/${PHASE_KEYS} OK, recover ${E_RECOVER_FAIL} FAIL"
 echo "   phase F (phantom commits):     ${PHANTOM}"
 
@@ -284,6 +324,10 @@ if [ "$C_OK" -gt 0 ]; then
 fi
 if [ "$DRIFT_FAIL" -ne 0 ]; then
   echo "   ❌ ADR-040 VIOLATION: survivor bbolt mutated during quorum loss"
+  EXIT_CODE=1
+fi
+if [ "$IDENTITY_FAIL" -ne 0 ]; then
+  echo "   ❌ ADR-040 VIOLATION: survivor object identity drifted during quorum loss"
   EXIT_CODE=1
 fi
 if [ "$PHANTOM" -gt 0 ]; then
