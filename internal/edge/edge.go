@@ -37,6 +37,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -471,7 +472,7 @@ func (s *Server) s3Region() string {
 	return s.S3Region
 }
 
-func (s *Server) handleS3Foundation(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleS3(w http.ResponseWriter, r *http.Request) {
 	info := s3api.Classify(r)
 	auth, err := s3api.VerifyRequest(r, s.S3Credentials, time.Now())
 	if err != nil {
@@ -491,21 +492,431 @@ func (s *Server) handleS3Foundation(w http.ResponseWriter, r *http.Request) {
 		))
 		return
 	}
-	if info.Operation == s3api.OperationUnsupported {
+	switch info.Operation {
+	case s3api.OperationListBuckets:
+		s.handleS3ListBuckets(w, r, info)
+	case s3api.OperationCreateBucket:
+		s.handleS3CreateBucket(w, r, info)
+	case s3api.OperationDeleteBucket:
+		s.handleS3DeleteBucket(w, r, info)
+	case s3api.OperationPutObject:
+		s.handleS3PutObject(w, r, info)
+	case s3api.OperationGetObject:
+		s.handleS3GetObject(w, r, info)
+	case s3api.OperationHeadObject:
+		s.handleS3HeadObject(w, r, info)
+	case s3api.OperationDeleteObject:
+		s.handleS3DeleteObject(w, r, info)
+	case s3api.OperationListObjectsV2:
+		s.handleS3ListObjectsV2(w, r, info)
+	case s3api.OperationUnsupported:
 		s3api.WriteError(w, r, s3api.NewError(
 			http.StatusNotImplemented,
 			s3api.CodeNotImplemented,
 			"unsupported S3 operation",
 			info.Resource,
 		))
+	default:
+		s3api.WriteError(w, r, s3api.NewError(
+			http.StatusNotImplemented,
+			s3api.CodeNotImplemented,
+			info.Operation.String()+" is not implemented in P9-03",
+			info.Resource,
+		))
+	}
+}
+
+func (s *Server) handleS3CreateBucket(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := store.ValidateBucketName(info.Bucket); err != nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidBucketName, err.Error(), info.Resource))
 		return
 	}
-	s3api.WriteError(w, r, s3api.NewError(
-		http.StatusNotImplemented,
-		s3api.CodeNotImplemented,
-		info.Operation.String()+" is not implemented in P9-02",
-		info.Resource,
-	))
+	if _, err := s.createBucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	w.Header().Set("Location", "/"+info.Bucket)
+	s3api.WriteXML(w, r, http.StatusOK, nil)
+}
+
+func (s *Server) handleS3ListBuckets(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	buckets, err := s.listBuckets(r.Context())
+	if err != nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, err.Error(), info.Resource))
+		return
+	}
+	resp := s3api.ListAllMyBucketsResult{Buckets: make([]s3api.Bucket, 0, len(buckets))}
+	for _, b := range buckets {
+		resp.Buckets = append(resp.Buckets, s3api.Bucket{
+			Name:         b.Name,
+			CreationDate: b.CreatedAt,
+		})
+	}
+	s3api.WriteXML(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleS3DeleteBucket(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := store.ValidateBucketName(info.Bucket); err != nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidBucketName, err.Error(), info.Resource))
+		return
+	}
+	if err := s.deleteBucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	s3api.WriteXML(w, r, http.StatusOK, nil)
+}
+
+func (s *Server) handleS3PutObject(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	if s.Coord == nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, "coordinator is not configured", info.Resource))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	reader := s.newPutReader(r.Body)
+	hasher := sha256.New()
+	var chunkRefs []store.ChunkRef
+	var totalSize int64
+	for i := 0; ; i++ {
+		piece, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidRequest, fmt.Sprintf("read chunk %d: %v", i+1, err), info.Resource))
+			return
+		}
+		_, _ = hasher.Write(piece.Data)
+		replicas, werr := s.writeChunkPreferClassW(ctx, piece.ID, piece.Data, 0)
+		if werr != nil {
+			s3api.WriteError(w, r, s3api.NewError(http.StatusBadGateway, s3api.CodeInternalError, fmt.Sprintf("chunk %d (%s): %v", i+1, piece.ID[:16], werr), info.Resource))
+			return
+		}
+		chunkRefs = append(chunkRefs, store.ChunkRef{
+			ChunkID:  piece.ID,
+			Size:     piece.Size,
+			Replicas: replicas,
+		})
+		totalSize += piece.Size
+	}
+	if len(chunkRefs) == 0 {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidRequest, "empty body", info.Resource))
+		return
+	}
+
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	etag := `"` + hex.EncodeToString(hasher.Sum(nil)) + `"`
+	meta := &store.ObjectMeta{
+		Bucket:      info.Bucket,
+		Key:         info.Key,
+		Size:        totalSize,
+		ContentType: contentType,
+		ETag:        etag,
+		Chunks:      chunkRefs,
+		Class:       s.PlacementPreferClass,
+	}
+	if err := s.commitPutMeta(ctx, meta); err != nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, err.Error(), info.Resource))
+		return
+	}
+	w.Header().Set("ETag", etag)
+	s3api.WriteXML(w, r, http.StatusOK, nil)
+}
+
+func (s *Server) handleS3GetObject(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	s.handleS3ReadObject(w, r, info, false)
+}
+
+func (s *Server) handleS3HeadObject(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	s.handleS3ReadObject(w, r, info, true)
+}
+
+func (s *Server) handleS3ReadObject(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo, headOnly bool) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	if s.Coord == nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, "coordinator is not configured", info.Resource))
+		return
+	}
+	meta, err := s.lookupMeta(r.Context(), info.Bucket, info.Key)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s3api.WriteError(w, r, s3api.NewError(http.StatusNotFound, s3api.CodeNoSuchKey, "key not found", info.Resource))
+			return
+		}
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, err.Error(), info.Resource))
+		return
+	}
+	if meta.IsEC() {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusNotImplemented, s3api.CodeNotImplemented, "S3 read for erasure-coded objects is not implemented in P9-03", info.Resource))
+		return
+	}
+
+	if headOnly {
+		setS3ObjectHeaders(w, meta)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	for i, c := range meta.Chunks {
+		data, _, ferr := s.Coord.ReadChunk(ctx, c.ChunkID, c.Replicas)
+		if ferr != nil {
+			if i == 0 {
+				s3api.WriteError(w, r, s3api.NewError(http.StatusBadGateway, s3api.CodeInternalError, ferr.Error(), info.Resource))
+				return
+			}
+			s.logger().Error("S3 GET stream aborted",
+				slog.String("bucket", info.Bucket), slog.String("key", info.Key),
+				slog.Int("chunk_index", i), slog.String("err", ferr.Error()))
+			return
+		}
+		if int64(len(data)) != c.Size {
+			s.logger().Error("S3 GET chunk size mismatch",
+				slog.String("chunk_id", c.ChunkID),
+				slog.Int("got", len(data)), slog.Int64("want", c.Size))
+			return
+		}
+		if i == 0 {
+			setS3ObjectHeaders(w, meta)
+			w.WriteHeader(http.StatusOK)
+		}
+		if _, werr := w.Write(data); werr != nil {
+			return
+		}
+	}
+	if len(meta.Chunks) == 0 {
+		setS3ObjectHeaders(w, meta)
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func setS3ObjectHeaders(w http.ResponseWriter, meta *store.ObjectMeta) {
+	w.Header().Set("Content-Type", meta.ContentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
+	w.Header().Set("Last-Modified", meta.CreatedAt.Format(time.RFC1123))
+	if meta.ETag != "" {
+		w.Header().Set("ETag", meta.ETag)
+	}
+}
+
+func (s *Server) handleS3DeleteObject(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	if s.Coord == nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, "coordinator is not configured", info.Resource))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	meta, err := s.lookupMeta(ctx, info.Bucket, info.Key)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s3api.WriteXML(w, r, http.StatusNoContent, nil)
+			return
+		}
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, err.Error(), info.Resource))
+		return
+	}
+	for _, c := range meta.Chunks {
+		_ = s.Coord.DeleteChunk(ctx, c.ChunkID, c.Replicas)
+	}
+	for _, st := range meta.Stripes {
+		for _, sh := range st.Shards {
+			_ = s.Coord.DeleteChunk(ctx, sh.ChunkID, sh.Replicas)
+		}
+	}
+	if err := s.deleteMeta(ctx, info.Bucket, info.Key); err != nil && !errors.Is(err, store.ErrNotFound) {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, err.Error(), info.Resource))
+		return
+	}
+	s3api.WriteXML(w, r, http.StatusNoContent, nil)
+}
+
+func (s *Server) handleS3ListObjectsV2(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	prefix := r.URL.Query().Get("prefix")
+	delimiter := r.URL.Query().Get("delimiter")
+	maxKeys := s3MaxKeys(r)
+	continuation := r.URL.Query().Get("continuation-token")
+	startAfter := r.URL.Query().Get("start-after")
+
+	objs, err := s.listObjectsByPrefix(r.Context(), info.Bucket, prefix, 0)
+	if err != nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, err.Error(), info.Resource))
+		return
+	}
+	sort.Slice(objs, func(i, j int) bool { return objs[i].Key < objs[j].Key })
+
+	cursor := continuation
+	if cursor == "" {
+		cursor = startAfter
+	}
+	type emission struct {
+		obj    *store.ObjectMeta
+		prefix string
+	}
+	seenPrefix := make(map[string]bool)
+	var emissions []emission
+	for _, o := range objs {
+		if cursor != "" && o.Key <= cursor {
+			continue
+		}
+		if delimiter != "" {
+			rest := strings.TrimPrefix(o.Key, prefix)
+			if idx := strings.Index(rest, delimiter); idx >= 0 {
+				common := prefix + rest[:idx+len(delimiter)]
+				if cursor != "" && common <= cursor {
+					continue
+				}
+				if !seenPrefix[common] {
+					seenPrefix[common] = true
+					emissions = append(emissions, emission{prefix: common})
+				}
+				continue
+			}
+		}
+		emissions = append(emissions, emission{obj: o})
+	}
+
+	resp := s3api.ListBucketResult{
+		Name:              info.Bucket,
+		Prefix:            prefix,
+		MaxKeys:           maxKeys,
+		ContinuationToken: continuation,
+		StartAfter:        startAfter,
+	}
+	limit := maxKeys
+	if limit > len(emissions) {
+		limit = len(emissions)
+	}
+	for _, e := range emissions[:limit] {
+		if e.obj != nil {
+			resp.Contents = append(resp.Contents, s3api.ObjectContent{
+				Key:          e.obj.Key,
+				LastModified: e.obj.CreatedAt,
+				ETag:         e.obj.ETag,
+				Size:         e.obj.Size,
+				StorageClass: "STANDARD",
+			})
+			resp.NextContinuationToken = e.obj.Key
+			continue
+		}
+		resp.CommonPrefixes = append(resp.CommonPrefixes, s3api.CommonPrefix{Prefix: e.prefix})
+		resp.NextContinuationToken = e.prefix
+	}
+	resp.KeyCount = len(resp.Contents) + len(resp.CommonPrefixes)
+	if len(emissions) > limit {
+		resp.IsTruncated = true
+	} else {
+		resp.NextContinuationToken = ""
+	}
+	s3api.WriteXML(w, r, http.StatusOK, resp)
+}
+
+func s3MaxKeys(r *http.Request) int {
+	const defaultMaxKeys = 1000
+	raw := r.URL.Query().Get("max-keys")
+	if raw == "" {
+		return defaultMaxKeys
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return defaultMaxKeys
+	}
+	if n > defaultMaxKeys {
+		return defaultMaxKeys
+	}
+	return n
+}
+
+func (s *Server) createBucket(ctx context.Context, name string) (*store.BucketMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.CreateBucket(ctx, name)
+	}
+	return s.Store.CreateBucket(name)
+}
+
+func (s *Server) getBucket(ctx context.Context, name string) (*store.BucketMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.GetBucket(ctx, name)
+	}
+	return s.Store.GetBucket(name)
+}
+
+func (s *Server) listBuckets(ctx context.Context) ([]store.BucketMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.ListBuckets(ctx)
+	}
+	buckets, err := s.Store.ListBuckets()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.BucketMeta, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, *b)
+	}
+	return out, nil
+}
+
+func (s *Server) deleteBucket(ctx context.Context, name string) error {
+	if s.CoordClient != nil {
+		return s.CoordClient.DeleteBucket(ctx, name)
+	}
+	return s.Store.DeleteBucket(name)
+}
+
+func (s *Server) listObjectsByPrefix(ctx context.Context, bucket, prefix string, limit int) ([]*store.ObjectMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.ListObjectsByPrefix(ctx, bucket, prefix, limit)
+	}
+	return s.Store.ListObjectsByPrefix(bucket, prefix, limit)
+}
+
+func (s *Server) ensureS3Bucket(ctx context.Context, bucket string) error {
+	if err := store.ValidateBucketName(bucket); err != nil {
+		return err
+	}
+	_, err := s.getBucket(ctx, bucket)
+	return err
+}
+
+func (s *Server) writeS3BucketErr(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s3api.WriteError(w, r, s3api.NewError(http.StatusNotFound, s3api.CodeNoSuchBucket, "bucket not found", info.Resource))
+	case errors.Is(err, store.ErrAlreadyExists):
+		s3api.WriteError(w, r, s3api.NewError(http.StatusConflict, s3api.CodeBucketAlreadyOwnedByYou, "bucket already exists", info.Resource))
+	case errors.Is(err, store.ErrBucketNotEmpty):
+		s3api.WriteError(w, r, s3api.NewError(http.StatusConflict, s3api.CodeBucketNotEmpty, "bucket is not empty", info.Resource))
+	default:
+		status := http.StatusBadRequest
+		code := s3api.CodeInvalidBucketName
+		if strings.HasPrefix(err.Error(), "coord-client:") {
+			status = http.StatusInternalServerError
+			code = s3api.CodeInternalError
+		}
+		s3api.WriteError(w, r, s3api.NewError(status, code, err.Error(), info.Resource))
+	}
 }
 
 // Routes builds the HTTP mux.
@@ -554,7 +965,7 @@ func (s *Server) Routes() http.Handler {
 			nativeMux.ServeHTTP(w, r)
 			return
 		}
-		s.handleS3Foundation(w, r)
+		s.handleS3(w, r)
 	}))
 }
 

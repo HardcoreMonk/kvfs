@@ -254,6 +254,28 @@ func (c *CoordClient) DeleteObject(ctx context.Context, bucket, key string) erro
 	return nil
 }
 
+func (c *CoordClient) ListObjectsByPrefix(ctx context.Context, bucket, prefix string, limit int) ([]*store.ObjectMeta, error) {
+	var all []*store.ObjectMeta
+	if err := c.call(ctx, "GET", "/v1/coord/admin/objects", "list-objects",
+		nil, &all, false); err != nil {
+		return nil, err
+	}
+	out := make([]*store.ObjectMeta, 0, len(all))
+	for _, o := range all {
+		if bucket != "" && o.Bucket != bucket {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(o.Key, prefix) {
+			continue
+		}
+		out = append(out, o)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (c *CoordClient) CreateBucket(ctx context.Context, name string) (*store.BucketMeta, error) {
 	var out store.BucketMeta
 	if err := c.bucketCall(ctx, "POST", "/v1/coord/bucket", "create-bucket",

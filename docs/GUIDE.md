@@ -481,8 +481,8 @@ type Stripe struct {
 | `EDGE_ADDR` / `EDGE_DNS` / `EDGE_DATA_DIR` | `:8000` / required / `./edge-data` | edge bind / bootstrap DN list / bbolt dir |
 | `EDGE_DNS_RESET` | 0 | bbolt `dns_runtime` 을 `EDGE_DNS` 로 강제 재시드 |
 | `EDGE_URLKEY_SECRET` / `EDGE_URLKEY_PRIMARY_KID` | required / (off) | HMAC seed / primary kid override |
-| `EDGE_S3_ACCESS_KEY` / `EDGE_S3_SECRET_KEY` | (off) | P9-02 S3 SigV4 foundation credentials. Set together. |
-| `EDGE_S3_REGION` | `us-east-1` | P9-02 S3 SigV4 credential-scope region. |
+| `EDGE_S3_ACCESS_KEY` / `EDGE_S3_SECRET_KEY` | (off) | P9 S3 front-door credentials. Set together. |
+| `EDGE_S3_REGION` | `us-east-1` | P9 S3 SigV4 credential-scope region. |
 | `EDGE_WAL_PATH` | (off) | 설정 시 ADR-019 WAL 활성 |
 | `EDGE_WAL_BATCH_INTERVAL` | (off) | 설정 시 group commit 활성 (e.g. `5ms`) |
 | `EDGE_PEERS` / `EDGE_SELF_URL` | (off) | 설정 시 leader election 활성 (ADR-031) |
@@ -636,10 +636,11 @@ P9 의 구현 순서: S3 compatibility foundation → bucket/object API → mult
 upload → production profile enforcement → operational release gate. 현재 revision 을
 production-ready 라고 claim 하지 않는다.
 
-P9-02 S3 foundation은 S3 protocol boundary 를 먼저 세운다. `internal/s3api`
-가 SigV4, XML error, route classification 을 담당하고 edge 는 인증된 S3
-요청에 S3-shaped `NotImplemented` 를 반환한다. 실제 bucket/object 성공
-workflow 는 P9-03 의 범위다.
+P9-02 S3 foundation은 S3 protocol boundary 를 먼저 세웠다. `internal/s3api`
+가 SigV4, XML error, route classification 을 담당한다. P9-03 은 그 위에
+Create/List/DeleteBucket, Put/Get/Head/DeleteObject, ListObjectsV2 를 연결한다.
+multipart workflow 는 P9-04 의 범위이며 현재는 S3-shaped `NotImplemented` 로
+남아 있다.
 
 ## 13. 다음에 읽을 것
 

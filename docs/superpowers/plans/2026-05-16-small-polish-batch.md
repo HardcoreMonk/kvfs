@@ -595,7 +595,8 @@ Run:
 ```bash
 ./scripts/check-doc-drift.sh
 git diff --check
-rg -n "P4-01|미커밋|HEAD [0-9a-f]|claude-zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
+stale_re='P4''-01|미''커밋|HE''AD [0-9a-f]|claude-''zone'
+rg -n "$stale_re" -g '*.md' -g '*.html' -g '!AGENTS.md'
 ```
 
 Expected:
@@ -656,7 +657,8 @@ Run:
 ```bash
 ./scripts/check-doc-drift.sh
 git diff --check
-rg -n "P4-01|미커밋|HEAD [0-9a-f]|claude-zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
+stale_re='P4''-01|미''커밋|HE''AD [0-9a-f]|claude-''zone'
+rg -n "$stale_re" -g '*.md' -g '*.html' -g '!AGENTS.md'
 git status --short --branch
 ```
 

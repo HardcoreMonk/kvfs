@@ -51,6 +51,13 @@ P9 에서 S3-compatible surface 는 production customer contract 가 된다. 기
 `/v1/o` native API 는 demos, internal tooling, and compatibility tests 를 위한
 legacy/internal surface 로 유지한다.
 
+- **S3-compatible endpoint subset (P9-03)**:
+  - `GET /` — ListBuckets
+  - `PUT /{bucket}` · `DELETE /{bucket}` — CreateBucket / DeleteBucket
+  - `PUT|GET|HEAD|DELETE /{bucket}/{key...}` — object write/read/head/delete
+  - `GET /{bucket}?list-type=2&prefix=&delimiter=` — ListObjectsV2
+  - multipart operations stay S3-shaped `NotImplemented` until P9-04
+
 - **관리 엔드포인트** (auth 없음 — admin 망 가정):
   - `GET /v1/admin/objects` · `GET /v1/admin/dns` · `GET /v1/admin/auto/status`
   - `POST /v1/admin/{rebalance,gc,repair}/{plan,apply}` (ADR-010/012/025)
