@@ -46,9 +46,11 @@ import (
 type WALOp string
 
 const (
-	OpPutObject      WALOp = "put_object"
-	OpDeleteObject   WALOp = "delete_object"
-	OpAddRuntimeDN   WALOp = "add_runtime_dn"
+	OpPutObject       WALOp = "put_object"
+	OpDeleteObject    WALOp = "delete_object"
+	OpCreateBucket    WALOp = "create_bucket"
+	OpDeleteBucket    WALOp = "delete_bucket"
+	OpAddRuntimeDN    WALOp = "add_runtime_dn"
 	OpRemoveRuntimeDN WALOp = "remove_runtime_dn"
 )
 
@@ -484,6 +486,18 @@ func (m *MetaStore) ApplyEntry(e WALEntry) error {
 			return fmt.Errorf("apply delete_object decode: %w", err)
 		}
 		return m.deleteObjectInternal(a.Bucket, a.Key, false)
+	case OpCreateBucket:
+		var b BucketMeta
+		if err := json.Unmarshal(e.Args, &b); err != nil {
+			return fmt.Errorf("apply create_bucket decode: %w", err)
+		}
+		return m.createBucketReplay(&b)
+	case OpDeleteBucket:
+		var name string
+		if err := json.Unmarshal(e.Args, &name); err != nil {
+			return fmt.Errorf("apply delete_bucket decode: %w", err)
+		}
+		return m.deleteBucketInternal(name, false)
 	case OpAddRuntimeDN:
 		var addr string
 		if err := json.Unmarshal(e.Args, &addr); err != nil {

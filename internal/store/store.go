@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -51,11 +52,14 @@ import (
 
 var (
 	bucketObjects       = []byte("objects")
+	bucketBuckets       = []byte("buckets")
 	bucketDNs           = []byte("dns")
 	bucketDNsRuntime    = []byte("dns_runtime")    // ADR-027
 	bucketURLKeySecrets = []byte("urlkey_secrets") // ADR-028: kid -> JSON {secret_hex, created_at, is_primary}
 
-	ErrNotFound = errors.New("store: not found")
+	ErrNotFound       = errors.New("store: not found")
+	ErrAlreadyExists  = errors.New("store: already exists")
+	ErrBucketNotEmpty = errors.New("store: bucket not empty")
 )
 
 // ObjectMeta is the persisted record for a stored object.
@@ -72,10 +76,11 @@ var (
 //     Adapter in GetObject / ListObjects normalizes legacy → Chunks shape
 //     so callers always see the new schema.
 type ObjectMeta struct {
-	Bucket      string     `json:"bucket"`
-	Key         string     `json:"key"`
-	Size        int64      `json:"size"`
-	ContentType string     `json:"content_type,omitempty"`
+	Bucket      string `json:"bucket"`
+	Key         string `json:"key"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"content_type,omitempty"`
+	ETag        string `json:"etag,omitempty"`
 
 	// Replication mode (mutually exclusive with EC).
 	// Set when the object was stored as N replicated chunks.
@@ -150,6 +155,12 @@ type DNInfo struct {
 	Status string    `json:"status"` // "healthy" | "unhealthy"
 }
 
+// BucketMeta is the persisted record for an S3-compatible bucket.
+type BucketMeta struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // MetaStore is a bbolt-backed metadata store. The underlying *bbolt.DB is held
 // in an atomic.Pointer so it can be hot-swapped by Reload (ADR-022 follower
 // sync) without invalidating concurrent readers — readers load the current
@@ -187,7 +198,7 @@ func openInitialized(path string) (*bbolt.DB, error) {
 		return nil, fmt.Errorf("open bbolt: %w", err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketObjects, bucketDNs, bucketDNsRuntime, bucketURLKeySecrets} {
+		for _, b := range [][]byte{bucketObjects, bucketBuckets, bucketDNs, bucketDNsRuntime, bucketURLKeySecrets} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -273,6 +284,160 @@ func (m *MetaStore) putObjectInternalFull(obj *ObjectMeta, writeWAL, fireHook bo
 		}
 	}
 	return err
+}
+
+// CreateBucket persists a new bucket record.
+func (m *MetaStore) CreateBucket(name string) (*BucketMeta, error) {
+	return m.createBucketInternal(name, true, true)
+}
+
+func (m *MetaStore) createBucketInternal(name string, writeWAL, fireHook bool) (*BucketMeta, error) {
+	if err := ValidateBucketName(name); err != nil {
+		return nil, err
+	}
+	meta := &BucketMeta{Name: name, CreatedAt: time.Now().UTC()}
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketBuckets)
+		if b.Get([]byte(name)) != nil {
+			return ErrAlreadyExists
+		}
+		buf, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(name), buf)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if writeWAL {
+		if walErr := m.appendWALControlled(OpCreateBucket, meta, fireHook); walErr != nil {
+			return nil, walErr
+		}
+	}
+	return meta, nil
+}
+
+func (m *MetaStore) createBucketReplay(meta *BucketMeta) error {
+	if meta == nil || meta.Name == "" {
+		return errors.New("store: bucket replay requires name")
+	}
+	if meta.CreatedAt.IsZero() {
+		meta.CreatedAt = time.Now().UTC()
+	}
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+		buf, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketBuckets).Put([]byte(meta.Name), buf)
+	})
+}
+
+// GetBucket fetches a bucket record.
+func (m *MetaStore) GetBucket(name string) (*BucketMeta, error) {
+	var out BucketMeta
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		raw := tx.Bucket(bucketBuckets).Get([]byte(name))
+		if raw == nil {
+			return ErrNotFound
+		}
+		return json.Unmarshal(raw, &out)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListBuckets lists all buckets sorted by name.
+func (m *MetaStore) ListBuckets() ([]*BucketMeta, error) {
+	var out []*BucketMeta
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketBuckets).ForEach(func(_, v []byte) error {
+			var b BucketMeta
+			if err := json.Unmarshal(v, &b); err != nil {
+				return err
+			}
+			out = append(out, &b)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// DeleteBucket removes an empty bucket. Returns ErrBucketNotEmpty when any
+// object metadata exists for that bucket.
+func (m *MetaStore) DeleteBucket(name string) error {
+	return m.deleteBucketInternal(name, true)
+}
+
+func (m *MetaStore) deleteBucketInternal(name string, writeWAL bool) error {
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketBuckets)
+		if b.Get([]byte(name)) == nil {
+			return ErrNotFound
+		}
+		prefix := []byte(name + "/")
+		c := tx.Bucket(bucketObjects).Cursor()
+		k, _ := c.Seek(prefix)
+		if k != nil && strings.HasPrefix(string(k), string(prefix)) {
+			return ErrBucketNotEmpty
+		}
+		return b.Delete([]byte(name))
+	})
+	if err == nil && writeWAL {
+		if walErr := m.appendWAL(OpDeleteBucket, name); walErr != nil {
+			return walErr
+		}
+	}
+	return err
+}
+
+// BucketHasObjects reports whether any object metadata exists for bucket.
+func (m *MetaStore) BucketHasObjects(name string) (bool, error) {
+	var out bool
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		prefix := []byte(name + "/")
+		c := tx.Bucket(bucketObjects).Cursor()
+		k, _ := c.Seek(prefix)
+		out = k != nil && strings.HasPrefix(string(k), string(prefix))
+		return nil
+	})
+	return out, err
+}
+
+// ValidateBucketName enforces the P9-03 S3-compatible bucket-name subset.
+func ValidateBucketName(name string) error {
+	if len(name) < 3 || len(name) > 63 {
+		return fmt.Errorf("store: invalid bucket name %q: length must be 3..63", name)
+	}
+	if net.ParseIP(name) != nil {
+		return fmt.Errorf("store: invalid bucket name %q: must not look like an IP address", name)
+	}
+	if name[0] == '.' || name[0] == '-' || name[len(name)-1] == '.' || name[len(name)-1] == '-' {
+		return fmt.Errorf("store: invalid bucket name %q: must start and end with a letter or digit", name)
+	}
+	prevDot := false
+	for _, r := range name {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '.'
+		if !ok {
+			return fmt.Errorf("store: invalid bucket name %q: only lowercase letters, digits, dots, and hyphens allowed", name)
+		}
+		if r == '.' {
+			if prevDot {
+				return fmt.Errorf("store: invalid bucket name %q: consecutive dots are not allowed", name)
+			}
+			prevDot = true
+		} else {
+			prevDot = false
+		}
+	}
+	return nil
 }
 
 // GetObject fetches an object's metadata. Legacy single-chunk records
@@ -398,7 +563,9 @@ func (m *MetaStore) deleteObjectInternal(bucket, key string, writeWAL bool) erro
 		return b.Delete(k)
 	})
 	if err == nil && writeWAL {
-		if walErr := m.appendWAL(OpDeleteObject, map[string]string{"Bucket": bucket, "Key": key}); walErr != nil { return walErr }
+		if walErr := m.appendWAL(OpDeleteObject, map[string]string{"Bucket": bucket, "Key": key}); walErr != nil {
+			return walErr
+		}
 	}
 	return err
 }
@@ -478,7 +645,9 @@ func (m *MetaStore) addRuntimeDNInternal(addr string, writeWAL bool) error {
 		return tx.Bucket(bucketDNsRuntime).Put([]byte(addr), buf)
 	})
 	if err == nil && writeWAL {
-		if walErr := m.appendWAL(OpAddRuntimeDN, addr); walErr != nil { return walErr }
+		if walErr := m.appendWAL(OpAddRuntimeDN, addr); walErr != nil {
+			return walErr
+		}
 	}
 	return err
 }
@@ -496,7 +665,9 @@ func (m *MetaStore) removeRuntimeDNInternal(addr string, writeWAL bool) error {
 		return tx.Bucket(bucketDNsRuntime).Delete([]byte(addr))
 	})
 	if err == nil && writeWAL {
-		if walErr := m.appendWAL(OpRemoveRuntimeDN, addr); walErr != nil { return walErr }
+		if walErr := m.appendWAL(OpRemoveRuntimeDN, addr); walErr != nil {
+			return walErr
+		}
 	}
 	return err
 }
