@@ -19,7 +19,11 @@ import (
 const (
 	CodeAccessDenied                 = "AccessDenied"
 	CodeAuthorizationHeaderMalformed = "AuthorizationHeaderMalformed"
+	CodeBucketAlreadyOwnedByYou      = "BucketAlreadyOwnedByYou"
+	CodeBucketNotEmpty               = "BucketNotEmpty"
+	CodeInternalError                = "InternalError"
 	CodeInvalidArgument              = "InvalidArgument"
+	CodeInvalidBucketName            = "InvalidBucketName"
 	CodeInvalidRequest               = "InvalidRequest"
 	CodeMissingSecurityHeader        = "MissingSecurityHeader"
 	CodeNoSuchBucket                 = "NoSuchBucket"
