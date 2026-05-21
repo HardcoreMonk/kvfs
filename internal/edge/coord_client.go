@@ -4,12 +4,13 @@
 // Edge → coord HTTP client (Season 5 Ep.2, ADR-015 follow-up).
 //
 // 누적 capabilities (이 파일이 다루는 것 전부):
-//   Ep.2  CommitObject / LookupObject / DeleteObject / Healthz   — 메타 RPC
-//   Ep.3  do() 의 leader-redirect (503 + X-COORD-LEADER, ADR-038)
-//   Ep.6  PlaceN                                                  — placement RPC
-//   Ep.7  ListURLKeys                                             — kid registry sync source
-//   P6-10 cache (cacheTTL/cache + SetLookupCache)                 — opt-in lookup cache
-//   P7-08 do() 의 CANDIDATE 503-empty backoff                     — election 중 transparent retry
+//
+//	Ep.2  CommitObject / LookupObject / DeleteObject / Healthz   — 메타 RPC
+//	Ep.3  do() 의 leader-redirect (503 + X-COORD-LEADER, ADR-038)
+//	Ep.6  PlaceN                                                  — placement RPC
+//	Ep.7  ListURLKeys                                             — kid registry sync source
+//	P6-10 cache (cacheTTL/cache + SetLookupCache)                 — opt-in lookup cache
+//	P7-08 do() 의 CANDIDATE 503-empty backoff                     — election 중 transparent retry
 //
 // 비전공자용 해설
 // ──────────────
@@ -250,6 +251,74 @@ func (c *CoordClient) DeleteObject(ctx context.Context, bucket, key string) erro
 		return err
 	}
 	c.cacheInvalidate(bucket, key)
+	return nil
+}
+
+func (c *CoordClient) CreateBucket(ctx context.Context, name string) (*store.BucketMeta, error) {
+	var out store.BucketMeta
+	if err := c.bucketCall(ctx, "POST", "/v1/coord/bucket", "create-bucket",
+		coord.BucketRequest{Name: name}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *CoordClient) GetBucket(ctx context.Context, name string) (*store.BucketMeta, error) {
+	var out store.BucketMeta
+	if err := c.bucketCall(ctx, "GET", "/v1/coord/bucket?name="+urlEsc(name), "get-bucket",
+		nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *CoordClient) ListBuckets(ctx context.Context) ([]store.BucketMeta, error) {
+	var out []store.BucketMeta
+	if err := c.bucketCall(ctx, "GET", "/v1/coord/buckets", "list-buckets", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *CoordClient) DeleteBucket(ctx context.Context, name string) error {
+	return c.bucketCall(ctx, "DELETE", "/v1/coord/bucket?name="+urlEsc(name), "delete-bucket", nil, nil)
+}
+
+func (c *CoordClient) bucketCall(ctx context.Context, method, path, label string, req, respOut any) error {
+	var body []byte
+	if req != nil {
+		b, err := json.Marshal(req)
+		if err != nil {
+			return fmt.Errorf("coord-client: marshal %s: %w", label, err)
+		}
+		body = b
+	}
+	resp, err := c.do(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return store.ErrNotFound
+	case http.StatusConflict:
+		msg := readErrBody(resp)
+		if strings.Contains(msg, "bucket not empty") {
+			return store.ErrBucketNotEmpty
+		}
+		return store.ErrAlreadyExists
+	case http.StatusBadRequest:
+		return fmt.Errorf("coord-client: %s status %d: %s", label, resp.StatusCode, readErrBody(resp))
+	default:
+		return fmt.Errorf("coord-client: %s status %d: %s", label, resp.StatusCode, readErrBody(resp))
+	}
+	if respOut == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(respOut); err != nil {
+		return fmt.Errorf("coord-client: decode %s: %w", label, err)
+	}
 	return nil
 }
 

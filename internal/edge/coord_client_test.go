@@ -84,6 +84,54 @@ func TestCoordClient_RoundTripAgainstRealCoord(t *testing.T) {
 	}
 }
 
+func TestCoordClient_BucketRoundTripAgainstRealCoord(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	cs := &coord.Server{
+		Store:  st,
+		Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}}),
+	}
+	ts := httptest.NewServer(cs.Routes())
+	defer ts.Close()
+
+	cc := NewCoordClient(ts.URL)
+	ctx := context.Background()
+	created, err := cc.CreateBucket(ctx, "photos")
+	if err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	if created.Name != "photos" || created.CreatedAt.IsZero() {
+		t.Fatalf("created=%+v", created)
+	}
+	got, err := cc.GetBucket(ctx, "photos")
+	if err != nil {
+		t.Fatalf("GetBucket: %v", err)
+	}
+	if got.Name != "photos" {
+		t.Fatalf("got=%+v", got)
+	}
+	buckets, err := cc.ListBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListBuckets: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Name != "photos" {
+		t.Fatalf("buckets=%+v", buckets)
+	}
+	if _, err := cc.CreateBucket(ctx, "photos"); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("duplicate create err=%v, want ErrAlreadyExists", err)
+	}
+	if err := cc.DeleteBucket(ctx, "photos"); err != nil {
+		t.Fatalf("DeleteBucket: %v", err)
+	}
+	if _, err := cc.GetBucket(ctx, "photos"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("post-delete get err=%v, want ErrNotFound", err)
+	}
+}
+
 // ADR-041 (S5 Ep.6): edge routes placement decisions through coord. The
 // PlaceN RPC returns coord's HRW result against ITS DN list — which may
 // differ from edge's local DN list. This test wires a coord with a DN
@@ -100,7 +148,7 @@ func TestCoordClient_PlaceN_ReturnsCoordsView(t *testing.T) {
 	// Coord knows only dn1, dn2, dn3. Edge calling PlaceN through this
 	// client must NEVER receive any other addr.
 	cs := &coord.Server{
-		Store:  st,
+		Store: st,
 		Placer: placement.New([]placement.Node{
 			{ID: "dn1:8080", Addr: "dn1:8080"},
 			{ID: "dn2:8080", Addr: "dn2:8080"},

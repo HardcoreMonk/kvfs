@@ -121,6 +121,78 @@ func TestServerRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBucketRPCs_CreateListDelete(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	srv := &Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}})}
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+
+	body, _ := json.Marshal(BucketRequest{Name: "photos"})
+	resp, err := http.Post(hs.URL+"/v1/coord/bucket", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create status=%d", resp.StatusCode)
+	}
+
+	listResp, err := http.Get(hs.URL + "/v1/coord/buckets")
+	if err != nil {
+		t.Fatalf("list buckets: %v", err)
+	}
+	var buckets []store.BucketMeta
+	if err := json.NewDecoder(listResp.Body).Decode(&buckets); err != nil {
+		t.Fatalf("decode buckets: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Name != "photos" {
+		t.Fatalf("buckets=%+v, want photos", buckets)
+	}
+
+	delReq, _ := http.NewRequest(http.MethodDelete, hs.URL+"/v1/coord/bucket?name=photos", nil)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("delete bucket: %v", err)
+	}
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete status=%d", delResp.StatusCode)
+	}
+}
+
+func TestBucketRPCs_DeleteNonEmptyRejected(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.CreateBucket("photos"); err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if err := st.PutObject(&store.ObjectMeta{
+		Bucket: "photos", Key: "a.jpg", Size: 1,
+		Chunks: []store.ChunkRef{{ChunkID: "c1", Size: 1, Replicas: []string{"dn1"}}},
+	}); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+	srv := &Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}})}
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+
+	delReq, _ := http.NewRequest(http.MethodDelete, hs.URL+"/v1/coord/bucket?name=photos", nil)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("delete bucket: %v", err)
+	}
+	if delResp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete status=%d, want 409", delResp.StatusCode)
+	}
+}
+
 // HA mode (Ep.3, ADR-038): a follower coord must reject mutating RPCs
 // with 503 + X-COORD-LEADER pointing at the current leader. Reads stay
 // open. Tests use a stubFollower elector that always reports State=

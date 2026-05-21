@@ -164,6 +164,10 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/coord/lookup", s.handleLookup)
 	mux.HandleFunc("POST /v1/coord/delete", s.handleDelete)
 	mux.HandleFunc("GET /v1/coord/healthz", s.handleHealthz)
+	mux.HandleFunc("POST /v1/coord/bucket", s.handleCreateBucket)
+	mux.HandleFunc("GET /v1/coord/bucket", s.handleGetBucket)
+	mux.HandleFunc("GET /v1/coord/buckets", s.handleListBuckets)
+	mux.HandleFunc("DELETE /v1/coord/bucket", s.handleDeleteBucket)
 	// ADR-042 (Season 5 Ep.7): bulk read-only admin endpoints so kvfs-cli
 	// (and any operator script) can talk to coord directly instead of
 	// going through edge. Coord owns the truth — the cli should ask the
@@ -421,6 +425,78 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// BucketRequest is the body of POST /v1/coord/bucket.
+type BucketRequest struct {
+	Name string `json:"name"`
+}
+
+func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	var req BucketRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("decode: %w", err))
+		return
+	}
+	meta, err := s.Store.CreateBucket(req.Name)
+	if err != nil {
+		writeStoreBucketErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleGetBucket(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("bucket name required"))
+		return
+	}
+	meta, err := s.Store.GetBucket(name)
+	if err != nil {
+		writeStoreBucketErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleListBuckets(w http.ResponseWriter, _ *http.Request) {
+	buckets, err := s.Store.ListBuckets()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, buckets)
+}
+
+func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("bucket name required"))
+		return
+	}
+	if err := s.Store.DeleteBucket(name); err != nil {
+		writeStoreBucketErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func writeStoreBucketErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, http.StatusNotFound, err)
+	case errors.Is(err, store.ErrAlreadyExists), errors.Is(err, store.ErrBucketNotEmpty):
+		writeErr(w, http.StatusConflict, err)
+	default:
+		writeErr(w, http.StatusBadRequest, err)
+	}
 }
 
 // handleHealthz returns liveness + (when election is configured) the
