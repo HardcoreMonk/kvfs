@@ -100,6 +100,8 @@ internal/repair/               EC repair via Reed-Solomon Reconstruct (ADR-025)
 internal/heartbeat/            DN liveness monitor (ADR-030)
 internal/election/             Raft-style election (ADR-031, edge·coord 양쪽이 재사용)
 internal/edge/                 HTTP 서버 · 핸들러 · auth 미들웨어 · CoordClient (proxy 모드)
+internal/s3api/                P9 S3 protocol boundary — SigV4, XML errors,
+                               route classification, compatibility helpers
 internal/edge/replica.go       Multi-edge follower 로직 (ADR-022)
 internal/edge/urlkey_sync.go   coord urlkey 변경 polling 반영 (ADR-049)
 internal/coord/                coord daemon 핵심 — 메타·placement·HA·admin·anti-entropy (S5~P8, ADR-015/054~063)

@@ -52,6 +52,7 @@ import (
 	"github.com/HardcoreMonk/kvfs/internal/rebalance"
 	"github.com/HardcoreMonk/kvfs/internal/reedsolomon"
 	"github.com/HardcoreMonk/kvfs/internal/repair"
+	"github.com/HardcoreMonk/kvfs/internal/s3api"
 	"github.com/HardcoreMonk/kvfs/internal/store"
 	"github.com/HardcoreMonk/kvfs/internal/urlkey"
 )
@@ -97,7 +98,16 @@ type Server struct {
 	Store  *store.MetaStore
 	Coord  *coordinator.Coordinator
 	Signer *urlkey.Signer
-	Log    *slog.Logger
+
+	// S3Credentials enables the P9 S3-compatible front door. nil means the
+	// S3 route surface exists but fails closed with S3-shaped AccessDenied.
+	S3Credentials s3api.CredentialProvider
+
+	// S3Region is the SigV4 region advertised/accepted for the first MVP.
+	// Empty falls back to us-east-1.
+	S3Region string
+
+	Log *slog.Logger
 
 	// ChunkSize is bytes-per-chunk for fixed-mode PUT splitting (ADR-011).
 	// Zero / negative falls back to chunker.DefaultChunkSize.
@@ -140,10 +150,10 @@ type Server struct {
 	// autoMu protects autoRuns + lastCheck timestamps.
 	// Empty cycles update lastCheck only (not autoRuns) so the ring buffer
 	// keeps actionable history; lastCheck still proves the loop is alive.
-	autoMu                  sync.Mutex
-	autoRuns                []AutoRun
-	autoLastCheckRebalance  time.Time
-	autoLastCheckGC         time.Time
+	autoMu                 sync.Mutex
+	autoRuns               []AutoRun
+	autoLastCheckRebalance time.Time
+	autoLastCheckGC        time.Time
 
 	// Heartbeat is the per-DN liveness monitor (ADR-030). nil disables it.
 	// StartHeartbeat wires up the periodic probe loop.
@@ -454,45 +464,98 @@ func (s *Server) newPutReader(src io.Reader) pieceReader {
 	return chunker.NewReader(src, s.chunkSize())
 }
 
+func (s *Server) s3Region() string {
+	if s.S3Region == "" {
+		return "us-east-1"
+	}
+	return s.S3Region
+}
+
+func (s *Server) handleS3Foundation(w http.ResponseWriter, r *http.Request) {
+	info := s3api.Classify(r)
+	auth, err := s3api.VerifyRequest(r, s.S3Credentials, time.Now())
+	if err != nil {
+		if s3err, ok := err.(*s3api.Error); ok {
+			s3api.WriteError(w, r, s3err)
+			return
+		}
+		s3api.WriteError(w, r, s3api.NewError(http.StatusForbidden, s3api.CodeAccessDenied, err.Error(), info.Resource))
+		return
+	}
+	if auth.Service != "s3" || auth.Region != s.s3Region() {
+		s3api.WriteError(w, r, s3api.NewError(
+			http.StatusBadRequest,
+			s3api.CodeAuthorizationHeaderMalformed,
+			"credential scope must use region "+s.s3Region()+" and service s3",
+			info.Resource,
+		))
+		return
+	}
+	if info.Operation == s3api.OperationUnsupported {
+		s3api.WriteError(w, r, s3api.NewError(
+			http.StatusNotImplemented,
+			s3api.CodeNotImplemented,
+			"unsupported S3 operation",
+			info.Resource,
+		))
+		return
+	}
+	s3api.WriteError(w, r, s3api.NewError(
+		http.StatusNotImplemented,
+		s3api.CodeNotImplemented,
+		info.Operation.String()+" is not implemented in P9-02",
+		info.Resource,
+	))
+}
+
 // Routes builds the HTTP mux.
 func (s *Server) Routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /v1/o/{bucket}/{key...}", s.handlePut)
-	mux.HandleFunc("HEAD /v1/o/{bucket}/{key...}", s.handleHead)
-	mux.HandleFunc("GET /v1/list/{bucket}", s.handleListBucket)
-	mux.HandleFunc("GET /v1/o/{bucket}/{key...}", s.handleGet)
-	mux.HandleFunc("DELETE /v1/o/{bucket}/{key...}", s.handleDelete)
-	mux.HandleFunc("GET /v1/admin/objects", s.handleList)
-	mux.HandleFunc("GET /v1/admin/dns", s.handleDNs)
-	mux.HandleFunc("POST /v1/admin/dns", s.handleAddDN)
-	mux.HandleFunc("DELETE /v1/admin/dns", s.handleRemoveDN)
-	mux.HandleFunc("PUT /v1/admin/dns/class", s.handleSetDNClass)
-	mux.HandleFunc("GET /v1/admin/urlkey", s.handleListURLKeys)
-	mux.HandleFunc("POST /v1/admin/urlkey/rotate", s.handleRotateURLKey)
-	mux.HandleFunc("DELETE /v1/admin/urlkey", s.handleRemoveURLKey)
-	mux.HandleFunc("POST /v1/admin/rebalance/plan", s.handleRebalancePlan)
-	mux.HandleFunc("POST /v1/admin/rebalance/apply", s.handleRebalanceApply)
-	mux.HandleFunc("POST /v1/admin/gc/plan", s.handleGCPlan)
-	mux.HandleFunc("POST /v1/admin/gc/apply", s.handleGCApply)
-	mux.HandleFunc("POST /v1/admin/repair/plan", s.handleRepairPlan)
-	mux.HandleFunc("POST /v1/admin/repair/apply", s.handleRepairApply)
-	mux.HandleFunc("GET /v1/admin/auto/status", s.handleAutoStatus)
-	mux.HandleFunc("GET /v1/admin/meta/snapshot", s.handleMetaSnapshot)
-	mux.HandleFunc("GET /v1/admin/meta/info", s.handleMetaInfo)
-	mux.HandleFunc("GET /v1/admin/heartbeat", s.handleHeartbeat)
-	mux.HandleFunc("GET /v1/admin/snapshot/history", s.handleSnapshotHistory)
-	mux.HandleFunc("GET /v1/admin/role", s.handleRole)
-	mux.HandleFunc("GET /v1/admin/wal", s.handleWAL)
-	mux.HandleFunc("GET /v1/admin/wal/info", s.handleWALInfo)
-	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	nativeMux := http.NewServeMux()
+	nativeMux.HandleFunc("PUT /v1/o/{bucket}/{key...}", s.handlePut)
+	nativeMux.HandleFunc("HEAD /v1/o/{bucket}/{key...}", s.handleHead)
+	nativeMux.HandleFunc("GET /v1/list/{bucket}", s.handleListBucket)
+	nativeMux.HandleFunc("GET /v1/o/{bucket}/{key...}", s.handleGet)
+	nativeMux.HandleFunc("DELETE /v1/o/{bucket}/{key...}", s.handleDelete)
+	nativeMux.HandleFunc("GET /v1/admin/objects", s.handleList)
+	nativeMux.HandleFunc("GET /v1/admin/dns", s.handleDNs)
+	nativeMux.HandleFunc("POST /v1/admin/dns", s.handleAddDN)
+	nativeMux.HandleFunc("DELETE /v1/admin/dns", s.handleRemoveDN)
+	nativeMux.HandleFunc("PUT /v1/admin/dns/class", s.handleSetDNClass)
+	nativeMux.HandleFunc("GET /v1/admin/urlkey", s.handleListURLKeys)
+	nativeMux.HandleFunc("POST /v1/admin/urlkey/rotate", s.handleRotateURLKey)
+	nativeMux.HandleFunc("DELETE /v1/admin/urlkey", s.handleRemoveURLKey)
+	nativeMux.HandleFunc("POST /v1/admin/rebalance/plan", s.handleRebalancePlan)
+	nativeMux.HandleFunc("POST /v1/admin/rebalance/apply", s.handleRebalanceApply)
+	nativeMux.HandleFunc("POST /v1/admin/gc/plan", s.handleGCPlan)
+	nativeMux.HandleFunc("POST /v1/admin/gc/apply", s.handleGCApply)
+	nativeMux.HandleFunc("POST /v1/admin/repair/plan", s.handleRepairPlan)
+	nativeMux.HandleFunc("POST /v1/admin/repair/apply", s.handleRepairApply)
+	nativeMux.HandleFunc("GET /v1/admin/auto/status", s.handleAutoStatus)
+	nativeMux.HandleFunc("GET /v1/admin/meta/snapshot", s.handleMetaSnapshot)
+	nativeMux.HandleFunc("GET /v1/admin/meta/info", s.handleMetaInfo)
+	nativeMux.HandleFunc("GET /v1/admin/heartbeat", s.handleHeartbeat)
+	nativeMux.HandleFunc("GET /v1/admin/snapshot/history", s.handleSnapshotHistory)
+	nativeMux.HandleFunc("GET /v1/admin/role", s.handleRole)
+	nativeMux.HandleFunc("GET /v1/admin/wal", s.handleWAL)
+	nativeMux.HandleFunc("GET /v1/admin/wal/info", s.handleWALInfo)
+	nativeMux.HandleFunc("GET /metrics", s.handleMetrics)
 	if s.Elector != nil {
-		mux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
-		mux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
-		mux.HandleFunc("GET /v1/election/state", s.Elector.HandleState)
-		mux.HandleFunc("POST /v1/election/append-wal", s.Elector.HandleAppendWAL)
+		nativeMux.HandleFunc("POST /v1/election/vote", s.Elector.HandleVote)
+		nativeMux.HandleFunc("POST /v1/election/heartbeat", s.Elector.HandleHeartbeat)
+		nativeMux.HandleFunc("GET /v1/election/state", s.Elector.HandleState)
+		nativeMux.HandleFunc("POST /v1/election/append-wal", s.Elector.HandleAppendWAL)
 	}
-	mux.HandleFunc("GET /healthz", s.handleHealth)
-	return logRequests(mux)
+	nativeMux.HandleFunc("GET /healthz", s.handleHealth)
+
+	return logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		// Keep native routes out of the S3 bucket wildcard space.
+		if path == "/v1" || strings.HasPrefix(path, "/v1/") || path == "/healthz" || path == "/metrics" {
+			nativeMux.ServeHTTP(w, r)
+			return
+		}
+		s.handleS3Foundation(w, r)
+	}))
 }
 
 func (s *Server) verifyAuth(r *http.Request) error {
@@ -1247,9 +1310,13 @@ func parseMinAge(r *http.Request) time.Duration {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	var dns []string
+	if s.Coord != nil {
+		dns = s.Coord.DNs()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
-		"dns":    s.Coord.DNs(),
+		"dns":    dns,
 	})
 }
 
@@ -1635,6 +1702,7 @@ func parseEC(hdr string) (k, m int, err error) {
 //     desired DNs = Pick(stripe_id, K+M) → K+M distinct DN addresses,
 //     PUT each shard to its assigned DN
 //  5. Persist ObjectMeta with EC params + Stripes
+//
 // handlePutECStream is the streaming EC PUT (ADR-017 follow-up to ADR-008).
 // Reads stripeBytes (= K × shardSize) at a time from r.Body, encodes to
 // K+M shards, fans out, and appends one stripe per iteration. Memory bound
