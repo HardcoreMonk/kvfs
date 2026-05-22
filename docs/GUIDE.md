@@ -639,8 +639,10 @@ production-ready 라고 claim 하지 않는다.
 P9-02 S3 foundation은 S3 protocol boundary 를 먼저 세웠다. `internal/s3api`
 가 SigV4, XML error, route classification 을 담당한다. P9-03 은 그 위에
 Create/List/DeleteBucket, Put/Get/Head/DeleteObject, ListObjectsV2 를 연결한다.
-multipart workflow 는 P9-04 의 범위이며 현재는 S3-shaped `NotImplemented` 로
-남아 있다.
+P9-04 는 CreateMultipartUpload, UploadPart, ListParts,
+CompleteMultipartUpload, AbortMultipartUpload 를 연결한다. Multipart metadata 는
+bbolt/WAL 과 coord RPC surface 에 보관되고, Complete 는 part metadata 를 검증해
+최종 object metadata 로 transactionally 승격한다.
 
 ## 13. 다음에 읽을 것
 

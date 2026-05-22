@@ -332,7 +332,7 @@ bash -n scripts/smoke-s3-compat.sh
 ./scripts/smoke-s3-compat.sh
 ./scripts/check-doc-drift.sh
 git diff --check
-rg -n "P4-01|미커밋|HEAD [0-9a-f]|claude-zone" -g '*.md' -g '*.html' -g '!AGENTS.md'
+run the AGENTS.md stale-marker scan over markdown/html files
 git status --short --branch
 ```
 

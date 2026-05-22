@@ -831,7 +831,7 @@ type Stripe struct {
 <p>P9 는 educational core 위에 내부 single-region MinIO/S3-compatible replacement MVP track 을 추가한다. ADR-064 는 첫 envelope 를 6-12 DN, 10-100 TB, internal network deployment, AWS SDK/<code>aws s3</code>/<code>mc</code> core workflow 로 제한한다.</p>
 <p>P9 의 구현 순서: S3 compatibility foundation → bucket/object API → multipart upload → production profile enforcement → operational release gate. 현재 revision 을 production-ready 라고 claim 하지 않는다.</p>
 <p>P9-02 S3 foundation은 S3 protocol boundary 를 먼저 세웠다.
-<code>internal/s3api</code> 가 SigV4, XML error, route classification 을 담당한다. P9-03 은 그 위에 Create/List/DeleteBucket, Put/Get/Head/DeleteObject, ListObjectsV2 를 연결한다. multipart workflow 는 P9-04 의 범위이며 현재는 S3-shaped <code>NotImplemented</code> 로 남아 있다.</p>
+<code>internal/s3api</code> 가 SigV4, XML error, route classification 을 담당한다. P9-03 은 그 위에 Create/List/DeleteBucket, Put/Get/Head/DeleteObject, ListObjectsV2 를 연결한다. P9-04 는 CreateMultipartUpload, UploadPart, ListParts, CompleteMultipartUpload, AbortMultipartUpload 를 연결한다. Multipart metadata 는 bbolt/WAL 과 coord RPC surface 에 보관되고, Complete 는 part metadata 를 검증해 최종 object metadata 로 transactionally 승격한다.</p>
 
 <h2 id="s13"><span class="num">13</span>다음에 읽을 것</h2>
 

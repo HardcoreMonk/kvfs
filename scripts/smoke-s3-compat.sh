@@ -5,7 +5,11 @@ endpoint="${KVFS_S3_ENDPOINT:-http://127.0.0.1:8000}"
 region="${KVFS_S3_REGION:-us-east-1}"
 bucket="${KVFS_S3_BUCKET:-kvfs-smoke-$(date +%s)-$$}"
 key="${KVFS_S3_KEY:-smoke.txt}"
+multipart_key="${KVFS_S3_MULTIPART_KEY:-multipart-smoke.txt}"
+abort_key="${KVFS_S3_ABORT_KEY:-multipart-abort-smoke.txt}"
 expect_foundation="${KVFS_S3_EXPECT_FOUNDATION:-0}"
+multipart_upload_id=""
+abort_upload_id=""
 
 if [[ -z "${AWS_ACCESS_KEY_ID:-}" || -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
   echo "SKIP: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for SigV4 smoke" >&2
@@ -25,6 +29,13 @@ fi
 tmpdir="$(mktemp -d)"
 cleanup() {
   if [[ "$expect_foundation" != "1" ]]; then
+    if [[ -n "$multipart_upload_id" ]]; then
+      aws --endpoint-url "$endpoint" --region "$region" --output json s3api abort-multipart-upload --bucket "$bucket" --key "$multipart_key" --upload-id "$multipart_upload_id" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$abort_upload_id" ]]; then
+      aws --endpoint-url "$endpoint" --region "$region" --output json s3api abort-multipart-upload --bucket "$bucket" --key "$abort_key" --upload-id "$abort_upload_id" >/dev/null 2>&1 || true
+    fi
+    aws --endpoint-url "$endpoint" --region "$region" --output json s3api delete-object --bucket "$bucket" --key "$multipart_key" >/dev/null 2>&1 || true
     aws --endpoint-url "$endpoint" --region "$region" --output json s3api delete-object --bucket "$bucket" --key "$key" >/dev/null 2>&1 || true
     aws --endpoint-url "$endpoint" --region "$region" --output json s3api delete-bucket --bucket "$bucket" >/dev/null 2>&1 || true
   fi
@@ -70,6 +81,32 @@ aws --endpoint-url "$endpoint" --region "$region" --output json s3api list-objec
 grep -q "\"Key\": \"$key\"" "$tmpdir/list.json"
 echo "PASS: aws bucket/object workflow succeeded"
 
+printf 'kvfs-multipart-part-1\n' >"$tmpdir/part1.txt"
+printf 'kvfs-multipart-part-2\n' >"$tmpdir/part2.txt"
+cat "$tmpdir/part1.txt" "$tmpdir/part2.txt" >"$tmpdir/multipart-expected.txt"
+
+echo "[aws] multipart workflow ${bucket}/${multipart_key}"
+multipart_upload_id="$(aws --endpoint-url "$endpoint" --region "$region" --output text s3api create-multipart-upload --bucket "$bucket" --key "$multipart_key" --content-type text/plain --query UploadId)"
+etag1_json="$(aws --endpoint-url "$endpoint" --region "$region" --output json s3api upload-part --bucket "$bucket" --key "$multipart_key" --upload-id "$multipart_upload_id" --part-number 1 --body "$tmpdir/part1.txt" --query ETag)"
+etag2_json="$(aws --endpoint-url "$endpoint" --region "$region" --output json s3api upload-part --bucket "$bucket" --key "$multipart_key" --upload-id "$multipart_upload_id" --part-number 2 --body "$tmpdir/part2.txt" --query ETag)"
+cat >"$tmpdir/complete-multipart.json" <<JSON
+{"Parts":[{"ETag":${etag1_json},"PartNumber":1},{"ETag":${etag2_json},"PartNumber":2}]}
+JSON
+aws --endpoint-url "$endpoint" --region "$region" --output json s3api list-parts --bucket "$bucket" --key "$multipart_key" --upload-id "$multipart_upload_id" >"$tmpdir/list-parts.json"
+grep -q '"PartNumber": 1' "$tmpdir/list-parts.json"
+grep -q '"PartNumber": 2' "$tmpdir/list-parts.json"
+aws --endpoint-url "$endpoint" --region "$region" --output json s3api complete-multipart-upload --bucket "$bucket" --key "$multipart_key" --upload-id "$multipart_upload_id" --multipart-upload "file://$tmpdir/complete-multipart.json" >"$tmpdir/complete-multipart.out"
+multipart_upload_id=""
+aws --endpoint-url "$endpoint" --region "$region" --output json s3api get-object --bucket "$bucket" --key "$multipart_key" "$tmpdir/multipart-download.txt" >"$tmpdir/multipart-get.json"
+cmp "$tmpdir/multipart-expected.txt" "$tmpdir/multipart-download.txt"
+echo "PASS: aws multipart complete workflow succeeded"
+
+echo "[aws] multipart abort ${bucket}/${abort_key}"
+abort_upload_id="$(aws --endpoint-url "$endpoint" --region "$region" --output text s3api create-multipart-upload --bucket "$bucket" --key "$abort_key" --query UploadId)"
+aws --endpoint-url "$endpoint" --region "$region" --output json s3api abort-multipart-upload --bucket "$bucket" --key "$abort_key" --upload-id "$abort_upload_id" >/dev/null
+abort_upload_id=""
+echo "PASS: aws multipart abort workflow succeeded"
+
 echo "[mc] alias + ls against ${endpoint}"
 mc --config-dir "$tmpdir/mc" alias set kvfs-smoke "$endpoint" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null
 mc --config-dir "$tmpdir/mc" ls kvfs-smoke/"$bucket" >"$tmpdir/mc.out"
@@ -77,5 +114,6 @@ grep -q "$key" "$tmpdir/mc.out"
 echo "PASS: mc ls succeeded"
 
 aws --endpoint-url "$endpoint" --region "$region" --output json s3api delete-object --bucket "$bucket" --key "$key" >/dev/null
+aws --endpoint-url "$endpoint" --region "$region" --output json s3api delete-object --bucket "$bucket" --key "$multipart_key" >/dev/null
 aws --endpoint-url "$endpoint" --region "$region" --output json s3api delete-bucket --bucket "$bucket" >/dev/null
 echo "PASS: cleanup succeeded"

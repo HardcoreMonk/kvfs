@@ -2,7 +2,7 @@
 
 > **분산 object storage 설계 원리를 살아있는 데모로** 보여주는 오픈소스 레퍼런스,
 > 그리고 내부 MinIO/S3-compatible replacement 를 향한 production MVP track.
-> **Go 1.26 · Apache 2.0 · 60 ADR · 55 blog episode · 48 라이브 데모 · 223 unit test**
+> **Go 1.26 · Apache 2.0 · 60 ADR · 55 blog episode · 48 라이브 데모 · 238 unit test**
 
 ## 이것은 무엇인가
 
@@ -19,7 +19,7 @@ ADR(설계 결정) + 블로그 episode + 라이브 데모로 검증.
 | **6** | coord operational migration | ✅ Ep.1~7 done | ADR-043~049. rebalance · GC · repair · DN registry · URLKey rotation/propagation — all on coord |
 | **7** | textbook primitives | ✅ closed (Ep.1~4) | ADR-051~054. failure domain · degraded read · tunable consistency · anti-entropy/Merkle |
 | **P8** | self-heal polish | ✅ P8-16 done | ADR-050·055~063. chaos hardening · 4채널 self-heal · continuous repair · Prometheus observability |
-| **P9** | production MVP track | 🚧 P9-03 bucket/object API done | ADR-064 + S3 SigV4 foundation + bucket/object API. multipart starts in P9-04 |
+| **P9** | production MVP track | 🚧 P9-04 multipart upload done | ADR-064 + S3 SigV4 foundation + bucket/object API + multipart upload. production profile starts in P9-05 |
 
 이것이 Ceph·MinIO·S3 가 하는 일의 **단순화된 핵심**. 기존 목표는
 **이해 가능한 레퍼런스**였고, P9 부터는 그 educational core 위에
@@ -88,9 +88,12 @@ platform. 자세한 기준은 ADR-064.
 P9-02 adds the S3 protocol foundation: SigV4 header verification,
 S3-shaped XML errors, operation classification, and route mapping. P9-03 maps
 the core bucket/object success paths: Create/List/DeleteBucket,
-Put/Get/Head/DeleteObject, and ListObjectsV2. `scripts/smoke-s3-compat.sh`
-now runs an `aws`/`mc` bucket/object workflow when those tools and credentials
-are available. Multipart operations remain S3 `NotImplemented` until P9-04.
+Put/Get/Head/DeleteObject, and ListObjectsV2. P9-04 adds the multipart workflow:
+CreateMultipartUpload, UploadPart, ListParts, CompleteMultipartUpload, and
+AbortMultipartUpload, backed by persistent multipart metadata and coord-proxy
+RPCs. `scripts/smoke-s3-compat.sh` now runs `aws`/`mc` bucket/object smoke plus
+an `aws s3api` multipart complete/abort workflow when those tools and
+credentials are available.
 
 ## 설계 결정 (ADR 전문)
 

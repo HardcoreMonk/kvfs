@@ -2,7 +2,7 @@
 
 `200.kvfs/` 의 **후속 작업 단일 소스**. 상태 업데이트는 이 파일만 수정한다.
 
-문서 현행화 일자: **2026-05-22** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) + P9 production MVP charter supersede (ADR-064, production MVP track) + Docker Compose v2 로컬 충족 확인 + P9-02 S3 compatibility foundation + P9-03 bucket/object API 까지 반영.
+문서 현행화 일자: **2026-05-22** · P8-16 observability completions (ADR-063, blog Ep.55, demo-anti-entropy-observability) + README/GUIDE/ADR/blog env·count drift + Codex 기준 `AGENTS.md` 진입점 정리 + lifecycle governance alignment (`domain-architecture`, ADR 상태 정규화, operation handoff) + P9 production MVP charter supersede (ADR-064, production MVP track) + Docker Compose v2 로컬 충족 확인 + P9-02 S3 compatibility foundation + P9-03 bucket/object API + P9-04 multipart upload 까지 반영.
 
 ## 우선순위 맵
 
@@ -15,8 +15,8 @@
 - **P7**: Season 6 (coord operational migration) — Ep.1~7 모두 완료
 - **P8**: Frame-1+2 100% wave — P8-01·02·03·04·06·08~16 DONE (Frame 1+2 = 100% + self-heal coverage 100% + operational polish + concurrent EC repair + replication concurrent + persistent scrubber + unrecoverable signal + continuous self-heal + Prometheus surface + observability completions), P8-05·07·17 (한계효용 polish, 저우선) 잔존
 - **P9**: production MVP track — P9-01 charter supersede, P9-02 S3
-  compatibility foundation, and P9-03 bucket/object API done; P9-04+ slices
-  follow ADR-064.
+  compatibility foundation, P9-03 bucket/object API, and P9-04 multipart upload
+  done; P9-05+ slices follow ADR-064.
 
 > ※ P4-* 모두 완료. P3-02 close, P5-03 ADR-015 Accept (S5 진입). 신규 항목은 P6-* 부터.
 
@@ -111,14 +111,16 @@ object workflow.
   bucket/object workflow by default. Multipart remains explicitly deferred to
   P9-04.
 
-### [P9-04] Multipart upload
+### ~~[P9-04] Multipart upload~~
 
-- CreateMultipartUpload
-- UploadPart
-- ListParts
-- CompleteMultipartUpload
-- AbortMultipartUpload
-- incomplete upload cleanup worker
+- **DONE 2026-05-22**: persistent multipart metadata registry added to
+  bbolt/WAL; coord exposes multipart metadata RPCs and edge CoordClient routes
+  them in coord-proxy mode. edge S3 maps CreateMultipartUpload, UploadPart,
+  ListParts, CompleteMultipartUpload, and AbortMultipartUpload. Complete
+  validates caller-supplied part order/ETags and promotes parts to final object
+  metadata; Abort deletes multipart metadata and best-effort removes uploaded
+  chunks. `scripts/smoke-s3-compat.sh` now includes `aws s3api` multipart
+  complete and abort smoke paths.
 
 ### [P9-05] Production profile enforcement
 
@@ -364,18 +366,19 @@ object workflow.
 | 2026-05-16 | P9 production MVP charter | ADR-064 로 internal single-region MinIO/S3-compatible replacement MVP envelope 와 production claim gate 정의. README/GUIDE/ARCHITECTURE/AGENTS/FOLLOWUP 가 educational core + production MVP track 로 정렬됨. |
 | 2026-05-16 | Docker Compose v2 확인 | P1-02 close. Ubuntu 24.04 의 `docker-compose-v2` 패키지가 `/usr/libexec/docker/cli-plugins/docker-compose` 를 제공하고 `docker compose config -q` 가 PASS 하므로 compose 후속 작업을 완료 처리. |
 | 2026-05-16 | P9-02 S3 compatibility foundation | `internal/s3api`, edge S3 route mapping, `EDGE_S3_ACCESS_KEY`/`EDGE_S3_SECRET_KEY`/`EDGE_S3_REGION`, and `scripts/smoke-s3-compat.sh` added. At P9-02 completion, authenticated recognized S3 operations intentionally returned S3-shaped `NotImplemented`; P9-03 later mapped the core bucket/object success paths. |
-| 2026-05-22 | P9-03 bucket/object API | bbolt/WAL bucket registry, coord bucket RPCs, S3 XML success responses, edge S3 bucket/object dispatch, and upgraded `scripts/smoke-s3-compat.sh` added. Core flow: Create/List/DeleteBucket, Put/Get/Head/DeleteObject, ListObjectsV2 with prefix/delimiter. Multipart remains P9-04. |
+| 2026-05-22 | P9-03 bucket/object API | bbolt/WAL bucket registry, coord bucket RPCs, S3 XML success responses, edge S3 bucket/object dispatch, and upgraded `scripts/smoke-s3-compat.sh` added. Core flow: Create/List/DeleteBucket, Put/Get/Head/DeleteObject, ListObjectsV2 with prefix/delimiter. |
+| 2026-05-22 | P9-04 multipart upload | bbolt/WAL multipart registry, coord multipart metadata RPCs, edge CoordClient proxy support, S3 XML multipart responses, and edge S3 CreateMultipartUpload/UploadPart/ListParts/CompleteMultipartUpload/AbortMultipartUpload handlers added. Smoke script now exercises `aws s3api` multipart complete and abort. |
 
 ---
 
 ## 현재 상태 요약 (2026-05-22)
 
-- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + Codex/lifecycle governance 문서 현행화 + P9 production MVP charter supersede + P9-02 S3 compatibility foundation + P9-03 bucket/object API
-- **테스트**: **223 unit test PASS target** (`rg --count-matches '^func Test' --glob '*_test.go'` 합계). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
+- **Git**: `main`, GitHub `HardcoreMonk/kvfs` PUBLIC. 기준선은 P8-16 observability completions + Codex/lifecycle governance 문서 현행화 + P9 production MVP charter supersede + P9-02 S3 compatibility foundation + P9-03 bucket/object API + P9-04 multipart upload
+- **테스트**: **238 unit test PASS target** (`rg --count-matches '^func Test' --glob '*_test.go'` 합계). Docker `golang:1.26-alpine` 기준 `go test ./...` + `go vet ./...` PASS
 - **데모**: 그리스 α~ω (S1~S4, 21개) + 히브리 aleph~nun (S5~S6, 14개) + S7 samekh~tsadi (Ep.1~4, 4개) + P8-08~16 anti-entropy demos (9개) = **48개**. 신규 `demo-anti-entropy-observability` PASS
 - **ADR**: **60 Accepted** — ADR-001~064 중 020/021/023/026 4개 결번. post-S4: 032~037, S5: 015·038~042, S6: 043~049, P8: 050·055~063, S7: 051~054, P9: 064
 - **Blog**: Ep.1~55 완성. S5/S6 blog backfill (P8-03) + S7 Ep.1~4 (Ep.43~46) + P8-08~16 (Ep.47~55)
-- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. P9 production MVP track opened with ADR-064; P9-02 S3 compatibility foundation and P9-03 bucket/object API done, P9-04 multipart upload next. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
+- **시즌**: S1·S2·S3·S4 closed. S5 closed (Ep.1~7). S6 Ep.1~7 done. P9 production MVP track opened with ADR-064; P9-02 S3 compatibility foundation, P9-03 bucket/object API, and P9-04 multipart upload done, P9-05 production profile enforcement next. 저우선 잔존: P6-08, P6-12, P8-05, P8-07, P8-17
 - **Chaos suite**: chaos-coord-{flap,quorum-loss,partition} + chaos-mixed + chaos-suite 오케스트레이터 — P8-06 fix 후 모두 안정 PASS
 
 ## 업데이트 규칙
