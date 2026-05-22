@@ -46,12 +46,16 @@ import (
 type WALOp string
 
 const (
-	OpPutObject       WALOp = "put_object"
-	OpDeleteObject    WALOp = "delete_object"
-	OpCreateBucket    WALOp = "create_bucket"
-	OpDeleteBucket    WALOp = "delete_bucket"
-	OpAddRuntimeDN    WALOp = "add_runtime_dn"
-	OpRemoveRuntimeDN WALOp = "remove_runtime_dn"
+	OpPutObject               WALOp = "put_object"
+	OpDeleteObject            WALOp = "delete_object"
+	OpCreateBucket            WALOp = "create_bucket"
+	OpDeleteBucket            WALOp = "delete_bucket"
+	OpCreateMultipartUpload   WALOp = "create_multipart_upload"
+	OpPutMultipartPart        WALOp = "put_multipart_part"
+	OpCompleteMultipartUpload WALOp = "complete_multipart_upload"
+	OpAbortMultipartUpload    WALOp = "abort_multipart_upload"
+	OpAddRuntimeDN            WALOp = "add_runtime_dn"
+	OpRemoveRuntimeDN         WALOp = "remove_runtime_dn"
 )
 
 // WALEntry is one record in the WAL.
@@ -498,6 +502,34 @@ func (m *MetaStore) ApplyEntry(e WALEntry) error {
 			return fmt.Errorf("apply delete_bucket decode: %w", err)
 		}
 		return m.deleteBucketInternal(name, false)
+	case OpCreateMultipartUpload:
+		var up MultipartUploadMeta
+		if err := json.Unmarshal(e.Args, &up); err != nil {
+			return fmt.Errorf("apply create_multipart_upload decode: %w", err)
+		}
+		return m.putMultipartUploadReplay(&up)
+	case OpPutMultipartPart:
+		var a multipartPartEntry
+		if err := json.Unmarshal(e.Args, &a); err != nil {
+			return fmt.Errorf("apply put_multipart_part decode: %w", err)
+		}
+		return m.putMultipartPartInternal(a.Bucket, a.Key, a.UploadID, a.Part)
+	case OpCompleteMultipartUpload:
+		var a multipartCompleteEntry
+		if err := json.Unmarshal(e.Args, &a); err != nil {
+			return fmt.Errorf("apply complete_multipart_upload decode: %w", err)
+		}
+		return m.completeMultipartReplay(a)
+	case OpAbortMultipartUpload:
+		var a multipartAbortEntry
+		if err := json.Unmarshal(e.Args, &a); err != nil {
+			return fmt.Errorf("apply abort_multipart_upload decode: %w", err)
+		}
+		_, err := m.abortMultipartUploadInternal(a.Bucket, a.Key, a.UploadID)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
 	case OpAddRuntimeDN:
 		var addr string
 		if err := json.Unmarshal(e.Args, &addr); err != nil {

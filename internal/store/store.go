@@ -37,11 +37,15 @@
 package store
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,13 +57,16 @@ import (
 var (
 	bucketObjects       = []byte("objects")
 	bucketBuckets       = []byte("buckets")
+	bucketMultipart     = []byte("multipart_uploads")
 	bucketDNs           = []byte("dns")
 	bucketDNsRuntime    = []byte("dns_runtime")    // ADR-027
 	bucketURLKeySecrets = []byte("urlkey_secrets") // ADR-028: kid -> JSON {secret_hex, created_at, is_primary}
 
-	ErrNotFound       = errors.New("store: not found")
-	ErrAlreadyExists  = errors.New("store: already exists")
-	ErrBucketNotEmpty = errors.New("store: bucket not empty")
+	ErrNotFound         = errors.New("store: not found")
+	ErrAlreadyExists    = errors.New("store: already exists")
+	ErrBucketNotEmpty   = errors.New("store: bucket not empty")
+	ErrInvalidPart      = errors.New("store: invalid multipart part")
+	ErrInvalidPartOrder = errors.New("store: invalid multipart part order")
 )
 
 // ObjectMeta is the persisted record for a stored object.
@@ -161,6 +168,51 @@ type BucketMeta struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// MultipartUploadMeta is the pending metadata for one S3 multipart upload.
+type MultipartUploadMeta struct {
+	Bucket      string                    `json:"bucket"`
+	Key         string                    `json:"key"`
+	UploadID    string                    `json:"upload_id"`
+	ContentType string                    `json:"content_type,omitempty"`
+	CreatedAt   time.Time                 `json:"created_at"`
+	Parts       map[int]MultipartPartMeta `json:"parts,omitempty"`
+}
+
+// MultipartPartMeta records one uploaded part's chunk references.
+type MultipartPartMeta struct {
+	PartNumber int        `json:"part_number"`
+	ETag       string     `json:"etag"`
+	Size       int64      `json:"size"`
+	Chunks     []ChunkRef `json:"chunks"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// CompletePart is one requested part in CompleteMultipartUpload.
+type CompletePart struct {
+	PartNumber int    `json:"part_number"`
+	ETag       string `json:"etag,omitempty"`
+}
+
+type multipartPartEntry struct {
+	Bucket   string            `json:"bucket"`
+	Key      string            `json:"key"`
+	UploadID string            `json:"upload_id"`
+	Part     MultipartPartMeta `json:"part"`
+}
+
+type multipartCompleteEntry struct {
+	Bucket   string      `json:"bucket"`
+	Key      string      `json:"key"`
+	UploadID string      `json:"upload_id"`
+	Object   *ObjectMeta `json:"object"`
+}
+
+type multipartAbortEntry struct {
+	Bucket   string `json:"bucket"`
+	Key      string `json:"key"`
+	UploadID string `json:"upload_id"`
+}
+
 // MetaStore is a bbolt-backed metadata store. The underlying *bbolt.DB is held
 // in an atomic.Pointer so it can be hot-swapped by Reload (ADR-022 follower
 // sync) without invalidating concurrent readers — readers load the current
@@ -198,7 +250,7 @@ func openInitialized(path string) (*bbolt.DB, error) {
 		return nil, fmt.Errorf("open bbolt: %w", err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{bucketObjects, bucketBuckets, bucketDNs, bucketDNsRuntime, bucketURLKeySecrets} {
+		for _, b := range [][]byte{bucketObjects, bucketBuckets, bucketMultipart, bucketDNs, bucketDNsRuntime, bucketURLKeySecrets} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -409,6 +461,323 @@ func (m *MetaStore) BucketHasObjects(name string) (bool, error) {
 		return nil
 	})
 	return out, err
+}
+
+// CreateMultipartUpload creates a pending multipart upload record.
+func (m *MetaStore) CreateMultipartUpload(bucket, key, contentType string) (*MultipartUploadMeta, error) {
+	if bucket == "" || key == "" {
+		return nil, errors.New("store: bucket and key required")
+	}
+	meta := &MultipartUploadMeta{
+		Bucket:      bucket,
+		Key:         key,
+		UploadID:    newMultipartUploadID(),
+		ContentType: contentType,
+		CreatedAt:   time.Now().UTC(),
+		Parts:       make(map[int]MultipartPartMeta),
+	}
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
+		if tx.Bucket(bucketBuckets).Get([]byte(bucket)) == nil {
+			return ErrNotFound
+		}
+		b := tx.Bucket(bucketMultipart)
+		for b.Get([]byte(multipartKey(bucket, key, meta.UploadID))) != nil {
+			meta.UploadID = newMultipartUploadID()
+		}
+		buf, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(multipartKey(bucket, key, meta.UploadID)), buf)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := m.appendWAL(OpCreateMultipartUpload, meta); err != nil {
+		return nil, err
+	}
+	return meta, nil
+}
+
+// GetMultipartUpload fetches a pending multipart upload.
+func (m *MetaStore) GetMultipartUpload(bucket, key, uploadID string) (*MultipartUploadMeta, error) {
+	var out MultipartUploadMeta
+	err := m.db.Load().View(func(tx *bbolt.Tx) error {
+		raw := tx.Bucket(bucketMultipart).Get([]byte(multipartKey(bucket, key, uploadID)))
+		if raw == nil {
+			return ErrNotFound
+		}
+		return json.Unmarshal(raw, &out)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.Parts == nil {
+		out.Parts = make(map[int]MultipartPartMeta)
+	}
+	return &out, nil
+}
+
+func (m *MetaStore) putMultipartUploadReplay(meta *MultipartUploadMeta) error {
+	if meta == nil || meta.Bucket == "" || meta.Key == "" || meta.UploadID == "" {
+		return errors.New("store: multipart replay requires bucket, key, and upload id")
+	}
+	if meta.CreatedAt.IsZero() {
+		meta.CreatedAt = time.Now().UTC()
+	}
+	if meta.Parts == nil {
+		meta.Parts = make(map[int]MultipartPartMeta)
+	}
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+		buf, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketMultipart).Put([]byte(multipartKey(meta.Bucket, meta.Key, meta.UploadID)), buf)
+	})
+}
+
+// PutMultipartPart stores or replaces one pending upload part.
+func (m *MetaStore) PutMultipartPart(bucket, key, uploadID string, part MultipartPartMeta) error {
+	if err := validatePartNumber(part.PartNumber); err != nil {
+		return err
+	}
+	if part.ETag == "" || len(part.Chunks) == 0 {
+		return ErrInvalidPart
+	}
+	if part.CreatedAt.IsZero() {
+		part.CreatedAt = time.Now().UTC()
+	}
+	err := m.putMultipartPartInternal(bucket, key, uploadID, part)
+	if err != nil {
+		return err
+	}
+	return m.appendWAL(OpPutMultipartPart, multipartPartEntry{Bucket: bucket, Key: key, UploadID: uploadID, Part: part})
+}
+
+func (m *MetaStore) putMultipartPartInternal(bucket, key, uploadID string, part MultipartPartMeta) error {
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketMultipart)
+		k := []byte(multipartKey(bucket, key, uploadID))
+		raw := b.Get(k)
+		if raw == nil {
+			return ErrNotFound
+		}
+		var up MultipartUploadMeta
+		if err := json.Unmarshal(raw, &up); err != nil {
+			return err
+		}
+		if up.Parts == nil {
+			up.Parts = make(map[int]MultipartPartMeta)
+		}
+		up.Parts[part.PartNumber] = part
+		buf, err := json.Marshal(&up)
+		if err != nil {
+			return err
+		}
+		return b.Put(k, buf)
+	})
+}
+
+// ListMultipartParts lists pending parts sorted by part number.
+func (m *MetaStore) ListMultipartParts(bucket, key, uploadID string) ([]MultipartPartMeta, error) {
+	up, err := m.GetMultipartUpload(bucket, key, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MultipartPartMeta, 0, len(up.Parts))
+	for _, p := range up.Parts {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PartNumber < out[j].PartNumber })
+	return out, nil
+}
+
+// CompleteMultipartUpload validates parts, commits the final object, and
+// removes the pending upload record in one bbolt transaction.
+func (m *MetaStore) CompleteMultipartUpload(bucket, key, uploadID string, parts []CompletePart) (*ObjectMeta, []MultipartPartMeta, error) {
+	if len(parts) == 0 {
+		return nil, nil, ErrInvalidPart
+	}
+	var obj ObjectMeta
+	completed := make([]MultipartPartMeta, 0, len(parts))
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
+		mb := tx.Bucket(bucketMultipart)
+		mk := []byte(multipartKey(bucket, key, uploadID))
+		raw := mb.Get(mk)
+		if raw == nil {
+			return ErrNotFound
+		}
+		var up MultipartUploadMeta
+		if err := json.Unmarshal(raw, &up); err != nil {
+			return err
+		}
+		prevPart := 0
+		var chunks []ChunkRef
+		var size int64
+		h := sha256.New()
+		for _, want := range parts {
+			if err := validatePartNumber(want.PartNumber); err != nil {
+				return err
+			}
+			if want.PartNumber <= prevPart {
+				return ErrInvalidPartOrder
+			}
+			prevPart = want.PartNumber
+			got, ok := up.Parts[want.PartNumber]
+			if !ok {
+				return ErrInvalidPart
+			}
+			if want.ETag != "" && want.ETag != got.ETag {
+				return ErrInvalidPart
+			}
+			_, _ = h.Write([]byte(got.ETag))
+			chunks = append(chunks, got.Chunks...)
+			size += got.Size
+			completed = append(completed, got)
+		}
+		etag := `"` + hex.EncodeToString(h.Sum(nil)) + "-" + strconv.Itoa(len(parts)) + `"`
+		obj = ObjectMeta{
+			Bucket:      bucket,
+			Key:         key,
+			Size:        size,
+			ContentType: up.ContentType,
+			ETag:        etag,
+			Chunks:      chunks,
+			CreatedAt:   time.Now().UTC(),
+		}
+		ob := tx.Bucket(bucketObjects)
+		okey := objKey(bucket, key)
+		if prev := ob.Get(okey); prev != nil {
+			var prevObj ObjectMeta
+			if err := json.Unmarshal(prev, &prevObj); err == nil {
+				obj.Version = prevObj.Version + 1
+			}
+		}
+		if obj.Version == 0 {
+			obj.Version = 1
+		}
+		buf, err := json.Marshal(&obj)
+		if err != nil {
+			return err
+		}
+		if err := ob.Put(okey, buf); err != nil {
+			return err
+		}
+		return mb.Delete(mk)
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := m.appendWAL(OpCompleteMultipartUpload, multipartCompleteEntry{Bucket: bucket, Key: key, UploadID: uploadID, Object: &obj}); err != nil {
+		return nil, nil, err
+	}
+	return &obj, completed, nil
+}
+
+func (m *MetaStore) completeMultipartReplay(entry multipartCompleteEntry) error {
+	if entry.Object == nil {
+		return errors.New("store: multipart complete replay requires object")
+	}
+	return m.db.Load().Update(func(tx *bbolt.Tx) error {
+		buf, err := json.Marshal(entry.Object)
+		if err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketObjects).Put(objKey(entry.Object.Bucket, entry.Object.Key), buf); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketMultipart).Delete([]byte(multipartKey(entry.Bucket, entry.Key, entry.UploadID)))
+	})
+}
+
+// AbortMultipartUpload removes one pending upload and returns its metadata.
+func (m *MetaStore) AbortMultipartUpload(bucket, key, uploadID string) (*MultipartUploadMeta, error) {
+	up, err := m.abortMultipartUploadInternal(bucket, key, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.appendWAL(OpAbortMultipartUpload, multipartAbortEntry{Bucket: bucket, Key: key, UploadID: uploadID}); err != nil {
+		return nil, err
+	}
+	return up, nil
+}
+
+func (m *MetaStore) abortMultipartUploadInternal(bucket, key, uploadID string) (*MultipartUploadMeta, error) {
+	var out MultipartUploadMeta
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketMultipart)
+		k := []byte(multipartKey(bucket, key, uploadID))
+		raw := b.Get(k)
+		if raw == nil {
+			return ErrNotFound
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return err
+		}
+		return b.Delete(k)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.Parts == nil {
+		out.Parts = make(map[int]MultipartPartMeta)
+	}
+	return &out, nil
+}
+
+// AbortExpiredMultipartUploads deletes pending uploads older than cutoff.
+func (m *MetaStore) AbortExpiredMultipartUploads(cutoff time.Time, limit int) ([]*MultipartUploadMeta, error) {
+	var removed []*MultipartUploadMeta
+	err := m.db.Load().Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketMultipart)
+		return b.ForEach(func(k, v []byte) error {
+			if limit > 0 && len(removed) >= limit {
+				return nil
+			}
+			var up MultipartUploadMeta
+			if err := json.Unmarshal(v, &up); err != nil {
+				return err
+			}
+			if up.CreatedAt.IsZero() || !up.CreatedAt.Before(cutoff) {
+				return nil
+			}
+			cp := up
+			if cp.Parts == nil {
+				cp.Parts = make(map[int]MultipartPartMeta)
+			}
+			removed = append(removed, &cp)
+			return b.Delete(k)
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, up := range removed {
+		if walErr := m.appendWAL(OpAbortMultipartUpload, multipartAbortEntry{Bucket: up.Bucket, Key: up.Key, UploadID: up.UploadID}); walErr != nil {
+			return nil, walErr
+		}
+	}
+	return removed, nil
+}
+
+func multipartKey(bucket, key, uploadID string) string {
+	return bucket + "/" + key + "/" + uploadID
+}
+
+func newMultipartUploadID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return hex.EncodeToString([]byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func validatePartNumber(n int) error {
+	if n < 1 || n > 10000 {
+		return ErrInvalidPart
+	}
+	return nil
 }
 
 // ValidateBucketName enforces the P9-03 S3-compatible bucket-name subset.
