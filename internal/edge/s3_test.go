@@ -7,7 +7,9 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -29,12 +31,12 @@ import (
 
 const s3TestEmptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
-func TestS3Foundation_AuthenticatedOperationReturnsXMLNotImplemented(t *testing.T) {
+func TestS3Foundation_AuthenticatedUnsupportedObjectPostReturnsXMLNotImplemented(t *testing.T) {
 	srv := &Server{
 		S3Credentials: s3api.StaticCredentials{"AKIA_TEST": "test-secret"},
 		S3Region:      "us-east-1",
 	}
-	req := httptest.NewRequest(http.MethodPost, "/photos/raw/a.jpg?uploads", nil)
+	req := httptest.NewRequest(http.MethodPost, "/photos/raw/a.jpg?tagging", nil)
 	req.Host = "kvfs.local"
 	signS3TestRequest(t, req, "AKIA_TEST", "test-secret", "us-east-1")
 
@@ -50,8 +52,8 @@ func TestS3Foundation_AuthenticatedOperationReturnsXMLNotImplemented(t *testing.
 	if !strings.Contains(rec.Body.String(), "<Code>NotImplemented</Code>") {
 		t.Fatalf("body should contain S3 NotImplemented XML: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "CreateMultipartUpload") {
-		t.Fatalf("body should name classified operation: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "unsupported S3 operation") {
+		t.Fatalf("body should explain unsupported operation: %s", rec.Body.String())
 	}
 }
 
@@ -428,6 +430,128 @@ func TestS3ObjectAPI_CoordProxyMetadata(t *testing.T) {
 	}
 }
 
+func TestS3MultipartAPI_PutListCompleteGet(t *testing.T) {
+	srv := newS3ObjectTestServer(t)
+	mustS3(t, srv, http.MethodPut, "/photos", nil, http.StatusOK)
+
+	uploadID := initiateS3Multipart(t, srv, "/photos/multi.txt?uploads", "text/plain")
+	part1 := putS3MultipartPart(t, srv, "/photos/multi.txt", uploadID, 1, "hello ")
+	part2 := putS3MultipartPart(t, srv, "/photos/multi.txt", uploadID, 2, "world")
+
+	listReq := signedS3Request(t, http.MethodGet, "/photos/multi.txt?uploadId="+url.QueryEscape(uploadID), nil)
+	listRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list parts status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed s3api.ListPartsResult
+	if err := xml.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list parts: %v\n%s", err, listRec.Body.String())
+	}
+	if listed.Bucket != "photos" || listed.Key != "multi.txt" || listed.UploadID != uploadID {
+		t.Fatalf("listed=%+v", listed)
+	}
+	if len(listed.Parts) != 2 || listed.Parts[0].PartNumber != 1 || listed.Parts[1].PartNumber != 2 {
+		t.Fatalf("listed parts=%+v", listed.Parts)
+	}
+
+	completeMultipart(t, srv, "/photos/multi.txt", uploadID, []s3api.CompletedPart{
+		{PartNumber: 1, ETag: part1},
+		{PartNumber: 2, ETag: part2},
+	}, http.StatusOK, "")
+
+	getReq := signedS3Request(t, http.MethodGet, "/photos/multi.txt", nil)
+	getRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get completed object status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	if getRec.Body.String() != "hello world" {
+		t.Fatalf("completed body=%q", getRec.Body.String())
+	}
+	if _, err := srv.Store.GetMultipartUpload("photos", "multi.txt", uploadID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("completed upload err=%v, want ErrNotFound", err)
+	}
+}
+
+func TestS3MultipartAPI_Abort(t *testing.T) {
+	srv := newS3ObjectTestServer(t)
+	mustS3(t, srv, http.MethodPut, "/photos", nil, http.StatusOK)
+
+	uploadID := initiateS3Multipart(t, srv, "/photos/abort.txt?uploads", "text/plain")
+	_ = putS3MultipartPart(t, srv, "/photos/abort.txt", uploadID, 1, "temp")
+
+	abortReq := signedS3Request(t, http.MethodDelete, "/photos/abort.txt?uploadId="+url.QueryEscape(uploadID), nil)
+	abortRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(abortRec, abortReq)
+	if abortRec.Code != http.StatusNoContent {
+		t.Fatalf("abort status=%d body=%s", abortRec.Code, abortRec.Body.String())
+	}
+
+	listReq := signedS3Request(t, http.MethodGet, "/photos/abort.txt?uploadId="+url.QueryEscape(uploadID), nil)
+	listRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusNotFound {
+		t.Fatalf("list aborted status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+	if !strings.Contains(listRec.Body.String(), "<Code>NoSuchUpload</Code>") {
+		t.Fatalf("aborted list should return NoSuchUpload: %s", listRec.Body.String())
+	}
+}
+
+func TestS3MultipartAPI_InvalidPartOrder(t *testing.T) {
+	srv := newS3ObjectTestServer(t)
+	mustS3(t, srv, http.MethodPut, "/photos", nil, http.StatusOK)
+
+	uploadID := initiateS3Multipart(t, srv, "/photos/order.txt?uploads", "text/plain")
+	part1 := putS3MultipartPart(t, srv, "/photos/order.txt", uploadID, 1, "one")
+	part2 := putS3MultipartPart(t, srv, "/photos/order.txt", uploadID, 2, "two")
+
+	completeMultipart(t, srv, "/photos/order.txt", uploadID, []s3api.CompletedPart{
+		{PartNumber: 2, ETag: part2},
+		{PartNumber: 1, ETag: part1},
+	}, http.StatusBadRequest, s3api.CodeInvalidPartOrder)
+}
+
+func TestS3MultipartAPI_ETagMismatch(t *testing.T) {
+	srv := newS3ObjectTestServer(t)
+	mustS3(t, srv, http.MethodPut, "/photos", nil, http.StatusOK)
+
+	uploadID := initiateS3Multipart(t, srv, "/photos/etag.txt?uploads", "text/plain")
+	_ = putS3MultipartPart(t, srv, "/photos/etag.txt", uploadID, 1, "one")
+
+	completeMultipart(t, srv, "/photos/etag.txt", uploadID, []s3api.CompletedPart{
+		{PartNumber: 1, ETag: `"wrong"`},
+	}, http.StatusBadRequest, s3api.CodeInvalidPart)
+}
+
+func TestS3MultipartAPI_CoordProxyMetadata(t *testing.T) {
+	srv := newS3CoordProxyTestServer(t)
+	mustS3(t, srv, http.MethodPut, "/photos", nil, http.StatusOK)
+
+	uploadID := initiateS3Multipart(t, srv, "/photos/proxy.txt?uploads", "text/plain")
+	part1 := putS3MultipartPart(t, srv, "/photos/proxy.txt", uploadID, 1, "via ")
+	part2 := putS3MultipartPart(t, srv, "/photos/proxy.txt", uploadID, 2, "coord")
+	completeMultipart(t, srv, "/photos/proxy.txt", uploadID, []s3api.CompletedPart{
+		{PartNumber: 1, ETag: part1},
+		{PartNumber: 2, ETag: part2},
+	}, http.StatusOK, "")
+
+	if _, err := srv.Store.GetObject("photos", "proxy.txt"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("edge local object err=%v, want ErrNotFound in coord-proxy mode", err)
+	}
+	if _, err := srv.Store.GetMultipartUpload("photos", "proxy.txt", uploadID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("edge local upload err=%v, want ErrNotFound in coord-proxy mode", err)
+	}
+
+	getReq := signedS3Request(t, http.MethodGet, "/photos/proxy.txt", nil)
+	getRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK || getRec.Body.String() != "via coord" {
+		t.Fatalf("coord-proxy multipart get status=%d body=%q", getRec.Code, getRec.Body.String())
+	}
+}
+
 func signedS3Request(t *testing.T, method, target string, body io.Reader) *http.Request {
 	t.Helper()
 	if body == nil {
@@ -446,6 +570,73 @@ func mustS3(t *testing.T, srv *Server, method, target string, body io.Reader, wa
 	srv.Routes().ServeHTTP(rec, req)
 	if rec.Code != want {
 		t.Fatalf("%s %s status=%d want %d body=%s", method, target, rec.Code, want, rec.Body.String())
+	}
+}
+
+func initiateS3Multipart(t *testing.T, srv *Server, target, contentType string) string {
+	t.Helper()
+	req := signedS3Request(t, http.MethodPost, target, nil)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initiate multipart status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out s3api.InitiateMultipartUploadResult
+	if err := xml.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode initiate multipart: %v\n%s", err, rec.Body.String())
+	}
+	if out.UploadID == "" {
+		t.Fatalf("initiate multipart missing upload id: %+v", out)
+	}
+	return out.UploadID
+}
+
+func putS3MultipartPart(t *testing.T, srv *Server, objectPath, uploadID string, partNumber int, body string) string {
+	t.Helper()
+	target := fmt.Sprintf("%s?partNumber=%d&uploadId=%s", objectPath, partNumber, url.QueryEscape(uploadID))
+	req := signedS3Request(t, http.MethodPut, target, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload part %d status=%d body=%s", partNumber, rec.Code, rec.Body.String())
+	}
+	etag := rec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("upload part %d missing ETag", partNumber)
+	}
+	return etag
+}
+
+func completeMultipart(t *testing.T, srv *Server, objectPath, uploadID string, parts []s3api.CompletedPart, wantStatus int, wantCode string) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("<CompleteMultipartUpload>")
+	for _, p := range parts {
+		b.WriteString(fmt.Sprintf("<Part><PartNumber>%d</PartNumber><ETag>%s</ETag></Part>", p.PartNumber, p.ETag))
+	}
+	b.WriteString("</CompleteMultipartUpload>")
+	target := fmt.Sprintf("%s?uploadId=%s", objectPath, url.QueryEscape(uploadID))
+	req := signedS3Request(t, http.MethodPost, target, strings.NewReader(b.String()))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != wantStatus {
+		t.Fatalf("complete multipart status=%d want %d body=%s", rec.Code, wantStatus, rec.Body.String())
+	}
+	if wantCode != "" {
+		if !strings.Contains(rec.Body.String(), "<Code>"+string(wantCode)+"</Code>") {
+			t.Fatalf("complete multipart should return %s: %s", wantCode, rec.Body.String())
+		}
+		return
+	}
+	var out s3api.CompleteMultipartUploadResult
+	if err := xml.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode complete multipart: %v\n%s", err, rec.Body.String())
+	}
+	if out.ETag == "" {
+		t.Fatalf("complete multipart missing ETag: %+v", out)
 	}
 }
 

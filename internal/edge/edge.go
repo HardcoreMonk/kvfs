@@ -509,6 +509,16 @@ func (s *Server) handleS3(w http.ResponseWriter, r *http.Request) {
 		s.handleS3DeleteObject(w, r, info)
 	case s3api.OperationListObjectsV2:
 		s.handleS3ListObjectsV2(w, r, info)
+	case s3api.OperationCreateMultipartUpload:
+		s.handleS3CreateMultipartUpload(w, r, info)
+	case s3api.OperationUploadPart:
+		s.handleS3UploadPart(w, r, info)
+	case s3api.OperationListParts:
+		s.handleS3ListParts(w, r, info)
+	case s3api.OperationCompleteMultipartUpload:
+		s.handleS3CompleteMultipartUpload(w, r, info)
+	case s3api.OperationAbortMultipartUpload:
+		s.handleS3AbortMultipartUpload(w, r, info)
 	case s3api.OperationUnsupported:
 		s3api.WriteError(w, r, s3api.NewError(
 			http.StatusNotImplemented,
@@ -572,15 +582,48 @@ func (s *Server) handleS3PutObject(w http.ResponseWriter, r *http.Request, info 
 		s.writeS3BucketErr(w, r, info, err)
 		return
 	}
-	if s.Coord == nil {
-		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, "coordinator is not configured", info.Resource))
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	reader := s.newPutReader(r.Body)
+	written, s3err := s.writeS3Chunks(ctx, r.Body, info.Resource)
+	if s3err != nil {
+		s3api.WriteError(w, r, s3err)
+		return
+	}
+
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	meta := &store.ObjectMeta{
+		Bucket:      info.Bucket,
+		Key:         info.Key,
+		Size:        written.Size,
+		ContentType: contentType,
+		ETag:        written.ETag,
+		Chunks:      written.Chunks,
+		Class:       s.PlacementPreferClass,
+	}
+	if err := s.commitPutMeta(ctx, meta); err != nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, err.Error(), info.Resource))
+		return
+	}
+	w.Header().Set("ETag", written.ETag)
+	s3api.WriteXML(w, r, http.StatusOK, nil)
+}
+
+type s3WrittenChunks struct {
+	Chunks []store.ChunkRef
+	Size   int64
+	ETag   string
+}
+
+func (s *Server) writeS3Chunks(ctx context.Context, src io.Reader, resource string) (*s3WrittenChunks, *s3api.Error) {
+	if s.Coord == nil {
+		return nil, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, "coordinator is not configured", resource)
+	}
+	reader := s.newPutReader(src)
 	hasher := sha256.New()
 	var chunkRefs []store.ChunkRef
 	var totalSize int64
@@ -590,14 +633,12 @@ func (s *Server) handleS3PutObject(w http.ResponseWriter, r *http.Request, info 
 			break
 		}
 		if err != nil {
-			s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidRequest, fmt.Sprintf("read chunk %d: %v", i+1, err), info.Resource))
-			return
+			return nil, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidRequest, fmt.Sprintf("read chunk %d: %v", i+1, err), resource)
 		}
 		_, _ = hasher.Write(piece.Data)
 		replicas, werr := s.writeChunkPreferClassW(ctx, piece.ID, piece.Data, 0)
 		if werr != nil {
-			s3api.WriteError(w, r, s3api.NewError(http.StatusBadGateway, s3api.CodeInternalError, fmt.Sprintf("chunk %d (%s): %v", i+1, piece.ID[:16], werr), info.Resource))
-			return
+			return nil, s3api.NewError(http.StatusBadGateway, s3api.CodeInternalError, fmt.Sprintf("chunk %d (%s): %v", i+1, piece.ID[:16], werr), resource)
 		}
 		chunkRefs = append(chunkRefs, store.ChunkRef{
 			ChunkID:  piece.ID,
@@ -607,30 +648,168 @@ func (s *Server) handleS3PutObject(w http.ResponseWriter, r *http.Request, info 
 		totalSize += piece.Size
 	}
 	if len(chunkRefs) == 0 {
-		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidRequest, "empty body", info.Resource))
+		return nil, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidRequest, "empty body", resource)
+	}
+	return &s3WrittenChunks{
+		Chunks: chunkRefs,
+		Size:   totalSize,
+		ETag:   `"` + hex.EncodeToString(hasher.Sum(nil)) + `"`,
+	}, nil
+}
+
+func (s *Server) handleS3CreateMultipartUpload(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
 		return
 	}
-
 	contentType := r.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	etag := `"` + hex.EncodeToString(hasher.Sum(nil)) + `"`
-	meta := &store.ObjectMeta{
-		Bucket:      info.Bucket,
-		Key:         info.Key,
-		Size:        totalSize,
-		ContentType: contentType,
-		ETag:        etag,
-		Chunks:      chunkRefs,
-		Class:       s.PlacementPreferClass,
-	}
-	if err := s.commitPutMeta(ctx, meta); err != nil {
-		s3api.WriteError(w, r, s3api.NewError(http.StatusInternalServerError, s3api.CodeInternalError, err.Error(), info.Resource))
+	up, err := s.createMultipartUpload(r.Context(), info.Bucket, info.Key, contentType)
+	if err != nil {
+		s.writeS3MultipartErr(w, r, info, err)
 		return
 	}
-	w.Header().Set("ETag", etag)
+	s3api.WriteXML(w, r, http.StatusOK, s3api.InitiateMultipartUploadResult{
+		Bucket:   info.Bucket,
+		Key:      info.Key,
+		UploadID: up.UploadID,
+	})
+}
+
+func (s *Server) handleS3UploadPart(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	uploadID := r.URL.Query().Get("uploadId")
+	partNumber, err := strconv.Atoi(r.URL.Query().Get("partNumber"))
+	if uploadID == "" || err != nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidArgument, "uploadId and numeric partNumber are required", info.Resource))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	written, s3err := s.writeS3Chunks(ctx, r.Body, info.Resource)
+	if s3err != nil {
+		s3api.WriteError(w, r, s3err)
+		return
+	}
+	part := store.MultipartPartMeta{
+		PartNumber: partNumber,
+		ETag:       written.ETag,
+		Size:       written.Size,
+		Chunks:     written.Chunks,
+	}
+	if err := s.putMultipartPart(ctx, info.Bucket, info.Key, uploadID, part); err != nil {
+		s.deleteS3MultipartChunks(ctx, []store.MultipartPartMeta{part})
+		s.writeS3MultipartErr(w, r, info, err)
+		return
+	}
+	w.Header().Set("ETag", written.ETag)
 	s3api.WriteXML(w, r, http.StatusOK, nil)
+}
+
+func (s *Server) handleS3ListParts(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	uploadID := r.URL.Query().Get("uploadId")
+	if uploadID == "" {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidArgument, "uploadId is required", info.Resource))
+		return
+	}
+	parts, err := s.listMultipartParts(r.Context(), info.Bucket, info.Key, uploadID)
+	if err != nil {
+		s.writeS3MultipartErr(w, r, info, err)
+		return
+	}
+	marker := s3PartNumberMarker(r)
+	maxParts := s3MaxParts(r)
+	resp := s3api.ListPartsResult{
+		Bucket:           info.Bucket,
+		Key:              info.Key,
+		UploadID:         uploadID,
+		PartNumberMarker: marker,
+		MaxParts:         maxParts,
+	}
+	for _, part := range parts {
+		if part.PartNumber <= marker {
+			continue
+		}
+		if len(resp.Parts) == maxParts {
+			resp.IsTruncated = true
+			break
+		}
+		resp.Parts = append(resp.Parts, s3api.Part{
+			PartNumber:   part.PartNumber,
+			LastModified: part.CreatedAt,
+			ETag:         part.ETag,
+			Size:         part.Size,
+		})
+		resp.NextPartNumberMarker = part.PartNumber
+	}
+	s3api.WriteXML(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleS3CompleteMultipartUpload(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	uploadID := r.URL.Query().Get("uploadId")
+	if uploadID == "" {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidArgument, "uploadId is required", info.Resource))
+		return
+	}
+	parsed, err := s3api.ParseCompleteMultipartUpload(r.Body)
+	if err != nil {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeMalformedXML, err.Error(), info.Resource))
+		return
+	}
+	parts := make([]store.CompletePart, 0, len(parsed))
+	for _, p := range parsed {
+		parts = append(parts, store.CompletePart{PartNumber: p.PartNumber, ETag: p.ETag})
+	}
+	obj, _, err := s.completeMultipartUpload(r.Context(), info.Bucket, info.Key, uploadID, parts)
+	if err != nil {
+		s.writeS3MultipartErr(w, r, info, err)
+		return
+	}
+	w.Header().Set("ETag", obj.ETag)
+	s3api.WriteXML(w, r, http.StatusOK, s3api.CompleteMultipartUploadResult{
+		Location: s3ObjectLocation(r, info),
+		Bucket:   info.Bucket,
+		Key:      info.Key,
+		ETag:     obj.ETag,
+	})
+}
+
+func (s *Server) handleS3AbortMultipartUpload(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
+	if err := s.ensureS3Bucket(r.Context(), info.Bucket); err != nil {
+		s.writeS3BucketErr(w, r, info, err)
+		return
+	}
+	uploadID := r.URL.Query().Get("uploadId")
+	if uploadID == "" {
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidArgument, "uploadId is required", info.Resource))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	up, err := s.abortMultipartUpload(ctx, info.Bucket, info.Key, uploadID)
+	if err != nil {
+		s.writeS3MultipartErr(w, r, info, err)
+		return
+	}
+	parts := make([]store.MultipartPartMeta, 0, len(up.Parts))
+	for _, part := range up.Parts {
+		parts = append(parts, part)
+	}
+	s.deleteS3MultipartChunks(ctx, parts)
+	s3api.WriteXML(w, r, http.StatusNoContent, nil)
 }
 
 func (s *Server) handleS3GetObject(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo) {
@@ -849,6 +1028,42 @@ func s3MaxKeys(r *http.Request) int {
 	return n
 }
 
+func s3MaxParts(r *http.Request) int {
+	const defaultMaxParts = 1000
+	raw := r.URL.Query().Get("max-parts")
+	if raw == "" {
+		return defaultMaxParts
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultMaxParts
+	}
+	if n > defaultMaxParts {
+		return defaultMaxParts
+	}
+	return n
+}
+
+func s3PartNumberMarker(r *http.Request) int {
+	raw := r.URL.Query().Get("part-number-marker")
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+func s3ObjectLocation(r *http.Request, info s3api.RequestInfo) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host + info.Resource
+}
+
 func (s *Server) createBucket(ctx context.Context, name string) (*store.BucketMeta, error) {
 	if s.CoordClient != nil {
 		return s.CoordClient.CreateBucket(ctx, name)
@@ -892,6 +1107,52 @@ func (s *Server) listObjectsByPrefix(ctx context.Context, bucket, prefix string,
 	return s.Store.ListObjectsByPrefix(bucket, prefix, limit)
 }
 
+func (s *Server) createMultipartUpload(ctx context.Context, bucket, key, contentType string) (*store.MultipartUploadMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.CreateMultipartUpload(ctx, bucket, key, contentType)
+	}
+	return s.Store.CreateMultipartUpload(bucket, key, contentType)
+}
+
+func (s *Server) putMultipartPart(ctx context.Context, bucket, key, uploadID string, part store.MultipartPartMeta) error {
+	if s.CoordClient != nil {
+		return s.CoordClient.PutMultipartPart(ctx, bucket, key, uploadID, part)
+	}
+	return s.Store.PutMultipartPart(bucket, key, uploadID, part)
+}
+
+func (s *Server) listMultipartParts(ctx context.Context, bucket, key, uploadID string) ([]store.MultipartPartMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.ListMultipartParts(ctx, bucket, key, uploadID)
+	}
+	return s.Store.ListMultipartParts(bucket, key, uploadID)
+}
+
+func (s *Server) completeMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []store.CompletePart) (*store.ObjectMeta, []store.MultipartPartMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts)
+	}
+	return s.Store.CompleteMultipartUpload(bucket, key, uploadID, parts)
+}
+
+func (s *Server) abortMultipartUpload(ctx context.Context, bucket, key, uploadID string) (*store.MultipartUploadMeta, error) {
+	if s.CoordClient != nil {
+		return s.CoordClient.AbortMultipartUpload(ctx, bucket, key, uploadID)
+	}
+	return s.Store.AbortMultipartUpload(bucket, key, uploadID)
+}
+
+func (s *Server) deleteS3MultipartChunks(ctx context.Context, parts []store.MultipartPartMeta) {
+	if s.Coord == nil {
+		return
+	}
+	for _, part := range parts {
+		for _, c := range part.Chunks {
+			_ = s.Coord.DeleteChunk(ctx, c.ChunkID, c.Replicas)
+		}
+	}
+}
+
 func (s *Server) ensureS3Bucket(ctx context.Context, bucket string) error {
 	if err := store.ValidateBucketName(bucket); err != nil {
 		return err
@@ -911,6 +1172,25 @@ func (s *Server) writeS3BucketErr(w http.ResponseWriter, r *http.Request, info s
 	default:
 		status := http.StatusBadRequest
 		code := s3api.CodeInvalidBucketName
+		if strings.HasPrefix(err.Error(), "coord-client:") {
+			status = http.StatusInternalServerError
+			code = s3api.CodeInternalError
+		}
+		s3api.WriteError(w, r, s3api.NewError(status, code, err.Error(), info.Resource))
+	}
+}
+
+func (s *Server) writeS3MultipartErr(w http.ResponseWriter, r *http.Request, info s3api.RequestInfo, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s3api.WriteError(w, r, s3api.NewError(http.StatusNotFound, s3api.CodeNoSuchUpload, "multipart upload not found", info.Resource))
+	case errors.Is(err, store.ErrInvalidPartOrder):
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidPartOrder, "multipart parts must be listed in ascending order", info.Resource))
+	case errors.Is(err, store.ErrInvalidPart):
+		s3api.WriteError(w, r, s3api.NewError(http.StatusBadRequest, s3api.CodeInvalidPart, "multipart part is missing or does not match", info.Resource))
+	default:
+		status := http.StatusBadRequest
+		code := s3api.CodeInvalidRequest
 		if strings.HasPrefix(err.Error(), "coord-client:") {
 			status = http.StatusInternalServerError
 			code = s3api.CodeInternalError
