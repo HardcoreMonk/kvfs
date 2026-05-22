@@ -168,6 +168,13 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/coord/bucket", s.handleGetBucket)
 	mux.HandleFunc("GET /v1/coord/buckets", s.handleListBuckets)
 	mux.HandleFunc("DELETE /v1/coord/bucket", s.handleDeleteBucket)
+	mux.HandleFunc("POST /v1/coord/multipart/initiate", s.handleMultipartInitiate)
+	mux.HandleFunc("GET /v1/coord/multipart", s.handleMultipartGet)
+	mux.HandleFunc("POST /v1/coord/multipart/part", s.handleMultipartPart)
+	mux.HandleFunc("GET /v1/coord/multipart/parts", s.handleMultipartParts)
+	mux.HandleFunc("POST /v1/coord/multipart/complete", s.handleMultipartComplete)
+	mux.HandleFunc("POST /v1/coord/multipart/abort", s.handleMultipartAbort)
+	mux.HandleFunc("POST /v1/coord/multipart/cleanup", s.handleMultipartCleanup)
 	// ADR-042 (Season 5 Ep.7): bulk read-only admin endpoints so kvfs-cli
 	// (and any operator script) can talk to coord directly instead of
 	// going through edge. Coord owns the truth — the cli should ask the
@@ -493,6 +500,171 @@ func writeStoreBucketErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, http.StatusNotFound, err)
 	case errors.Is(err, store.ErrAlreadyExists), errors.Is(err, store.ErrBucketNotEmpty):
+		writeErr(w, http.StatusConflict, err)
+	default:
+		writeErr(w, http.StatusBadRequest, err)
+	}
+}
+
+type MultipartInitiateRequest struct {
+	Bucket      string `json:"bucket"`
+	Key         string `json:"key"`
+	ContentType string `json:"content_type,omitempty"`
+}
+
+type MultipartPartRequest struct {
+	Bucket   string                  `json:"bucket"`
+	Key      string                  `json:"key"`
+	UploadID string                  `json:"upload_id"`
+	Part     store.MultipartPartMeta `json:"part"`
+}
+
+type MultipartCompleteRequest struct {
+	Bucket   string               `json:"bucket"`
+	Key      string               `json:"key"`
+	UploadID string               `json:"upload_id"`
+	Parts    []store.CompletePart `json:"parts"`
+}
+
+type MultipartCompleteResponse struct {
+	Object *store.ObjectMeta         `json:"object"`
+	Parts  []store.MultipartPartMeta `json:"parts"`
+}
+
+type MultipartAbortRequest struct {
+	Bucket   string `json:"bucket"`
+	Key      string `json:"key"`
+	UploadID string `json:"upload_id"`
+}
+
+type MultipartCleanupRequest struct {
+	Cutoff time.Time `json:"cutoff"`
+	Limit  int       `json:"limit,omitempty"`
+}
+
+func (s *Server) handleMultipartInitiate(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	var req MultipartInitiateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("decode: %w", err))
+		return
+	}
+	if req.Bucket == "" || req.Key == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("bucket and key required"))
+		return
+	}
+	up, err := s.Store.CreateMultipartUpload(req.Bucket, req.Key, req.ContentType)
+	if err != nil {
+		writeStoreMultipartErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, up)
+}
+
+func (s *Server) handleMultipartGet(w http.ResponseWriter, r *http.Request) {
+	up, err := s.Store.GetMultipartUpload(
+		r.URL.Query().Get("bucket"),
+		r.URL.Query().Get("key"),
+		r.URL.Query().Get("uploadId"),
+	)
+	if err != nil {
+		writeStoreMultipartErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, up)
+}
+
+func (s *Server) handleMultipartPart(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	var req MultipartPartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("decode: %w", err))
+		return
+	}
+	if err := s.Store.PutMultipartPart(req.Bucket, req.Key, req.UploadID, req.Part); err != nil {
+		writeStoreMultipartErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleMultipartParts(w http.ResponseWriter, r *http.Request) {
+	parts, err := s.Store.ListMultipartParts(
+		r.URL.Query().Get("bucket"),
+		r.URL.Query().Get("key"),
+		r.URL.Query().Get("uploadId"),
+	)
+	if err != nil {
+		writeStoreMultipartErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, parts)
+}
+
+func (s *Server) handleMultipartComplete(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	var req MultipartCompleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("decode: %w", err))
+		return
+	}
+	obj, parts, err := s.Store.CompleteMultipartUpload(req.Bucket, req.Key, req.UploadID, req.Parts)
+	if err != nil {
+		writeStoreMultipartErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, MultipartCompleteResponse{Object: obj, Parts: parts})
+}
+
+func (s *Server) handleMultipartAbort(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	var req MultipartAbortRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("decode: %w", err))
+		return
+	}
+	up, err := s.Store.AbortMultipartUpload(req.Bucket, req.Key, req.UploadID)
+	if err != nil {
+		writeStoreMultipartErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, up)
+}
+
+func (s *Server) handleMultipartCleanup(w http.ResponseWriter, r *http.Request) {
+	if s.requireLeader(w) {
+		return
+	}
+	var req MultipartCleanupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("decode: %w", err))
+		return
+	}
+	if req.Cutoff.IsZero() {
+		writeErr(w, http.StatusBadRequest, errors.New("cutoff required"))
+		return
+	}
+	uploads, err := s.Store.AbortExpiredMultipartUploads(req.Cutoff, req.Limit)
+	if err != nil {
+		writeStoreMultipartErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, uploads)
+}
+
+func writeStoreMultipartErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, http.StatusNotFound, err)
+	case errors.Is(err, store.ErrInvalidPart), errors.Is(err, store.ErrInvalidPartOrder):
 		writeErr(w, http.StatusConflict, err)
 	default:
 		writeErr(w, http.StatusBadRequest, err)

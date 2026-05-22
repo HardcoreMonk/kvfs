@@ -132,6 +132,69 @@ func TestCoordClient_BucketRoundTripAgainstRealCoord(t *testing.T) {
 	}
 }
 
+func TestCoordClient_MultipartRoundTripAgainstRealCoord(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.CreateBucket("photos"); err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	cs := &coord.Server{
+		Store:  st,
+		Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}}),
+	}
+	ts := httptest.NewServer(cs.Routes())
+	defer ts.Close()
+
+	cc := NewCoordClient(ts.URL)
+	ctx := context.Background()
+	up, err := cc.CreateMultipartUpload(ctx, "photos", "a.txt", "text/plain")
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload: %v", err)
+	}
+	if up.UploadID == "" || up.ContentType != "text/plain" {
+		t.Fatalf("upload=%+v", up)
+	}
+	if err := cc.PutMultipartPart(ctx, "photos", "a.txt", up.UploadID, store.MultipartPartMeta{
+		PartNumber: 1, ETag: `"p1"`, Size: 1,
+		Chunks: []store.ChunkRef{{ChunkID: "c1", Size: 1, Replicas: []string{"dn1"}}},
+	}); err != nil {
+		t.Fatalf("PutMultipartPart: %v", err)
+	}
+	parts, err := cc.ListMultipartParts(ctx, "photos", "a.txt", up.UploadID)
+	if err != nil {
+		t.Fatalf("ListMultipartParts: %v", err)
+	}
+	if len(parts) != 1 || parts[0].PartNumber != 1 {
+		t.Fatalf("parts=%+v", parts)
+	}
+	obj, completed, err := cc.CompleteMultipartUpload(ctx, "photos", "a.txt", up.UploadID, []store.CompletePart{{PartNumber: 1, ETag: `"p1"`}})
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload: %v", err)
+	}
+	if obj.Size != 1 || len(completed) != 1 {
+		t.Fatalf("obj=%+v completed=%+v", obj, completed)
+	}
+	if _, err := cc.GetMultipartUpload(ctx, "photos", "a.txt", up.UploadID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("completed upload err=%v, want ErrNotFound", err)
+	}
+
+	abortUp, err := cc.CreateMultipartUpload(ctx, "photos", "abort.txt", "")
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload abort: %v", err)
+	}
+	aborted, err := cc.AbortMultipartUpload(ctx, "photos", "abort.txt", abortUp.UploadID)
+	if err != nil {
+		t.Fatalf("AbortMultipartUpload: %v", err)
+	}
+	if aborted.UploadID != abortUp.UploadID {
+		t.Fatalf("aborted=%+v want %s", aborted, abortUp.UploadID)
+	}
+}
+
 // ADR-041 (S5 Ep.6): edge routes placement decisions through coord. The
 // PlaceN RPC returns coord's HRW result against ITS DN list — which may
 // differ from edge's local DN list. This test wires a coord with a DN

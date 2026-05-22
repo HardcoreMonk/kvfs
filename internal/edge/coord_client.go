@@ -276,6 +276,101 @@ func (c *CoordClient) ListObjectsByPrefix(ctx context.Context, bucket, prefix st
 	return out, nil
 }
 
+func (c *CoordClient) CreateMultipartUpload(ctx context.Context, bucket, key, contentType string) (*store.MultipartUploadMeta, error) {
+	var out store.MultipartUploadMeta
+	if err := c.multipartCall(ctx, "POST", "/v1/coord/multipart/initiate", "multipart-initiate",
+		coord.MultipartInitiateRequest{Bucket: bucket, Key: key, ContentType: contentType}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *CoordClient) GetMultipartUpload(ctx context.Context, bucket, key, uploadID string) (*store.MultipartUploadMeta, error) {
+	var out store.MultipartUploadMeta
+	path := fmt.Sprintf("/v1/coord/multipart?bucket=%s&key=%s&uploadId=%s", urlEsc(bucket), urlEsc(key), urlEsc(uploadID))
+	if err := c.multipartCall(ctx, "GET", path, "multipart-get", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *CoordClient) PutMultipartPart(ctx context.Context, bucket, key, uploadID string, part store.MultipartPartMeta) error {
+	return c.multipartCall(ctx, "POST", "/v1/coord/multipart/part", "multipart-part",
+		coord.MultipartPartRequest{Bucket: bucket, Key: key, UploadID: uploadID, Part: part}, nil)
+}
+
+func (c *CoordClient) ListMultipartParts(ctx context.Context, bucket, key, uploadID string) ([]store.MultipartPartMeta, error) {
+	var out []store.MultipartPartMeta
+	path := fmt.Sprintf("/v1/coord/multipart/parts?bucket=%s&key=%s&uploadId=%s", urlEsc(bucket), urlEsc(key), urlEsc(uploadID))
+	if err := c.multipartCall(ctx, "GET", path, "multipart-parts", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *CoordClient) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []store.CompletePart) (*store.ObjectMeta, []store.MultipartPartMeta, error) {
+	var out coord.MultipartCompleteResponse
+	if err := c.multipartCall(ctx, "POST", "/v1/coord/multipart/complete", "multipart-complete",
+		coord.MultipartCompleteRequest{Bucket: bucket, Key: key, UploadID: uploadID, Parts: parts}, &out); err != nil {
+		return nil, nil, err
+	}
+	return out.Object, out.Parts, nil
+}
+
+func (c *CoordClient) AbortMultipartUpload(ctx context.Context, bucket, key, uploadID string) (*store.MultipartUploadMeta, error) {
+	var out store.MultipartUploadMeta
+	if err := c.multipartCall(ctx, "POST", "/v1/coord/multipart/abort", "multipart-abort",
+		coord.MultipartAbortRequest{Bucket: bucket, Key: key, UploadID: uploadID}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *CoordClient) AbortExpiredMultipartUploads(ctx context.Context, cutoff time.Time, limit int) ([]*store.MultipartUploadMeta, error) {
+	var out []*store.MultipartUploadMeta
+	if err := c.multipartCall(ctx, "POST", "/v1/coord/multipart/cleanup", "multipart-cleanup",
+		coord.MultipartCleanupRequest{Cutoff: cutoff, Limit: limit}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *CoordClient) multipartCall(ctx context.Context, method, path, label string, req, respOut any) error {
+	var body []byte
+	if req != nil {
+		b, err := json.Marshal(req)
+		if err != nil {
+			return fmt.Errorf("coord-client: marshal %s: %w", label, err)
+		}
+		body = b
+	}
+	resp, err := c.do(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return store.ErrNotFound
+	case http.StatusConflict:
+		msg := readErrBody(resp)
+		if strings.Contains(msg, "part order") {
+			return store.ErrInvalidPartOrder
+		}
+		return store.ErrInvalidPart
+	default:
+		return fmt.Errorf("coord-client: %s status %d: %s", label, resp.StatusCode, readErrBody(resp))
+	}
+	if respOut == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(respOut); err != nil {
+		return fmt.Errorf("coord-client: decode %s: %w", label, err)
+	}
+	return nil
+}
+
 func (c *CoordClient) CreateBucket(ctx context.Context, name string) (*store.BucketMeta, error) {
 	var out store.BucketMeta
 	if err := c.bucketCall(ctx, "POST", "/v1/coord/bucket", "create-bucket",

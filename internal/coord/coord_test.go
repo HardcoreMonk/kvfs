@@ -163,6 +163,104 @@ func TestBucketRPCs_CreateListDelete(t *testing.T) {
 	}
 }
 
+func TestMultipartRPCs_Lifecycle(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "coord.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.CreateBucket("photos"); err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	srv := &Server{Store: st, Placer: placement.New([]placement.Node{{ID: "dn1", Addr: "dn1"}})}
+	hs := httptest.NewServer(srv.Routes())
+	defer hs.Close()
+
+	initBody, _ := json.Marshal(MultipartInitiateRequest{Bucket: "photos", Key: "a.txt", ContentType: "text/plain"})
+	initResp, err := http.Post(hs.URL+"/v1/coord/multipart/initiate", "application/json", bytes.NewReader(initBody))
+	if err != nil {
+		t.Fatalf("initiate: %v", err)
+	}
+	if initResp.StatusCode != http.StatusOK {
+		t.Fatalf("initiate status=%d", initResp.StatusCode)
+	}
+	var up store.MultipartUploadMeta
+	if err := json.NewDecoder(initResp.Body).Decode(&up); err != nil {
+		t.Fatalf("decode initiate: %v", err)
+	}
+	if up.UploadID == "" {
+		t.Fatalf("upload id missing: %+v", up)
+	}
+
+	partBody, _ := json.Marshal(MultipartPartRequest{
+		Bucket: "photos", Key: "a.txt", UploadID: up.UploadID,
+		Part: store.MultipartPartMeta{PartNumber: 1, ETag: `"p1"`, Size: 1, Chunks: []store.ChunkRef{{ChunkID: "c1", Size: 1, Replicas: []string{"dn1"}}}},
+	})
+	partResp, err := http.Post(hs.URL+"/v1/coord/multipart/part", "application/json", bytes.NewReader(partBody))
+	if err != nil {
+		t.Fatalf("put part: %v", err)
+	}
+	if partResp.StatusCode != http.StatusOK {
+		t.Fatalf("put part status=%d", partResp.StatusCode)
+	}
+
+	listResp, err := http.Get(hs.URL + "/v1/coord/multipart/parts?bucket=photos&key=a.txt&uploadId=" + up.UploadID)
+	if err != nil {
+		t.Fatalf("list parts: %v", err)
+	}
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list parts status=%d", listResp.StatusCode)
+	}
+	var parts []store.MultipartPartMeta
+	if err := json.NewDecoder(listResp.Body).Decode(&parts); err != nil {
+		t.Fatalf("decode parts: %v", err)
+	}
+	if len(parts) != 1 || parts[0].PartNumber != 1 {
+		t.Fatalf("parts=%+v", parts)
+	}
+
+	completeBody, _ := json.Marshal(MultipartCompleteRequest{
+		Bucket: "photos", Key: "a.txt", UploadID: up.UploadID,
+		Parts: []store.CompletePart{{PartNumber: 1, ETag: `"p1"`}},
+	})
+	completeResp, err := http.Post(hs.URL+"/v1/coord/multipart/complete", "application/json", bytes.NewReader(completeBody))
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if completeResp.StatusCode != http.StatusOK {
+		t.Fatalf("complete status=%d", completeResp.StatusCode)
+	}
+	var completed MultipartCompleteResponse
+	if err := json.NewDecoder(completeResp.Body).Decode(&completed); err != nil {
+		t.Fatalf("decode complete: %v", err)
+	}
+	if completed.Object == nil || completed.Object.Size != 1 || len(completed.Parts) != 1 {
+		t.Fatalf("completed=%+v", completed)
+	}
+
+	missingResp, err := http.Get(hs.URL + "/v1/coord/multipart?bucket=photos&key=a.txt&uploadId=" + up.UploadID)
+	if err != nil {
+		t.Fatalf("get completed upload: %v", err)
+	}
+	if missingResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("completed upload status=%d want 404", missingResp.StatusCode)
+	}
+
+	abortUp, err := st.CreateMultipartUpload("photos", "abort.txt", "")
+	if err != nil {
+		t.Fatalf("init abort upload: %v", err)
+	}
+	abortBody, _ := json.Marshal(MultipartAbortRequest{Bucket: "photos", Key: "abort.txt", UploadID: abortUp.UploadID})
+	abortResp, err := http.Post(hs.URL+"/v1/coord/multipart/abort", "application/json", bytes.NewReader(abortBody))
+	if err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if abortResp.StatusCode != http.StatusOK {
+		t.Fatalf("abort status=%d", abortResp.StatusCode)
+	}
+}
+
 func TestBucketRPCs_DeleteNonEmptyRejected(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "coord.db"))
